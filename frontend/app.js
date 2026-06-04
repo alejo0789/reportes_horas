@@ -104,8 +104,17 @@ const ProductNormalizer = {
     }
 };
 
-// API Base URL (Dynamic detection)
-const API_BASE = `${window.location.origin}`;
+// API Base URL (Dynamic detection supporting subpaths)
+const getApiBase = () => {
+    let path = window.location.pathname;
+    if (!path.endsWith('/') && !path.split('/').pop().includes('.')) {
+        path += '/';
+    }
+    const lastSlashIdx = path.lastIndexOf('/');
+    const prefix = lastSlashIdx > 0 ? path.substring(0, lastSlashIdx) : '';
+    return `${window.location.origin}${prefix}`;
+};
+const API_BASE = getApiBase();
 
 // DOM Elements
 const elements = {
