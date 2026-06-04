@@ -1,0 +1,198 @@
+# Dashboard Ventas por Hora
+
+## Descripción
+
+Sistema de dashboard para visualizar ventas por hora en tiempo real, conectando a dos bases de datos Oracle (CAUCAMED/Cauca y FORTUMED/Fortuna) en modo lectura. El dashboard permite subir archivos Excel de distribución de vendedores y metas por día/producto, y ofrece filtros avanzados por oficina, vendedor, día y producto.
+
+## Stack Tecnológico
+
+- **Backend**: FastAPI + `oracledb` (thin mode, sin Oracle Client) + `pandas` + `openpyxl`
+- **Frontend**: HTML/CSS/JS vanilla con Chart.js para gráficos
+- **Servidor**: Uvicorn
+
+Todo ya está disponible en el entorno Python 3.14 del usuario.
+
+## Arquitectura
+
+```mermaid
+graph LR
+    subgraph Backend - FastAPI
+        ENV[".env"] --> DB["db.py<br/>Pool CAUCAMED<br/>Pool FORTUMED"]
+        DB --> Q["queries.py<br/>SQL parametrizado"]
+        Q --> API["main.py<br/>Endpoints REST"]
+        XLSX["Excel Upload"] --> PARSE["excel_parser.py<br/>pandas + openpyxl"]
+        PARSE --> API
+    end
+    subgraph Frontend
+        HTML["index.html"] --> CSS["styles.css"]
+        HTML --> JS["app.js<br/>Filtros + Charts"]
+    end
+    API <-->|JSON| JS
+```
+
+## Estructura del Proyecto
+
+```
+ventasxhora/
+├── .env                          # Credenciales DB (ya existe)
+├── backend/
+│   ├── __init__.py
+│   ├── main.py                   # FastAPI app, endpoints, startup/shutdown
+│   ├── db.py                     # Connection pools (CAUCAMED + FORTUMED)
+│   ├── queries.py                # SQL queries parametrizadas
+│   └── excel_parser.py           # Parseo de Excels (metas + distribución)
+├── frontend/
+│   ├── index.html                # Dashboard SPA
+│   ├── styles.css                # Dark theme premium
+│   └── app.js                    # Lógica del dashboard
+├── uploads/                      # Directorio para Excels subidos (runtime)
+└── run.py                        # Script para iniciar el servidor
+```
+
+---
+
+## Propuestas de Cambio
+
+### 1. Backend - Conexiones a BD
+
+#### [NEW] [db.py](file:///c:/Users/alejandro.carvajal/Documents/reportes_ventas/ventasxhora/backend/db.py)
+
+- Dos connection pools usando `oracledb` en **thin mode** (no requiere Oracle Client instalado)
+- Lee las credenciales desde `.env` con `python-dotenv`
+- Pool CAUCAMED: para la base de Cauca
+- Pool FORTUMED: para la base de Fortuna
+- Funciones `get_caucamed_connection()` y `get_fortumed_connection()` como context managers
+- Lifecycle hooks para `startup` y `shutdown` del pool
+
+> [!IMPORTANT]
+> Las conexiones son **solo lectura**. No se ejecutarán INSERT/UPDATE/DELETE.
+
+---
+
+### 2. Backend - Consultas SQL
+
+#### [NEW] [queries.py](file:///c:/Users/alejandro.carvajal/Documents/reportes_ventas/ventasxhora/backend/queries.py)
+
+Tres consultas parametrizadas del archivo `CONSULTA VENTAS POR HORA.txt`:
+
+1. **`VENTAS_POR_HORA`** — La consulta principal con CTE `base_transaccional` (13 UNION ALL de tablas transaccionales). Parámetros: `desde`, `hasta` (fechas).
+2. **`SITIOS_VENTA`** — Información geográfica/organizacional (Zona, Subzona, Oficina, Ciudad, Sitio). Sin parámetros.
+3. **`PRODUCTOS`** — Catálogo de productos. Sin parámetros.
+
+Cada query se ejecutará en **ambas bases** (CAUCAMED y FORTUMED) y los resultados se combinan.
+
+---
+
+### 3. Backend - Parser de Excel
+
+#### [NEW] [excel_parser.py](file:///c:/Users/alejandro.carvajal/Documents/reportes_ventas/ventasxhora/backend/excel_parser.py)
+
+Parsea los dos tipos de Excel:
+
+**a) Excel de Metas** (ej: `Asig Metas Mes Act SA.xlsx`):
+- Estructura detectada:
+  - **Fila 1**: Fechas (columnas 12, 15, 18, ... cada 3 columnas) + día de la semana
+  - **Fila 2**: Nombre del producto (ej: "SUPER ASTRO", "TRANSACCIONES CNB") + % participación
+  - **Fila 3**: Headers: `Cod. Zona, Zona, Cod. Ciudad, Ciudad, Cod. Oficina, Oficina, Cod. Sitio, Sitio de venta, Estado, Fecha Creacion, Producto`
+  - **Filas 4+**: Datos por sitio de venta con columnas repetidas por fecha: `Meta, % Part, Venta`
+- Output normalizado: `[{cod_sitio, producto, fecha, meta, porcentaje_participacion, venta}]`
+
+**b) Excel de Distribución** (ej: `Dist. Promotores 2026.xlsx`):
+- Estructura: `Cod. Oficina, Oficina, Coordinador comercial, Promotor, Zona, Municipio, Impulsador, Embajadora, email`
+- Se lee directo con pandas
+
+---
+
+### 4. Backend - API Endpoints
+
+#### [NEW] [main.py](file:///c:/Users/alejandro.carvajal/Documents/reportes_ventas/ventasxhora/backend/main.py)
+
+| Endpoint | Método | Descripción |
+|---|---|---|
+| `/api/ventas` | GET | Ventas por hora. Params: `desde`, `hasta`. Combina CAUCAMED + FORTUMED |
+| `/api/sitios` | GET | Catálogo de sitios de venta (se cachea en memoria al inicio) |
+| `/api/productos` | GET | Catálogo de productos (se cachea en memoria al inicio) |
+| `/api/upload/metas` | POST | Subir Excel de metas. Retorna datos parseados |
+| `/api/upload/distribucion` | POST | Subir Excel de distribución de vendedores |
+| `/api/metas` | GET | Retorna las metas actualmente cargadas |
+| `/api/distribucion` | GET | Retorna la distribución actualmente cargada |
+| `/api/resumen` | GET | Endpoint optimizado: ventas + metas + distribución ya cruzados. Params: `desde`, `hasta`, `oficina?`, `zona?`, `producto?` |
+
+> [!TIP]
+> **Eficiencia**: Los catálogos (sitios, productos) se cachean en memoria al startup del servidor y se refrescan solo bajo demanda. Las ventas se consultan con rango de fechas acotado para evitar queries pesadas.
+
+---
+
+### 5. Frontend - Dashboard
+
+#### [NEW] [index.html](file:///c:/Users/alejandro.carvajal/Documents/reportes_ventas/ventasxhora/frontend/index.html)
+
+Dashboard SPA con las siguientes secciones:
+
+1. **Header** — Logo, título "Ventas por Hora", indicador de última actualización
+2. **Panel de Carga** — Dropzone para subir Excel de Metas y Distribución (drag & drop)
+3. **Barra de Filtros** — Selectores para:
+   - Rango de fechas (desde/hasta)
+   - Zona / Oficina / Sitio de venta (cascada)
+   - Producto
+   - Promotor / Vendedor
+4. **KPIs superiores** — Cards con: Venta total del día, Meta del día, % cumplimiento, variación vs. día anterior
+5. **Gráfico principal** — Barras/líneas de venta por hora del día seleccionado
+6. **Tabla detallada** — Grid con desglose por sitio/producto/hora con búsqueda rápida
+7. **Comparativo metas** — Barras horizontales de cumplimiento por oficina/vendedor
+
+#### [NEW] [styles.css](file:///c:/Users/alejandro.carvajal/Documents/reportes_ventas/ventasxhora/frontend/styles.css)
+
+- Dark theme premium con glassmorphism
+- Paleta de colores con gradientes (tonos azul/púrpura/teal)
+- Google Font: Inter
+- Micro-animaciones en hover de cards y botones
+- Layout responsive con CSS Grid
+
+#### [NEW] [app.js](file:///c:/Users/alejandro.carvajal/Documents/reportes_ventas/ventasxhora/frontend/app.js)
+
+- Fetch a los endpoints del backend
+- Chart.js para gráficos interactivos
+- Filtrado en cascada (seleccionar zona → filtra oficinas → filtra sitios)
+- Auto-refresh configurable
+- Manejo de estado local (metas cargadas, distribución cargada)
+
+---
+
+### 6. Entry Point
+
+#### [NEW] [run.py](file:///c:/Users/alejandro.carvajal/Documents/reportes_ventas/ventasxhora/run.py)
+
+Script simple que ejecuta uvicorn apuntando a `backend.main:app`.
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> **1. Mapeo de productos**: Cada Excel de metas es un producto diferente (SA = Super Astro, TRCNB = Transacciones CNB, CH = Chance, etc.). ¿El usuario sube **un solo Excel por producto** o necesita subir **varios a la vez** y el sistema los procesa todos? → **Propuesta**: Permitir subir múltiples archivos de metas a la vez, el sistema detecta el producto del nombre del archivo o de la fila 2 del Excel.
+
+> [!IMPORTANT]
+> **2. Bases de datos**: La consulta se ejecuta en ambas bases (CAUCAMED y FORTUMED). ¿Los datos se muestran separados (con opción de filtrar por base) o combinados como una sola vista? → **Propuesta**: Combinados por defecto, con un filtro "Fuente" para separar si se necesita.
+
+> [!IMPORTANT]
+> **3. Autenticación**: ¿El dashboard necesita login/contraseñas? Vi que la hoja "contraseñas" del Excel de Promotores tiene usuarios y contraseñas por zona. ¿Se usa eso para controlar acceso? → **Propuesta inicial**: Sin autenticación para empezar, se puede agregar después.
+
+> [!WARNING]
+> **4. Frecuencia de actualización**: ¿Cada cuánto se deben refrescar las ventas? ¿Hay un botón manual de "refrescar" o debe ser auto-refresh cada X minutos?
+
+---
+
+## Plan de Verificación
+
+### Tests Automáticos
+1. Validar conexión a ambas bases de datos desde el backend
+2. Ejecutar cada query SQL y verificar que retorna datos
+3. Parsear los Excel de ejemplo y verificar la estructura normalizada
+4. Probar cada endpoint con curl/httpie
+
+### Verificación Manual
+1. Abrir el dashboard en el navegador
+2. Subir Excels de ejemplo
+3. Verificar que los filtros funcionan en cascada
+4. Validar que los gráficos muestran datos coherentes con las ventas reales

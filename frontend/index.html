@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ventas por Hora - Dashboard Real-Time</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="styles.css?v=1.1">
+</head>
+<body>
+    <div class="glow-bg"></div>
+    
+    <div class="container">
+        <!-- HEADER -->
+        <header class="glass-panel main-header">
+            <div class="header-logo">
+                <i class="fa-solid fa-chart-line-up logo-icon"></i>
+                <div>
+                    <h1>DASHBOARD VENTAS POR HORA</h1>
+                    <p class="subtitle">Análisis Transaccional y Control de Metas Diarias</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <div class="db-status">
+                    <span class="status-indicator" id="status-indicator"></span>
+                    <span class="status-text" id="status-text">Cargando conexión DB...</span>
+                </div>
+                <div class="last-update">
+                    <i class="fa-solid fa-arrows-rotate refresh-icon" id="btn-refresh"></i>
+                    <div>
+                        <span class="label">ÚLTIMA ACTUALIZACIÓN</span>
+                        <span class="value" id="update-timestamp">Sin actualizar</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- TOP KPI CARDS -->
+        <section class="kpi-grid">
+            <div class="glass-panel kpi-card">
+                <div class="kpi-icon icon-sales"><i class="fa-solid fa-wallet"></i></div>
+                <div class="kpi-content">
+                    <span class="kpi-title">Venta Neta del Día</span>
+                    <h2 class="kpi-value" id="kpi-sales">$0</h2>
+                    <span class="kpi-trend trend-neutral" id="kpi-sales-sub">Cargando...</span>
+                </div>
+            </div>
+            <div class="glass-panel kpi-card">
+                <div class="kpi-icon icon-goal"><i class="fa-solid fa-bullseye-arrow"></i></div>
+                <div class="kpi-content">
+                    <span class="kpi-title">Meta Total Acumulada</span>
+                    <h2 class="kpi-value" id="kpi-goal">$0</h2>
+                    <span class="kpi-trend trend-neutral" id="kpi-goal-sub">Cargando...</span>
+                </div>
+            </div>
+            <div class="glass-panel kpi-card">
+                <div class="kpi-icon icon-compliance"><i class="fa-solid fa-percent"></i></div>
+                <div class="kpi-content">
+                    <span class="kpi-title">% Cumplimiento</span>
+                    <h2 class="kpi-value" id="kpi-compliance">0%</h2>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar-fill" id="kpi-compliance-bar" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="glass-panel kpi-card">
+                <div class="kpi-icon icon-sites"><i class="fa-solid fa-shop"></i></div>
+                <div class="kpi-content">
+                    <span class="kpi-title">Sitios de Venta</span>
+                    <h2 class="kpi-value" id="kpi-sites">0</h2>
+                    <span class="kpi-trend trend-neutral" id="kpi-sites-sub">Activos en el día</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- MAIN LAYOUT -->
+        <div class="dashboard-grid">
+            <!-- LEFT PANEL: UPLOADS & FILTERS -->
+            <aside class="sidebar-panel">
+                <!-- WHATSAPP PROMOTERS PANEL -->
+                <div class="glass-panel promoters-whatsapp-section">
+                    <h3 class="section-title"><i class="fa-brands fa-whatsapp"></i> Promotores WhatsApp</h3>
+                    <p class="section-desc">Gestiona los promotores autorizados para realizar consultas por WhatsApp.</p>
+                    <button class="action-btn-primary" id="btn-manage-promoters" style="width: 100%; margin-top: 10px;">
+                        <i class="fa-solid fa-users-gear"></i> Gestionar Promotores
+                    </button>
+                </div>
+
+                <!-- EXCEL UPLOADS -->
+                <div class="glass-panel upload-section">
+                    <h3 class="section-title"><i class="fa-solid fa-cloud-arrow-up"></i> Cargar Archivos Excel</h3>
+                    
+                    <!-- MANAGE METAS STRIP -->
+                    <div id="goals-management-link-container" style="display: none; justify-content: space-between; align-items: center; margin-bottom: 12px; padding: 8px 12px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 10px; animation: fadeIn 0.3s ease;">
+                        <span style="font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Control de Metas:</span>
+                        <div class="file-loaded-badge" id="badge-metas" style="position: static !important; display: inline-block;">
+                            <i class="fa-solid fa-gear"></i> Metas (Gestionar)
+                        </div>
+                    </div>
+
+                    <!-- UPLOAD METAS -->
+                    <div class="upload-box" id="drop-metas">
+                        <input type="file" id="file-metas" multiple accept=".xlsx" style="display: none;">
+                        <i class="fa-solid fa-file-excel upload-box-icon"></i>
+                        <div class="upload-box-text">
+                            <strong>Metas del Mes Act.</strong>
+                            <span>Arrastra varios excels (.xlsx) o haz clic</span>
+                        </div>
+                    </div>
+
+                    <!-- UPLOAD DISTRIBUTION -->
+                    <div class="upload-box" id="drop-distribucion">
+                        <input type="file" id="file-distribucion" accept=".xlsx" style="display: none;">
+                        <i class="fa-solid fa-users-gear upload-box-icon"></i>
+                        <div class="upload-box-text">
+                            <strong>Dist. Promotores 2026</strong>
+                            <span>Sube el excel de promotores</span>
+                        </div>
+                        <div class="file-loaded-badge" id="badge-distribucion"><i class="fa-solid fa-check"></i> Cargado</div>
+                    </div>
+
+                    <div class="clear-data-btn" id="btn-clear-data">
+                        <i class="fa-solid fa-trash-can"></i> Limpiar todos los datos cargados
+                    </div>
+                </div>
+
+                <!-- FILTERS -->
+                <div class="glass-panel filter-section">
+                    <h3 class="section-title"><i class="fa-solid fa-sliders"></i> Filtros de Datos</h3>
+                    
+                    <!-- DATE FILTER -->
+                    <div class="filter-group">
+                        <label for="filter-date"><i class="fa-solid fa-calendar-day"></i> Día a Analizar</label>
+                        <input type="date" id="filter-date" class="filter-select">
+                        <span class="filter-help">Selecciona cualquier día a consultar</span>
+                    </div>
+
+                    <!-- ZONE FILTER -->
+                    <div class="filter-group">
+                        <label for="filter-zone"><i class="fa-solid fa-map-location-dot"></i> Zona</label>
+                        <select id="filter-zone" class="filter-select">
+                            <option value="">Todas las Zonas</option>
+                        </select>
+                    </div>
+
+                    <!-- OFICINA FILTER -->
+                    <div class="filter-group">
+                        <label for="filter-office"><i class="fa-solid fa-building"></i> Oficina</label>
+                        <select id="filter-office" class="filter-select">
+                            <option value="">Todas las Oficinas</option>
+                        </select>
+                    </div>
+
+                    <!-- PROMOTOR FILTER -->
+                    <div class="filter-group">
+                        <label for="filter-seller"><i class="fa-solid fa-user-tie"></i> Promotor / Coordinador</label>
+                        <select id="filter-seller" class="filter-select">
+                            <option value="">Todos los Promotores</option>
+                        </select>
+                    </div>
+
+                    <!-- PRODUCT FILTER -->
+                    <div class="filter-group">
+                        <label for="filter-product"><i class="fa-solid fa-tags"></i> Producto</label>
+                        <select id="filter-product" class="filter-select">
+                            <option value="">Todos los Productos</option>
+                        </select>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- RIGHT PANEL: VISUALIZATIONS -->
+            <main class="main-content">
+                <!-- CHART HOURLY SALES -->
+                <div class="glass-panel chart-panel">
+                    <div class="chart-header">
+                        <h3 class="section-title"><i class="fa-solid fa-chart-line"></i> Comportamiento de Ventas por Hora</h3>
+                        <div class="chart-legend">
+                            <span class="legend-item"><span class="legend-color color-sales"></span> Venta Real</span>
+                            <span class="legend-item"><span class="legend-color color-goal"></span> Meta Estimada</span>
+                        </div>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="chart-hourly"></canvas>
+                    </div>
+                </div>
+
+                <!-- SECOND ROW: SECONDARY CHARTS -->
+                <div class="secondary-charts-grid">
+                    <!-- PRODUCT DONUT -->
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-chart-pie"></i> Participación por Producto</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="chart-product"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- COMPLIANCE BAR (TOP) -->
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title" style="color: var(--accent);"><i class="fa-solid fa-chart-simple"></i> Top Cumplimiento por Oficina</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="chart-compliance-ranking"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- COMPLIANCE BAR (BOTTOM) -->
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title" style="color: var(--danger);"><i class="fa-solid fa-triangle-exclamation"></i> Menor Cumplimiento por Oficina</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="chart-compliance-lagging"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- DETAILS TABULAR GRID -->
+        <section class="glass-panel table-panel">
+            <div class="table-header">
+                <h3 class="section-title">
+                    <i class="fa-solid fa-table-list"></i> 
+                    Detalle de Ventas y Metas por Sitio
+                    <span id="table-results-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.04);"></span>
+                </h3>
+                <div class="table-search">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input type="text" id="table-search-input" placeholder="Buscar oficina, sitio o código...">
+                </div>
+            </div>
+               <!-- CONTROLES DE FILTRO DE LA TABLA -->
+            <div class="table-filters-row">
+                <!-- Filtro Oficina (Nombre o Código) -->
+                <div class="table-filter-item">
+                    <label for="table-filter-office"><i class="fa-solid fa-building"></i> Oficina (Nombre o Código)</label>
+                    <div class="input-with-icon">
+                        <i class="fa-solid fa-magnifying-glass input-icon"></i>
+                        <input type="text" id="table-filter-office" placeholder="Escribe nombre o código...">
+                    </div>
+                </div>
+                
+                <!-- Filtro Promotor -->
+                <div class="table-filter-item">
+                    <label for="table-filter-promoter"><i class="fa-solid fa-user-tie"></i> Promotor</label>
+                    <select id="table-filter-promoter" class="filter-select-sm">
+                        <option value="">Todos los Promotores</option>
+                    </select>
+                </div>
+                
+                <!-- Filtro Producto (Multi-selección) -->
+                <div class="table-filter-item">
+                    <label><i class="fa-solid fa-tags"></i> Productos (Ver Varios)</label>
+                    <div class="custom-multiselect" id="table-filter-products-container">
+                        <button type="button" class="multiselect-trigger" id="products-multiselect-btn">
+                            <span class="trigger-text">Todos los Productos</span>
+                            <i class="fa-solid fa-chevron-down trigger-arrow"></i>
+                        </button>
+                        <div class="multiselect-dropdown" id="products-multiselect-dropdown">
+                            <div class="multiselect-actions">
+                                <button type="button" class="multiselect-action-btn" id="multiselect-select-all">Todos</button>
+                                <button type="button" class="multiselect-action-btn" id="multiselect-clear">Ninguno</button>
+                            </div>
+                            <div class="multiselect-options" id="products-multiselect-options">
+                                <!-- Checkboxes se cargan dinámicamente -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PANEL DE RESUMEN POR PROMOTOR SELECCIONADO (VISTA PREMIUM UX) -->
+            <div id="promoter-consolidated-panel" class="promoter-summary-panel">
+                <div class="promoter-panel-header">
+                    <div class="promoter-title-container">
+                        <i class="fa-solid fa-user-tie promoter-avatar-icon"></i>
+                        <div>
+                            <h4 id="promoter-panel-name">Nombre del Promotor</h4>
+                            <p class="promoter-panel-subtitle">Desempeño y ventas consolidadas por Oficina asignada</p>
+                        </div>
+                    </div>
+                    <div class="promoter-panel-metrics">
+                        <div class="metric-pill">
+                            <span class="pill-label">Venta Total</span>
+                            <span class="pill-value text-cyan" id="promoter-panel-sales">$0</span>
+                        </div>
+                        <div class="metric-pill">
+                            <span class="pill-label">Meta Total</span>
+                            <span class="pill-value text-indigo" id="promoter-panel-goal">$0</span>
+                        </div>
+                        <div class="metric-pill" id="promoter-panel-badge-container">
+                            <span class="pill-label">Cumplimiento</span>
+                            <span class="compliance-badge" id="promoter-panel-overall">0%</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- RESUMEN PRODUCTOS POR PROMOTOR -->
+                <div class="promoter-products-section" id="promoter-products-section" style="margin-top: 20px; margin-bottom: 24px;">
+                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #ffffff;"><i class="fa-solid fa-tags"></i> Resumen Productos</h5>
+                    <div class="promoter-offices-grid" id="promoter-products-grid">
+                        <!-- Tarjetas de producto se cargan dinámicamente -->
+                    </div>
+                </div>
+
+                <!-- RESUMEN OFICINAS POR PROMOTOR -->
+                <div class="promoter-offices-section" id="promoter-offices-section" style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 20px;">
+                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #ffffff;"><i class="fa-solid fa-building"></i> Resumen Oficinas</h5>
+                    <div class="promoter-offices-grid" id="promoter-offices-grid">
+                        <!-- Tarjetas de oficina se cargan dinámicamente -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- CONTROLES DE LA ESTRUCTURA EN ARBOL (EXPANDIR/COLAPSAR) -->
+            <div class="table-controls-row">
+                <span class="table-info-msg"><i class="fa-solid fa-circle-info"></i> Haz clic en una <strong>Oficina</strong> para expandir/colapsar sus sitios de venta.</span>
+                <div class="table-actions-buttons">
+                    <button type="button" class="btn-table-action" id="btn-expand-all">
+                        <i class="fa-solid fa-folder-open"></i> Expandir Todo
+                    </button>
+                    <button type="button" class="btn-table-action" id="btn-collapse-all">
+                        <i class="fa-solid fa-folder-closed"></i> Colapsar Todo
+                    </button>
+                </div>
+            </div>
+ 
+            <div class="table-responsive">
+                <table class="data-table" id="data-table">
+                    <thead id="table-thead">
+                        <!-- Cabecera de doble fila dinámica -->
+                    </thead>
+                    <tbody id="table-body">
+                        <tr>
+                            <td class="empty-table">Cargando datos...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- MODAL DE GESTIÓN DE PROMOTORES WHATSAPP -->
+    <div class="modal-overlay" id="modal-promoters" style="display: none;">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3><i class="fa-brands fa-whatsapp"></i> Autorizados WhatsApp</h3>
+                <button class="modal-close-btn" id="btn-close-promoters-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- FORMULARIO DE AGREGAR / EDITAR -->
+                <form class="promoter-form" id="form-promoter">
+                    <input type="hidden" id="promoter-edit-id" value="">
+                    <h4 id="promoter-form-title">Agregar Nuevo Promotor</h4>
+                    <div class="form-row-three">
+                        <div class="form-group">
+                            <label for="promoter-name">Nombre</label>
+                            <input type="text" id="promoter-name" required placeholder="Ej. Katherin Duran">
+                        </div>
+                        <div class="form-group">
+                            <label for="promoter-phone">Celular</label>
+                            <input type="text" id="promoter-phone" required placeholder="Ej. 310 8723207">
+                        </div>
+                        <div class="form-group">
+                            <label for="promoter-zone">Zona</label>
+                            <select id="promoter-zone" required>
+                                <option value="Centro">Centro</option>
+                                <option value="Norte">Norte</option>
+                                <option value="Sur">Sur</option>
+                                <option value="Oriente">Oriente</option>
+                                <option value="Occidente">Occidente</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button type="submit" class="action-btn-primary" id="btn-save-promoter">
+                            <i class="fa-solid fa-floppy-disk"></i> Guardar Promotor
+                        </button>
+                        <button type="button" class="action-btn-secondary" id="btn-cancel-edit" style="display: none;">
+                            Cancelar
+                        </button>
+                    </div>
+                </form>
+
+                <hr class="modal-divider">
+
+                <!-- LISTADO Y BÚSQUEDA -->
+                <div class="modal-list-header">
+                    <h4>Promotores Registrados</h4>
+                    <div class="search-box-container">
+                        <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                        <input type="text" id="search-promoters" placeholder="Buscar por nombre o celular..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                    </div>
+                </div>
+
+                <div class="promoters-table-container">
+                    <table class="modal-table">
+                        <thead>
+                            <tr>
+                                <th>Nombre</th>
+                                <th>Celular</th>
+                                <th>Zona</th>
+                                <th style="text-align: center;">Estado (WhatsApp)</th>
+                                <th style="text-align: center;">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="promoters-list-body">
+                            <!-- Filas de promotores se cargan dinámicamente -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- MODAL DE GESTIÓN DE METAS -->
+    <div class="modal-overlay" id="modal-goals" style="display: none;">
+        <div class="modal-container" style="max-width: 700px;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-bullseye"></i> Gestión de Metas por Producto</h3>
+                <button class="modal-close-btn" id="btn-close-goals-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="section-desc" style="margin-bottom: 20px; font-size: 13px; color: var(--text-muted);">
+                    Habilita, inhabilita o elimina permanentemente las metas de cada producto. Los productos inactivos no se tendrán en cuenta para calcular el % de cumplimiento ni aparecerán en los reportes.
+                </p>
+                <div class="promoters-table-container" style="max-height: 400px; overflow-y: auto;">
+                    <table class="modal-table">
+                        <thead>
+                            <tr>
+                                <th>Nombre Producto</th>
+                                <th style="text-align: center;">Estado</th>
+                                <th style="text-align: center;">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="goals-list-body">
+                            <!-- Filas de metas se cargan dinámicamente -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script loading -->
+    <script src="app.js?v=1.3"></script>
+</body>
+</html>

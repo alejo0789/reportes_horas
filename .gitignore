@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Databases and cache
+*.db
+*.sqlite
+
+# Environment variables (secrets)
+.env
+
+# Uploaded data files
+uploads/
+
+# Local Excel and zip files/folders
+*.xlsx
+*.zip
+CIAL2/
+META CIAL MAYO/
+
+# IDE / System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

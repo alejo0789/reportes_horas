@@ -1,0 +1,70 @@
+# Arquitectura de Integración WhatsApp y Consulta de Ventas
+
+Este documento detalla la estructura y el flujo de datos para permitir que los promotores consulten sus ventas en tiempo real directamente desde WhatsApp. El sistema identifica al promotor por su número de teléfono celular corporativo y calcula de manera consolidada sus ventas, metas y porcentaje de cumplimiento para el día en curso.
+
+---
+
+## 🗺️ Flujo de Consulta
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Promotor as Promotor (Celular)
+    participant WA as Bot WhatsApp (n8n / Twilio)
+    participant API as Backend FastAPI (8001)
+    participant DB as SQLite Cache (cache.db)
+    
+    Promotor->>WA: Envía mensaje (ej: "ventas")
+    WA->>API: GET /api/whatsapp/query?phone=3108723207
+    Note over API: Normaliza teléfono y busca<br/>en tabla 'whatsapp_promoters'
+    API->>DB: Query promotor activo
+    DB-->>API: Datos del promotor (Nombre, Zona, Celular)
+    
+    Note over API: Busca oficinas del promotor<br/>en 'distribution.json'
+    Note over API: Obtiene ventas del día (SQLite Cache / Oracle)
+    Note over API: Obtiene metas del día (goals.json)
+    Note over API: Cruza y consolida ventas vs metas
+    
+    API-->>WA: Devuelve respuesta formateada (JSON / Texto)
+    WA-->>Promotor: Envía mensaje de texto final
+```
+
+---
+
+## 🛠️ Reglas de Coincidencia (Match)
+
+1. **Normalización del Teléfono**:
+   El número entrante puede tener diferentes formatos (`+57 310...`, `57310...`, `310-...`). Para asegurar coincidencia exacta, el backend extrae **únicamente los dígitos numéricos** y realiza la comparación usando los últimos 10 dígitos (el formato celular en Colombia).
+   
+2. **Cruce con la Distribución Comercial**:
+   Al encontrar el registro activo del promotor en la base de datos de SQLite, se toma su nombre exacto (ej. `"Katherin Duran"`) y se buscan todas sus oficinas asignadas en la distribución cargada en `uploads/distribution.json` (`cod_oficina`).
+
+3. **Carga y Agregación de Ventas**:
+   Se consultan las ventas del día mediante la lógica de caché existente (si está vencida o no existe, se hace consulta en caliente a Oracle y se actualiza la caché local). El backend mapea el `Cod_Sitio` de cada venta a su oficina correspondiente usando el catálogo local.
+
+4. **Carga y Agregación de Metas**:
+   Se leen las metas del día de hoy registradas en `uploads/goals.json` para las oficinas asignadas a dicho promotor.
+
+---
+
+## 🚀 Implementación del Endpoint en FastAPI
+
+Se ha creado el endpoint `/api/whatsapp/query` que realiza de manera autónoma todo este proceso y devuelve una respuesta estructurada lista para enviar.
+
+### Ejemplo de Respuesta Formateada:
+```text
+📊 *CUMPLIMIENTO DIARIO*
+👤 *Promotor:* Carlos Manuel Concha Ruiz
+📅 *Fecha:* 2026-06-04
+📍 *Zona:* Centro
+──────────────────
+💰 *Ventas:* $1,250,000
+🎯 *Meta:* $1,300,000
+📈 *Cumplimiento:* 🟢 *96.2%*
+──────────────────
+🏢 *Detalle por Oficina:*
+• *OFICINA CENTRO:* 🟢 98.1% ($800,000)
+• *OFICINA SUR:* 🔴 92.4% ($450,000)
+──────────────────
+💪 ¡Vamos por la meta! 🚀
+```
