@@ -3,7 +3,7 @@ import json
 import logging
 from datetime import datetime, date, timedelta
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -769,6 +769,119 @@ def clear_data():
         logger.error(f"Failed to clear SQLite cache: {e}")
         
     return {"status": "success", "message": "All uploaded data and local cache cleared. "}
+
+
+# ==========================================
+# WHATSAPP CLOUD API WEBHOOKS
+# ==========================================
+
+@app.get("/api/whatsapp/webhook")
+def verify_whatsapp_webhook(
+    mode: str = Query(None, alias="hub.mode"),
+    challenge: str = Query(None, alias="hub.challenge"),
+    token: str = Query(None, alias="hub.verify_token")
+):
+    """
+    Endpoint for Meta WhatsApp Cloud API Webhook Verification.
+    """
+    verify_token = os.getenv("WHATSAPP_VERIFY_TOKEN", "la_fortuna_token_2026")
+    if mode == "subscribe" and token == verify_token:
+        logger.info("Webhook verified successfully by Meta.")
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(content=challenge, status_code=200)
+    logger.warning(f"Webhook verification failed. Token mismatch: expected '{verify_token}', got '{token}'")
+    raise HTTPException(status_code=403, detail="Verification token mismatch")
+
+
+@app.post("/api/whatsapp/webhook")
+async def receive_whatsapp_webhook(request: Request):
+    """
+    Receives incoming WhatsApp messages from Meta, queries the sales cache,
+    and replies back using Meta's Cloud API.
+    """
+    try:
+        body = await request.json()
+    except Exception as e:
+        logger.error(f"Error parsing Webhook JSON body: {e}")
+        return {"status": "error", "message": "Invalid JSON"}
+        
+    logger.info(f"Received WhatsApp webhook notification: {json.dumps(body)}")
+    
+    # 1. Parse incoming message structures
+    entry = body.get("entry", [])
+    if not entry:
+        return {"status": "ignored", "reason": "No entry field"}
+        
+    changes = entry[0].get("changes", [])
+    if not changes:
+        return {"status": "ignored", "reason": "No changes field"}
+        
+    value = changes[0].get("value", {})
+    messages = value.get("messages", [])
+    if not messages:
+        # Ignore notifications like sent/delivered/read
+        return {"status": "ignored", "reason": "No messages array (likely status update)"}
+        
+    message = messages[0]
+    sender_phone = message.get("from") # E.g., "573108723207"
+    if not sender_phone:
+        return {"status": "error", "message": "No sender phone found"}
+        
+    # 2. Query promoter data and format response
+    # We call our existing logic get_whatsapp_query directly in Python
+    query_result = get_whatsapp_query(sender_phone)
+    reply_text = query_result.get("text", "❌ Error al procesar consulta.")
+    
+    # 3. Reply to sender via Meta's Graph API
+    whatsapp_token = os.getenv("WHATSAPP_TOKEN")
+    # Retrieve the phone number ID of the bot receiving the message
+    phone_number_id = value.get("metadata", {}).get("phone_number_id")
+    
+    if not whatsapp_token:
+        logger.error("WHATSAPP_TOKEN not configured in .env!")
+        return {"status": "error", "message": "WHATSAPP_TOKEN not configured"}
+        
+    if not phone_number_id:
+        logger.error("phone_number_id not found in webhook metadata!")
+        return {"status": "error", "message": "phone_number_id not found"}
+        
+    import urllib.request
+    import urllib.error
+    
+    url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": sender_phone,
+        "type": "text",
+        "text": {
+            "body": reply_text
+        }
+    }
+    
+    req_data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=req_data,
+        headers={
+            "Authorization": f"Bearer {whatsapp_token}",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            res_body = response.read().decode("utf-8")
+            logger.info(f"WhatsApp reply sent successfully to {sender_phone}: {res_body}")
+            return {"status": "success", "message": "Reply sent"}
+    except urllib.error.HTTPError as he:
+        err_msg = he.read().decode("utf-8")
+        logger.error(f"HTTPError sending message to WhatsApp API: {he.code} - {err_msg}")
+        return {"status": "error", "code": he.code, "message": err_msg}
+    except Exception as e:
+        logger.error(f"Unexpected error sending message to WhatsApp API: {e}")
+        return {"status": "error", "message": str(e)}
 
 
 # Serve Frontend Static files
