@@ -603,10 +603,7 @@ def get_whatsapp_query(
             p_next_hour_goal = p_goal * next_hour_ratio
             
             msg += f"• *{p_name}:* {p_emoji} *{p_compliance:.1f}%*\n"
-            msg += f"  - Venta Acum. (hasta {ref_hour_str}): ${round(p_sales_acum):,}\n"
-            msg += f"  - Meta Hora Sig. ({next_hour_str}): ${round(p_next_hour_goal):,}\n"
-            msg += f"  - Meta del Día: ${round(p_goal):,}\n"
-            
+            msg += f"  Acum: ${round(p_sales_acum):,} / Sig: ${round(p_next_hour_goal):,} / Meta: ${round(p_goal):,}\n"
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
@@ -1009,8 +1006,43 @@ async def receive_whatsapp_webhook(request: Request):
     
     url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
     
-    # Determine the buttons to send if promoter is registered
+    # 1. Send the main report as a standard text message (limit 4096 characters, no error 400)
+    payload_text = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": sender_phone,
+        "type": "text",
+        "text": {
+            "body": reply_text
+        }
+    }
+    
+    req_data_text = json.dumps(payload_text).encode("utf-8")
+    req_text = urllib.request.Request(
+        url,
+        data=req_data_text,
+        headers={
+            "Authorization": f"Bearer {whatsapp_token}",
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+    
+    try:
+        with urllib.request.urlopen(req_text) as response:
+            res_body = response.read().decode("utf-8")
+            logger.info(f"WhatsApp text report sent successfully to {sender_phone}: {res_body}")
+    except urllib.error.HTTPError as he:
+        err_msg = he.read().decode("utf-8")
+        logger.error(f"HTTPError sending text report to WhatsApp API: {he.code} - {err_msg}")
+        return {"status": "error", "code": he.code, "message": err_msg}
+    except Exception as e:
+        logger.error(f"Unexpected error sending text report to WhatsApp API: {e}")
+        return {"status": "error", "message": str(e)}
+
+    # 2. Send the interactive menu buttons as a separate short message (limit 1024 characters, completely safe)
     buttons = []
+    button_prompt = ""
     if "promoter" in query_result:
         if query_result.get("report_type") == "products":
             buttons.append({
@@ -1020,6 +1052,7 @@ async def receive_whatsapp_webhook(request: Request):
                     "title": "Ver Reporte Oficinas"
                 }
             })
+            button_prompt = "📊 Haz clic abajo para ver el detalle de cumplimiento por oficina:"
         elif query_result.get("report_type") == "offices":
             buttons.append({
                 "type": "reply",
@@ -1028,9 +1061,10 @@ async def receive_whatsapp_webhook(request: Request):
                     "title": "Ver Reporte Productos"
                 }
             })
+            button_prompt = "📦 Haz clic abajo para volver al reporte de cumplimiento por producto:"
             
     if buttons:
-        payload = {
+        payload_buttons = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
             "to": sender_phone,
@@ -1038,47 +1072,36 @@ async def receive_whatsapp_webhook(request: Request):
             "interactive": {
                 "type": "button",
                 "body": {
-                    "text": reply_text
+                    "text": button_prompt
                 },
                 "action": {
                     "buttons": buttons
                 }
             }
         }
-    else:
-        payload = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": sender_phone,
-            "type": "text",
-            "text": {
-                "body": reply_text
-            }
-        }
         
-    req_data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=req_data,
-        headers={
-            "Authorization": f"Bearer {whatsapp_token}",
-            "Content-Type": "application/json"
-        },
-        method="POST"
-    )
-    
-    try:
-        with urllib.request.urlopen(req) as response:
-            res_body = response.read().decode("utf-8")
-            logger.info(f"WhatsApp reply sent successfully to {sender_phone}: {res_body}")
-            return {"status": "success", "message": "Reply sent"}
-    except urllib.error.HTTPError as he:
-        err_msg = he.read().decode("utf-8")
-        logger.error(f"HTTPError sending message to WhatsApp API: {he.code} - {err_msg}")
-        return {"status": "error", "code": he.code, "message": err_msg}
-    except Exception as e:
-        logger.error(f"Unexpected error sending message to WhatsApp API: {e}")
-        return {"status": "error", "message": str(e)}
+        req_data_buttons = json.dumps(payload_buttons).encode("utf-8")
+        req_buttons = urllib.request.Request(
+            url,
+            data=req_data_buttons,
+            headers={
+                "Authorization": f"Bearer {whatsapp_token}",
+                "Content-Type": "application/json"
+            },
+            method="POST"
+        )
+        
+        try:
+            with urllib.request.urlopen(req_buttons) as response:
+                res_body = response.read().decode("utf-8")
+                logger.info(f"WhatsApp interactive buttons sent successfully to {sender_phone}: {res_body}")
+        except urllib.error.HTTPError as he:
+            err_msg = he.read().decode("utf-8")
+            logger.error(f"HTTPError sending interactive buttons to WhatsApp API: {he.code} - {err_msg}")
+        except Exception as e:
+            logger.error(f"Unexpected error sending interactive buttons to WhatsApp API: {e}")
+
+    return {"status": "success", "message": "Reply and menus processed"}
 
 
 # Serve Frontend Static files
