@@ -607,8 +607,10 @@ def get_whatsapp_query(
             p_emoji = "🟢" if p_compliance >= 95 else "🔴"
             p_next_hour_goal = p_goal * next_hour_ratio
             
-            msg += f"• *{p_name}:* {p_emoji} *{p_compliance:.1f}%*\n"
-            msg += f"  Acum: ${round(p_sales_acum):,} / Sig: ${round(p_next_hour_goal):,} / Meta: ${round(p_goal):,}\n"
+            msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+            msg += f"  ↳ Acumulado: ${round(p_sales_acum):,}\n"
+            msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
+            msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n\n"
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
