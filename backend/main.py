@@ -288,13 +288,26 @@ def get_ventas(
             "warning": "Error de conexión con Oracle. Mostrando datos locales de caché anterior."
         }
 
-    # Raise exception if database failed and no cache is available
+    # Fallback to mock data if database failed and no cache is available
     if not results:
-        logger.error(f"Failed to query Oracle databases. Errors: {errors}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Error de conexión con Oracle: No se pudo establecer conexión con las bases de datos (CAUCAMED/FORTUMED). Verifica tu VPN e inténtalo de nuevo."
-        )
+        logger.warning(f"Database query failed and no SQLite Cache is available. Falling back to Mock Sales generation.")
+        try:
+            results = generate_mock_sales(desde, hasta)
+            set_cached_sales(cache_key, results)
+            now_str = datetime.now().isoformat()
+            return {
+                "source": "MOCK_FALLBACK",
+                "last_updated": now_str,
+                "data": results,
+                "warning": "Conexión a Oracle no disponible. Mostrando datos simulados (Mock) para pruebas."
+            }
+        except Exception as mock_err:
+            logger.error(f"Failed to generate mock sales: {mock_err}")
+            logger.error(f"Failed to query Oracle databases. Errors: {errors}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Error de conexión con Oracle: No se pudo establecer conexión con las bases de datos (CAUCAMED/FORTUMED). Verifica tu VPN e inténtalo de nuevo."
+            )
 
     # 4. Save successful results to cache
     set_cached_sales(cache_key, results)
@@ -890,3 +903,5 @@ if os.path.exists(frontend_dir):
     app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 else:
     logger.warning("Frontend directory not found. API only mode active.")
+
+# Trigger reload comment
