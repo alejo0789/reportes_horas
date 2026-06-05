@@ -448,6 +448,14 @@ def get_whatsapp_query(phone: str = Query(..., description="Número de celular d
     total_sales = 0.0
     
     for sale in sales_list:
+        # Exclude non-sales and payout flows (same as frontend app.js)
+        src_table = sale.get("Tabla_Origen")
+        if src_table in {
+            'SIGT_SG_GIROS_PAGADOS', 'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO',
+            'SIGT_RECAUDOS_MAESTRO', 'SIGT_SG_GIROS_CREADOS', 'SIGT_LOTERIAS_LINEA'
+        }:
+            continue
+
         s_code = sale.get("Cod_Sitio")
         if s_code is not None:
             try:
@@ -904,4 +912,4 @@ if os.path.exists(frontend_dir):
 else:
     logger.warning("Frontend directory not found. API only mode active.")
 
-# Trigger reload comment
+# Trigger reload comment 2
