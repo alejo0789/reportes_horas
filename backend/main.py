@@ -383,11 +383,49 @@ def delete_whatsapp_promoter(pid: int):
         raise HTTPException(status_code=404, detail="Promotor no encontrado.")
     return {"status": "success", "message": "Promotor eliminado."}
 
+TABLA_TO_PRODUCT_NAME = {
+    'SIGT_CHANCES':              'CHANCE',
+    'SIGT_CHANCES_RASPA':        'RASPITA',
+    'SIGT_DOBLE_GANA':           'DOBLE CHANCE',
+    'SIGT_SUPER_ASTRO':          'SUPER ASTRO',
+    'SIGT_BALOTO':               'BALOTO',
+    'SIGT_RECARGAS':             'RECARGA EN LINEA',
+    'SIGT_SG_GIROS_CREADOS':     'GIROS',
+    'SIGT_LOTERIAS_LINEA':       'LOTERIA EN LINEA',
+    'SIGT_RECAUDOS_EMPRESAS':    'RECAUDOS EMPRESARIALES',
+    'SIGT_VENTA_INCENTIVO_COBRO':'TRANSACCIONES CNB',
+}
+
+COD_TO_PRODUCT_NAME = {
+    5: 'SUPER ASTRO',
+    22005: 'TRANSACCIONES CNB',
+    22069: 'RASPITA',
+}
+
+def resolve_product_name(sale):
+    src_table = sale.get("Tabla_Origen")
+    if src_table and src_table in TABLA_TO_PRODUCT_NAME:
+        return TABLA_TO_PRODUCT_NAME[src_table]
+    
+    cod_prod = sale.get("Cod_Producto")
+    if cod_prod is not None:
+        try:
+            cod_prod_int = int(cod_prod)
+            if cod_prod_int in COD_TO_PRODUCT_NAME:
+                return COD_TO_PRODUCT_NAME[cod_prod_int]
+        except:
+            pass
+            
+    return "OTROS"
+
 @app.get("/api/whatsapp/query")
-def get_whatsapp_query(phone: str = Query(..., description="Número de celular del promotor")):
+def get_whatsapp_query(
+    phone: str = Query(..., description="Número de celular del promotor"),
+    report_type: str = Query("products", description="Tipo de reporte: 'products' o 'offices'")
+):
     """
     Identifica al promotor por su número de teléfono y retorna su resumen
-    de ventas y cumplimiento consolidado para el día de hoy.
+    de ventas y cumplimiento consolidado por producto o por oficina.
     """
     # 1. Buscar promotor por celular
     promoter = find_active_promoter_by_phone(phone)
@@ -442,10 +480,37 @@ def get_whatsapp_query(phone: str = Query(..., description="Número de celular d
         return {
             "text": f"⚠️ Hola {promoter_name}. No se pudieron consultar las ventas en este momento. Inténtalo de nuevo más tarde."
         }
-        
-    # 5. Agregar ventas por oficina
+
+    # Colombia local time is UTC-5
+    from datetime import timezone, timedelta
+    colombia_tz = timezone(timedelta(hours=-5))
+    now_colombia = datetime.now(colombia_tz)
+    ref_hour = now_colombia.hour
+    ref_hour = max(7, min(21, ref_hour))
+    ref_hour_str = f"{ref_hour:02d}:00"
+    next_hour = ref_hour + 1 if ref_hour < 21 else 21
+    next_hour_str = f"{next_hour:02d}:00"
+    
+    # Calculate weights (same as frontend app.js)
+    target_weights = [0.0] * 24
+    total_weight = 0.0
+    for h in range(7, 22):
+        w = 1.0
+        if h in (12, 13, 18, 19):
+            w = 1.6
+        elif h in (7, 21):
+            w = 0.5
+        target_weights[h] = w
+        total_weight += w
+
+    next_hour_ratio = (target_weights[next_hour] / total_weight) if total_weight > 0 else 0.0
+
+    # 5. Agregar ventas por producto, por oficina, y acumuladas
+    sales_by_product = {} # {prod_name: total_venta}
+    sales_acum_by_product = {} # {prod_name: venta_acum_hasta_ref_hour}
     sales_by_office = {} # {cod_oficina: total_venta}
     total_sales = 0.0
+    total_sales_acum = 0.0
     
     for sale in sales_list:
         # Exclude non-sales and payout flows (same as frontend app.js)
@@ -463,13 +528,30 @@ def get_whatsapp_query(phone: str = Query(..., description="Número de celular d
                 off_code = site_to_office.get(s_code_int)
                 if off_code in assigned_offices:
                     v_neta = float(sale.get("Venta_Neta") or 0.0)
+                    
+                    prod_name = resolve_product_name(sale)
+                    
+                    hour_str = sale.get("Hora")
+                    sale_hour = 0
+                    if hour_str:
+                        try:
+                            sale_hour = int(hour_str.split(":")[0])
+                        except:
+                            pass
+                            
                     total_sales += v_neta
                     sales_by_office[off_code] = sales_by_office.get(off_code, 0.0) + v_neta
+                    sales_by_product[prod_name] = sales_by_product.get(prod_name, 0.0) + v_neta
+                    
+                    if sale_hour <= ref_hour:
+                        total_sales_acum += v_neta
+                        sales_acum_by_product[prod_name] = sales_acum_by_product.get(prod_name, 0.0) + v_neta
             except:
                 pass
                 
-    # 6. Agregar metas por oficina para hoy
+    # 6. Agregar metas por oficina y por producto para hoy
     goals_by_office = {} # {cod_oficina: total_meta}
+    goals_by_product = {} # {prod_name: total_meta}
     total_goals = 0.0
     
     for prod_name, records in goals_store.items():
@@ -485,40 +567,76 @@ def get_whatsapp_query(phone: str = Query(..., description="Número de celular d
                             meta_val = float(rec.get("meta") or 0.0)
                             total_goals += meta_val
                             goals_by_office[off_code_int] = goals_by_office.get(off_code_int, 0.0) + meta_val
+                            goals_by_product[prod_name] = goals_by_product.get(prod_name, 0.0) + meta_val
                     except:
                         pass
-                    
+
     # 7. Calcular porcentaje de cumplimiento consolidado
     compliance = (total_sales / total_goals * 100.0) if total_goals > 0 else 0.0
     emoji_overall = "🟢" if compliance >= 95 else "🔴"
     
-    # 8. Construir respuesta de texto en español
-    msg = f"📊 *CUMPLIMIENTO DIARIO*\n"
-    msg += f"👤 *Promotor:* {promoter_name}\n"
-    msg += f"📅 *Fecha:* {today_str}\n"
-    msg += f"📍 *Zona:* {promoter['zone']}\n"
-    msg += f"──────────────────\n"
-    msg += f"💰 *Ventas:* ${round(total_sales):,}\n"
-    msg += f"🎯 *Meta:* ${round(total_goals):,}\n"
-    msg += f"📈 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
-    msg += f"──────────────────\n"
-    msg += f"🏢 *Detalle por Oficina:*\n"
-    
-    # Sort offices alphabetically for deterministic rendering
-    sorted_office_codes = sorted(list(assigned_offices))
-    for off_code in sorted_office_codes:
-        off_name = office_names.get(off_code, f"Oficina {off_code}")
-        off_sales = sales_by_office.get(off_code, 0.0)
-        off_goal = goals_by_office.get(off_code, 0.0)
-        off_comp = (off_sales / off_goal * 100.0) if off_goal > 0 else 0.0
-        emoji_off = "🟢" if off_comp >= 95 else "🔴"
-        msg += f"• *{off_name}:* {emoji_off} {off_comp:.1f}% (Vta: ${round(off_sales):,} / Meta: ${round(off_goal):,})\n"
+    if report_type == "products":
+        # Sum of next hour goals for all assigned products
+        total_next_hour_goal = 0.0
+        for p_name, goal_val in goals_by_product.items():
+            total_next_hour_goal += goal_val * next_hour_ratio
+
+        msg = f"📊 *CUMPLIMIENTO DIARIO POR PRODUCTO*\n"
+        msg += f"👤 *Promotor:* {promoter_name}\n"
+        msg += f"📅 *Fecha:* {today_str}\n"
+        msg += f"📍 *Zona:* {promoter['zone']}\n"
+        msg += f"──────────────────\n"
+        msg += f"💰 *Venta Acum. (hasta {ref_hour_str}):* ${round(total_sales_acum):,}\n"
+        msg += f"🎯 *Meta Hora Sig. ({next_hour_str}):* ${round(total_next_hour_goal):,}\n"
+        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
+        msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"──────────────────\n"
+        msg += f"📦 *Detalle por Producto:*\n"
         
-    msg += f"──────────────────\n"
-    msg += f"💪 ¡Vamos por la meta! 🚀"
-    
+        all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
+        for p_name in all_products:
+            p_sales_acum = sales_acum_by_product.get(p_name, 0.0)
+            p_goal = goals_by_product.get(p_name, 0.0)
+            p_sales_total = sales_by_product.get(p_name, 0.0)
+            p_compliance = (p_sales_total / p_goal * 100.0) if p_goal > 0 else 0.0
+            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+            p_next_hour_goal = p_goal * next_hour_ratio
+            
+            msg += f"• *{p_name}:* {p_emoji} *{p_compliance:.1f}%*\n"
+            msg += f"  - Venta Acum. (hasta {ref_hour_str}): ${round(p_sales_acum):,}\n"
+            msg += f"  - Meta Hora Sig. ({next_hour_str}): ${round(p_next_hour_goal):,}\n"
+            msg += f"  - Meta del Día: ${round(p_goal):,}\n"
+            
+        msg += f"──────────────────\n"
+        msg += f"💪 ¡Vamos por la meta! 🚀"
+        
+    else: # report_type == "offices"
+        msg = f"📊 *CUMPLIMIENTO DIARIO POR OFICINA*\n"
+        msg += f"👤 *Promotor:* {promoter_name}\n"
+        msg += f"📅 *Fecha:* {today_str}\n"
+        msg += f"📍 *Zona:* {promoter['zone']}\n"
+        msg += f"──────────────────\n"
+        msg += f"💰 *Ventas:* ${round(total_sales):,}\n"
+        msg += f"🎯 *Meta:* ${round(total_goals):,}\n"
+        msg += f"📈 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"──────────────────\n"
+        msg += f"🏢 *Detalle por Oficina:*\n"
+        
+        sorted_office_codes = sorted(list(assigned_offices))
+        for off_code in sorted_office_codes:
+            off_name = office_names.get(off_code, f"Oficina {off_code}")
+            off_sales = sales_by_office.get(off_code, 0.0)
+            off_goal = goals_by_office.get(off_code, 0.0)
+            off_comp = (off_sales / off_goal * 100.0) if off_goal > 0 else 0.0
+            emoji_off = "🟢" if off_comp >= 95 else "🔴"
+            msg += f"• *{off_name}:* {emoji_off} {off_comp:.1f}% (Vta: ${round(off_sales):,} / Meta: ${round(off_goal):,})\n"
+            
+        msg += f"──────────────────\n"
+        msg += f"💪 ¡Vamos por la meta! 🚀"
+        
     return {
         "text": msg,
+        "report_type": report_type,
         "promoter": promoter_name,
         "sales": total_sales,
         "goal": total_goals,
@@ -848,9 +966,29 @@ async def receive_whatsapp_webhook(request: Request):
     if not sender_phone:
         return {"status": "error", "message": "No sender phone found"}
         
+    # Check if the incoming message is an interactive button click or text query
+    report_type = "products"
+    message_type = message.get("type")
+    
+    if message_type == "interactive":
+        interactive = message.get("interactive", {})
+        button_reply = interactive.get("button_reply", {})
+        button_id = button_reply.get("id")
+        if button_id == "view_office_report":
+            report_type = "offices"
+        elif button_id == "view_product_report":
+            report_type = "products"
+    else:
+        # Check text body for keywords
+        text_obj = message.get("text", {})
+        user_msg_text = text_obj.get("body", "").strip().lower()
+        if "oficina" in user_msg_text:
+            report_type = "offices"
+        elif "producto" in user_msg_text:
+            report_type = "products"
+            
     # 2. Query promoter data and format response
-    # We call our existing logic get_whatsapp_query directly in Python
-    query_result = get_whatsapp_query(sender_phone)
+    query_result = get_whatsapp_query(sender_phone, report_type=report_type)
     reply_text = query_result.get("text", "❌ Error al procesar consulta.")
     
     # 3. Reply to sender via Meta's Graph API
@@ -870,16 +1008,54 @@ async def receive_whatsapp_webhook(request: Request):
     import urllib.error
     
     url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
-    payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": sender_phone,
-        "type": "text",
-        "text": {
-            "body": reply_text
-        }
-    }
     
+    # Determine the buttons to send if promoter is registered
+    buttons = []
+    if "promoter" in query_result:
+        if query_result.get("report_type") == "products":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_office_report",
+                    "title": "Ver Reporte Oficinas"
+                }
+            })
+        elif query_result.get("report_type") == "offices":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_product_report",
+                    "title": "Ver Reporte Productos"
+                }
+            })
+            
+    if buttons:
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_phone,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {
+                    "text": reply_text
+                },
+                "action": {
+                    "buttons": buttons
+                }
+            }
+        }
+    else:
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": sender_phone,
+            "type": "text",
+            "text": {
+                "body": reply_text
+            }
+        }
+        
     req_data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
