@@ -322,14 +322,19 @@ def get_ventas(
 
 @app.api_route("/api/ventas/refresh", methods=["GET", "POST"])
 def force_refresh_ventas(
-    desde: str = Query(..., description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
-    hasta: str = Query(..., description="Fecha fin YYYY-MM-DD HH:MM:SS")
+    desde: Optional[str] = Query(None, description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
+    hasta: Optional[str] = Query(None, description="Fecha fin YYYY-MM-DD HH:MM:SS")
 ):
     """
     Endpoint for external schedulers (like n8n) to force update the SQLite cache.
     """
+    if not desde or not hasta:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        desde = desde or f"{today_str} 00:00:00"
+        hasta = hasta or f"{today_str} 23:59:59"
     logger.info(f"Forced refresh request received via API for range: {desde} to {hasta}")
     return get_ventas(desde=desde, hasta=hasta, force_refresh=True)
+
 
 # Pydantic models for WhatsApp Promoters
 class PromoterSchema(BaseModel):
