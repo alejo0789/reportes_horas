@@ -1934,12 +1934,18 @@ function formatCurrency(val) {
 }
 
 function formatProductValue(val, prodName) {
+    if (val === undefined || val === null || isNaN(val)) return '0';
     const isCountBased = ["RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"].includes(prodName);
     if (isCountBased) {
-        return Math.round(val).toLocaleString('es-CO');
+        if (Number.isInteger(val) || val === 0) {
+            return Math.round(val).toLocaleString('es-CO');
+        }
+        // Round to 2 decimal places for non-integers to show the exact decimal goal
+        return val.toFixed(2).replace(/\.?0+$/, '');
     }
     return '$' + Math.round(val).toLocaleString('es-CO');
 }
+
 
 function logger(msg) {
     console.log(`[Dashboard] ${msg}`);
