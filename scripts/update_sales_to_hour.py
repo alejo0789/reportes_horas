@@ -1,7 +1,7 @@
 import sys
 import os
 import argparse
-from datetime import datetime
+from datetime import datetime, date
 
 # Adjust path to import backend modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -9,6 +9,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.db import db_manager
 from backend.queries import VENTAS_POR_HORA_QUERY
 from backend.cache import set_cached_sales
+
+def row_to_dict(columns, row):
+    row_dict = {}
+    for col_name, val in zip(columns, row):
+        if isinstance(val, (datetime, date)):
+            row_dict[col_name] = val.isoformat()
+        else:
+            row_dict[col_name] = val
+    return row_dict
 
 def main():
     parser = argparse.ArgumentParser(description="Actualiza la caché de ventas para una fecha y hasta una hora específica.")
@@ -44,7 +53,7 @@ def main():
                     rows = cursor.fetchall()
                     count = 0
                     for row in rows:
-                        row_dict = dict(zip(columns, row))
+                        row_dict = row_to_dict(columns, row)
                         row_dict["Fuente"] = "CAUCA"
                         results.append(row_dict)
                         count += 1
@@ -65,7 +74,7 @@ def main():
                     rows = cursor.fetchall()
                     count = 0
                     for row in rows:
-                        row_dict = dict(zip(columns, row))
+                        row_dict = row_to_dict(columns, row)
                         row_dict["Fuente"] = "FORTUNA"
                         results.append(row_dict)
                         count += 1
