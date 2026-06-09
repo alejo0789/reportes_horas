@@ -42,7 +42,9 @@ const ProductNormalizer = {
         { key: "CHANCE MILLONARIO", patterns: ["CHANCE MILLONARIO", "CHML"] },
         { key: "COLOR LOTO", patterns: ["COLOR LOTO", "CLOT"] },
         { key: "MILOTO", patterns: ["MILOTO", "MLT"] },
-        { key: "BALOTO", patterns: ["BALOTO", "BLT", "BLL"] }
+        { key: "BALOTO", patterns: ["BALOTO", "BLT", "BLL"] },
+        { key: "LOTERIA EN LINEA", patterns: ["LOTERIA EN LINEA", "LOT", "LOTE", "RYL"] },
+        { key: "GIROS", patterns: ["GIROS", "GIRO", "ENVIO GIRO"] }
     ],
 
     // Helper to check if a product name matches a special product category
@@ -784,9 +786,7 @@ function getFilteredCombinedData() {
                           s.Tabla_Origen === 'SIGT_PAGOS' || 
                           s.Tabla_Origen === 'SIGT_PAGOGEN_MAESTRO';
                           
-        const isNonSalesFlow = s.Tabla_Origen === 'SIGT_RECAUDOS_MAESTRO' || 
-                               s.Tabla_Origen === 'SIGT_SG_GIROS_CREADOS' || 
-                               s.Tabla_Origen === 'SIGT_LOTERIAS_LINEA';
+        const isNonSalesFlow = s.Tabla_Origen === 'SIGT_RECAUDOS_MAESTRO';
                           
         return isSameDate && !isPayout && !isNonSalesFlow;
     });
@@ -890,7 +890,18 @@ function getFilteredCombinedData() {
                 normProd = ProductNormalizer.normalize(prodType || prodName);
             }
         } else {
-            if (s.Tabla_Origen && tablaToProductName[s.Tabla_Origen]) {
+            const codeMap = {
+                22059: "BALOTO",
+                22070: "MILOTO",
+                22075: "COLOR LOTO",
+                22069: "RASPITA",
+                5: "SUPER ASTRO",
+                22005: "TRANSACCIONES CNB"
+            };
+            const sCode = parseInt(s.Cod_Producto);
+            if (sCode && codeMap[sCode]) {
+                normProd = codeMap[sCode];
+            } else if (s.Tabla_Origen && tablaToProductName[s.Tabla_Origen]) {
                 normProd = tablaToProductName[s.Tabla_Origen];
             } else {
                 const prodName = s.Cod_Producto === 22005 ? "TRANSACCIONES CNB" : s.Cod_Producto === 5 ? "SUPER ASTRO" : `Producto ${s.Cod_Producto}`;

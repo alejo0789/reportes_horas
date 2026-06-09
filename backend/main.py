@@ -405,13 +405,12 @@ COD_TO_PRODUCT_NAME = {
     5: 'SUPER ASTRO',
     22005: 'TRANSACCIONES CNB',
     22069: 'RASPITA',
+    22059: 'BALOTO',
+    22070: 'MILOTO',
+    22075: 'COLOR LOTO',
 }
 
 def resolve_product_name(sale):
-    src_table = sale.get("Tabla_Origen")
-    if src_table and src_table in TABLA_TO_PRODUCT_NAME:
-        return TABLA_TO_PRODUCT_NAME[src_table]
-    
     cod_prod = sale.get("Cod_Producto")
     if cod_prod is not None:
         try:
@@ -420,6 +419,10 @@ def resolve_product_name(sale):
                 return COD_TO_PRODUCT_NAME[cod_prod_int]
         except:
             pass
+            
+    src_table = sale.get("Tabla_Origen")
+    if src_table and src_table in TABLA_TO_PRODUCT_NAME:
+        return TABLA_TO_PRODUCT_NAME[src_table]
             
     return "OTROS"
 
@@ -522,7 +525,7 @@ def get_whatsapp_query(
         src_table = sale.get("Tabla_Origen")
         if src_table in {
             'SIGT_SG_GIROS_PAGADOS', 'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO',
-            'SIGT_RECAUDOS_MAESTRO', 'SIGT_SG_GIROS_CREADOS', 'SIGT_LOTERIAS_LINEA'
+            'SIGT_RECAUDOS_MAESTRO'
         }:
             continue
 
