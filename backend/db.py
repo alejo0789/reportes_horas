@@ -13,8 +13,14 @@ load_dotenv()
 
 # Try enabling Oracle Client (Thick Mode) to support older database password verifiers (like DPY-3015 for FORTUMED)
 try:
-    # If the Oracle Instant Client libraries are on the system PATH, this will initialize Thick Mode automatically.
-    oracledb.init_oracle_client()
+    # Allow specifying ORACLE_CLIENT_PATH in .env for environments where PATH is not configured
+    oracle_client_path = os.getenv("ORACLE_CLIENT_PATH")
+    if oracle_client_path:
+        logger.info(f"Initializing Oracle Client in Thick Mode using path: {oracle_client_path}")
+        oracledb.init_oracle_client(lib_dir=oracle_client_path)
+    else:
+        # If the Oracle Instant Client libraries are on the system PATH, this will initialize Thick Mode automatically.
+        oracledb.init_oracle_client()
     logger.info("Oracle Instant Client initialized successfully. Running in THICK MODE (supports verifier 0x939).")
 except Exception as e:
     logger.warning(f"Could not initialize oracledb THICK MODE (Instant Client libraries not detected). Running in default THIN MODE. Error: {e}") 
