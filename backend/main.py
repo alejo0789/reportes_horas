@@ -523,10 +523,12 @@ def get_whatsapp_query(
     for sale in sales_list:
         # Exclude non-sales and payout flows (same as frontend app.js)
         src_table = sale.get("Tabla_Origen")
-        if src_table in {
-            'SIGT_SG_GIROS_PAGADOS', 'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO',
-            'SIGT_RECAUDOS_MAESTRO'
-        }:
+        s_code = sale.get("Cod_Producto")
+        
+        # Filter out payouts and general non-sales flows, but preserve CNB (22005)
+        if src_table in {'SIGT_SG_GIROS_PAGADOS', 'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+            continue
+        if src_table == 'SIGT_RECAUDOS_MAESTRO' and str(s_code) != '22005':
             continue
 
         s_code = sale.get("Cod_Sitio")

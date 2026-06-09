@@ -786,7 +786,7 @@ function getFilteredCombinedData() {
                           s.Tabla_Origen === 'SIGT_PAGOS' || 
                           s.Tabla_Origen === 'SIGT_PAGOGEN_MAESTRO';
                           
-        const isNonSalesFlow = s.Tabla_Origen === 'SIGT_RECAUDOS_MAESTRO';
+        const isNonSalesFlow = s.Tabla_Origen === 'SIGT_RECAUDOS_MAESTRO' && String(s.Cod_Producto) !== '22005';
                           
         return isSameDate && !isPayout && !isNonSalesFlow;
     });
@@ -1512,15 +1512,15 @@ function renderPromoterSummary() {
                 </div>
                 <div class="promoter-card-details" style="margin-top: 6px;">
                     <span>Venta Acum. (hasta ${refHourStr}):</span>
-                    <strong>${formatCurrency(accumulatedSales)}</strong>
+                    <strong>${formatProductValue(accumulatedSales, group.name)}</strong>
                 </div>
                 <div class="promoter-card-details">
                     <span>Meta Hora Sig. (${nextHourStr}):</span>
-                    <strong>${formatCurrency(nextHourGoal)}</strong>
+                    <strong>${formatProductValue(nextHourGoal, group.name)}</strong>
                 </div>
                 <div class="promoter-card-details">
                     <span>Meta del Día:</span>
-                    <strong>${formatCurrency(group.goal)}</strong>
+                    <strong>${formatProductValue(group.goal, group.name)}</strong>
                 </div>
                 <div class="promoter-bar-container">
                     <div class="promoter-bar-fill ${fillClass}" style="width: ${Math.min(compliance, 100)}%"></div>
@@ -1743,8 +1743,8 @@ function renderTable(prejoinedData) {
             const cellClasses = `product-cell ${isFirst ? 'product-cell-first' : ''} ${isLast ? 'product-cell-last' : ''}`;
             
             officeRowHtml += `
-                <td class="num-col ${cellClasses}">${formatCurrency(prodData.venta)}</td>
-                <td class="num-col ${cellClasses}" style="color:rgba(255,255,255,0.45);">${formatCurrency(prodData.meta)}</td>
+                <td class="num-col ${cellClasses}">${formatProductValue(prodData.venta, prod)}</td>
+                <td class="num-col ${cellClasses}" style="color:rgba(255,255,255,0.45);">${formatProductValue(prodData.meta, prod)}</td>
                 <td class="num-col ${cellClasses}" style="color: ${cumpColor} !important; font-weight: 600 !important;">${compliance}%</td>
             `;
         });
@@ -1786,8 +1786,8 @@ function renderTable(prejoinedData) {
                 const cellClasses = `product-cell ${isFirst ? 'product-cell-first' : ''} ${isLast ? 'product-cell-last' : ''}`;
                 
                 siteRowHtml += `
-                    <td class="num-col ${cellClasses}">${formatCurrency(prodData.venta)}</td>
-                    <td class="num-col ${cellClasses}" style="color:var(--text-muted);">${formatCurrency(prodData.meta)}</td>
+                    <td class="num-col ${cellClasses}">${formatProductValue(prodData.venta, prod)}</td>
+                    <td class="num-col ${cellClasses}" style="color:var(--text-muted);">${formatProductValue(prodData.meta, prod)}</td>
                     <td class="num-col ${cellClasses}" style="color: ${cumpColor} !important; font-weight: 600 !important;">${compliance}%</td>
                 `;
             });
@@ -1930,6 +1930,14 @@ function updateMultiselectTriggerText() {
 // --- HELPERS ---
 
 function formatCurrency(val) {
+    return '$' + Math.round(val).toLocaleString('es-CO');
+}
+
+function formatProductValue(val, prodName) {
+    const isCountBased = ["RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"].includes(prodName);
+    if (isCountBased) {
+        return Math.round(val).toLocaleString('es-CO');
+    }
     return '$' + Math.round(val).toLocaleString('es-CO');
 }
 
