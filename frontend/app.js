@@ -857,7 +857,9 @@ function getFilteredCombinedData() {
                 hourly_sales: Array(24).fill(0)
             };
         }
-        compositeStore[key].meta += (g.meta || 0);
+        const isCountBased = ["RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"].includes(normProd);
+        const metaVal = isCountBased ? Math.round(g.meta || 0) : (g.meta || 0);
+        compositeStore[key].meta += metaVal;
     });
 
     // Populate or merge with actual sales
@@ -968,7 +970,7 @@ function getFilteredCombinedData() {
         }
     });
 
-    const compliance = totalGoals > 0 ? Math.round((totalSales / totalGoals) * 100) : 0;
+    const compliance = calculateCompliance(totalSales, totalGoals);
 
     return {
         joined,
@@ -1191,7 +1193,7 @@ function renderComplianceRanking(data) {
     Object.keys(officeStats).forEach(name => {
         const stat = officeStats[name];
         if (stat.goals > 0) {
-            const compliance = Math.round((stat.sales / stat.goals) * 100);
+            const compliance = calculateCompliance(stat.sales, stat.goals);
             if (compliance >= 95) {
                 ranking.push({ name, compliance });
             }
@@ -1275,7 +1277,7 @@ function renderComplianceLagging(data) {
     Object.keys(officeStats).forEach(name => {
         const stat = officeStats[name];
         if (stat.goals > 0) {
-            const compliance = Math.round((stat.sales / stat.goals) * 100);
+            const compliance = calculateCompliance(stat.sales, stat.goals);
             if (compliance < 95) {
                 ranking.push({ name, compliance });
             }
@@ -1408,7 +1410,7 @@ function renderPromoterSummary() {
         elements.promoterOfficesGrid.innerHTML = '';
         
         Object.values(officeGroups).sort((a,b) => a.name.localeCompare(b.name)).forEach(group => {
-            const compliance = group.goal > 0 ? Math.round((group.sales / group.goal) * 100) : 0;
+            const compliance = calculateCompliance(group.sales, group.goal);
             
             let fillClass = 'bg-danger';
             if (compliance >= 100) fillClass = 'bg-success';
@@ -1488,7 +1490,7 @@ function renderPromoterSummary() {
         
         sortedProductNames.forEach(pName => {
             const group = productGroups[pName];
-            const compliance = group.goal > 0 ? Math.round((group.sales / group.goal) * 100) : 0;
+            const compliance = calculateCompliance(group.sales, group.goal);
             
             let fillClass = 'bg-danger';
             if (compliance >= 100) fillClass = 'bg-success';
@@ -1733,7 +1735,7 @@ function renderTable(prejoinedData) {
         // Horizontal columns for each product on Office level
         displayedProducts.forEach((prod, index) => {
             const prodData = office.productos[prod] || { venta: 0, meta: 0 };
-            const compliance = prodData.meta > 0 ? Math.round((prodData.venta / prodData.meta) * 100) : 0;
+            const compliance = calculateCompliance(prodData.venta, prodData.meta);
             
             let cumpColor = 'var(--danger)';
             if (compliance >= 95) cumpColor = 'var(--accent)';
@@ -1776,7 +1778,7 @@ function renderTable(prejoinedData) {
             // Horizontal columns for each product on Site level
             displayedProducts.forEach((prod, index) => {
                 const prodData = site.productos[prod] || { venta: 0, meta: 0 };
-                const compliance = prodData.meta > 0 ? Math.round((prodData.venta / prodData.meta) * 100) : 0;
+                const compliance = calculateCompliance(prodData.venta, prodData.meta);
                 
                 let cumpColor = 'var(--danger)';
                 if (compliance >= 95) cumpColor = 'var(--accent)';
@@ -1929,6 +1931,13 @@ function updateMultiselectTriggerText() {
 
 // --- HELPERS ---
 
+function calculateCompliance(sales, goals) {
+    if (goals <= 0) {
+        return sales > 0 ? 100 : 0;
+    }
+    return Math.round((sales / goals) * 100);
+}
+
 function formatCurrency(val) {
     return '$' + Math.round(val).toLocaleString('es-CO');
 }
@@ -1937,11 +1946,7 @@ function formatProductValue(val, prodName) {
     if (val === undefined || val === null || isNaN(val)) return '0';
     const isCountBased = ["RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"].includes(prodName);
     if (isCountBased) {
-        if (Number.isInteger(val) || val === 0) {
-            return Math.round(val).toLocaleString('es-CO');
-        }
-        // Round to 2 decimal places for non-integers to show the exact decimal goal
-        return val.toFixed(2).replace(/\.?0+$/, '');
+        return Math.round(val).toLocaleString('es-CO');
     }
     return '$' + Math.round(val).toLocaleString('es-CO');
 }

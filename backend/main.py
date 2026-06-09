@@ -578,6 +578,8 @@ def get_whatsapp_query(
                         off_code_int = int(off_code)
                         if off_code_int in assigned_offices:
                             meta_val = float(rec.get("meta") or 0.0)
+                            if prod_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}:
+                                meta_val = float(round(meta_val))
                             total_goals += meta_val
                             goals_by_office[off_code_int] = goals_by_office.get(off_code_int, 0.0) + meta_val
                             goals_by_product[prod_name] = goals_by_product.get(prod_name, 0.0) + meta_val
@@ -585,7 +587,10 @@ def get_whatsapp_query(
                         pass
 
     # 7. Calcular porcentaje de cumplimiento consolidado
-    compliance = (total_sales / total_goals * 100.0) if total_goals > 0 else 0.0
+    if total_goals > 0:
+        compliance = (total_sales / total_goals * 100.0)
+    else:
+        compliance = 100.0 if total_sales > 0 else 0.0
     emoji_overall = "🟢" if compliance >= 95 else "🔴"
     
     if report_type == "products":
@@ -611,14 +616,26 @@ def get_whatsapp_query(
             p_sales_acum = sales_acum_by_product.get(p_name, 0.0)
             p_goal = goals_by_product.get(p_name, 0.0)
             p_sales_total = sales_by_product.get(p_name, 0.0)
-            p_compliance = (p_sales_total / p_goal * 100.0) if p_goal > 0 else 0.0
+            
+            if p_goal > 0:
+                p_compliance = (p_sales_total / p_goal * 100.0)
+            else:
+                p_compliance = 100.0 if p_sales_total > 0 else 0.0
+                
             p_emoji = "🟢" if p_compliance >= 95 else "🔴"
             p_next_hour_goal = p_goal * next_hour_ratio
             
-            msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-            msg += f"  ↳ Acumulado: ${round(p_sales_acum):,}\n"
-            msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
-            msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n\n"
+            is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+            if is_count_based:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Acumulado: {round(p_sales_acum):,}\n"
+                msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n\n"
+            else:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Acumulado: ${round(p_sales_acum):,}\n"
+                msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n\n"
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
@@ -639,7 +656,12 @@ def get_whatsapp_query(
             off_name = office_names.get(off_code, f"Oficina {off_code}")
             off_sales = sales_by_office.get(off_code, 0.0)
             off_goal = goals_by_office.get(off_code, 0.0)
-            off_comp = (off_sales / off_goal * 100.0) if off_goal > 0 else 0.0
+            
+            if off_goal > 0:
+                off_comp = (off_sales / off_goal * 100.0)
+            else:
+                off_comp = 100.0 if off_sales > 0 else 0.0
+                
             emoji_off = "🟢" if off_comp >= 95 else "🔴"
             msg += f"• *{off_name}:* {emoji_off} {off_comp:.1f}% (Vta: ${round(off_sales):,} / Meta: ${round(off_goal):,})\n"
             
