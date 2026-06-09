@@ -536,8 +536,11 @@ def get_whatsapp_query(
                 off_code = site_to_office.get(s_code_int)
                 if off_code in assigned_offices:
                     v_neta = float(sale.get("Venta_Neta") or 0.0)
-                    
                     prod_name = resolve_product_name(sale)
+                    
+                    # Measured by transaction count (increment of 1) for specific products
+                    is_count_based = prod_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+                    increment = 1.0 if is_count_based else v_neta
                     
                     hour_str = sale.get("Hora")
                     sale_hour = 0
@@ -547,13 +550,13 @@ def get_whatsapp_query(
                         except:
                             pass
                             
-                    total_sales += v_neta
-                    sales_by_office[off_code] = sales_by_office.get(off_code, 0.0) + v_neta
-                    sales_by_product[prod_name] = sales_by_product.get(prod_name, 0.0) + v_neta
+                    total_sales += increment
+                    sales_by_office[off_code] = sales_by_office.get(off_code, 0.0) + increment
+                    sales_by_product[prod_name] = sales_by_product.get(prod_name, 0.0) + increment
                     
                     if sale_hour <= ref_hour:
-                        total_sales_acum += v_neta
-                        sales_acum_by_product[prod_name] = sales_acum_by_product.get(prod_name, 0.0) + v_neta
+                        total_sales_acum += increment
+                        sales_acum_by_product[prod_name] = sales_acum_by_product.get(prod_name, 0.0) + increment
             except:
                 pass
                 

@@ -944,9 +944,12 @@ function getFilteredCombinedData() {
             };
         }
 
-        compositeStore[key].venta += s.Venta_Neta;
+        const isCountBased = ["RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"].includes(normProd);
+        const increment = isCountBased ? 1 : (s.Venta_Neta || 0);
+
+        compositeStore[key].venta += increment;
         if (hourIdx >= 0 && hourIdx < 24) {
-            compositeStore[key].hourly_sales[hourIdx] += s.Venta_Neta;
+            compositeStore[key].hourly_sales[hourIdx] += increment;
         }
     });
 
