@@ -78,8 +78,25 @@ def main():
     db_manager.close_pools()
     
     if results:
-        set_cached_sales(cache_key, results)
-        print(f"\n¡Éxito! Se han guardado {len(results)} registros de ventas en la caché local para {fecha}.")
+        import sqlite3
+        import json
+        from backend.cache import DB_PATH
+        
+        try:
+            # Custom timestamp showing the cut-off hour
+            cutoff_iso = f"{fecha}T{hora}:00"
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                REPLACE INTO sales_cache (cache_key, data_json, last_updated)
+                VALUES (?, ?, ?)
+            """, (cache_key, json.dumps(results), cutoff_iso))
+            conn.commit()
+            conn.close()
+            print(f"\n¡Éxito! Se han guardado {len(results)} registros de ventas en la caché local para {fecha}.")
+            print(f"La hora de última actualización en el dashboard se marcó como: {cutoff_iso}")
+        except Exception as e:
+            print(f"Error al escribir en la base de datos de caché: {e}")
     else:
         print("\nNo se obtuvieron registros de ninguna de las bases de datos. No se actualizó la caché.")
 
