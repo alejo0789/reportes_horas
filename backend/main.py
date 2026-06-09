@@ -183,9 +183,29 @@ def get_status():
         except Exception as e:
             logger.error(f"Status check connection pools auto-retry failed: {e}")
             
+    cauca_ok = False
+    if db_manager.pool_cauca:
+        try:
+            with db_manager.get_cauca_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM dual")
+                    cauca_ok = True
+        except Exception as e:
+            logger.error(f"CAUCAMED connectivity check failed: {e}")
+
+    fortuna_ok = False
+    if db_manager.pool_fortuna:
+        try:
+            with db_manager.get_fortuna_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM dual")
+                    fortuna_ok = True
+        except Exception as e:
+            logger.error(f"FORTUMED connectivity check failed: {e}")
+
     return {
-        "cauca_connected": db_manager.pool_cauca is not None,
-        "fortuna_connected": db_manager.pool_fortuna is not None,
+        "cauca_connected": cauca_ok,
+        "fortuna_connected": fortuna_ok,
         "goals_uploaded_products": [p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)],
         "all_goals_products": list(goals_store.keys()),
         "distribution_records_count": len(distribution_store)
@@ -237,6 +257,7 @@ def get_ventas(
     
     results = []
     errors = []
+    db_failures = False
 
     # Query CAUCAMED
     if db_manager.pool_cauca:
@@ -255,8 +276,10 @@ def get_ventas(
             msg = f"CAUCAMED query failed: {e}"
             logger.error(msg)
             errors.append(msg)
+            db_failures = True
     else:
         errors.append("CAUCAMED pool not initialized.")
+        db_failures = True
 
     # Query FORTUMED
     if db_manager.pool_fortuna:
@@ -275,21 +298,23 @@ def get_ventas(
             msg = f"FORTUMED query failed: {e}"
             logger.error(msg)
             errors.append(msg)
+            db_failures = True
     else:
         errors.append("FORTUMED pool not initialized.")
+        db_failures = True
 
-    # 3. Fallback to cache if database fails but we have stale cache
-    if not results and cached_data is not None:
-        logger.warning(f"Database query failed but stale SQLite Cache is available. Serving stale cache.")
+    # 3. Fallback to cache if database fails/is incomplete but we have stale cache
+    if (db_failures or not results) and cached_data is not None:
+        logger.warning(f"Database query failed or is incomplete. Errors: {errors}. Serving stale SQLite Cache.")
         return {
             "source": "LOCAL_CACHE_STALE",
             "last_updated": last_updated,
             "data": cached_data,
-            "warning": "Error de conexión con Oracle. Mostrando datos locales de caché anterior."
+            "warning": f"Error de conexión con base de datos. Mostrando caché anterior. Errores: {', '.join(errors)}"
         }
 
     # Fallback to mock data if database failed and no cache is available
-    if not results:
+    if db_failures or not results:
         logger.warning(f"Database query failed and no SQLite Cache is available. Falling back to Mock Sales generation.")
         try:
             results = generate_mock_sales(desde, hasta)
@@ -299,7 +324,7 @@ def get_ventas(
                 "source": "MOCK_FALLBACK",
                 "last_updated": now_str,
                 "data": results,
-                "warning": "Conexión a Oracle no disponible. Mostrando datos simulados (Mock) para pruebas."
+                "warning": f"Conexión a Oracle no disponible. Mostrando datos simulados (Mock). Errores: {', '.join(errors)}"
             }
         except Exception as mock_err:
             logger.error(f"Failed to generate mock sales: {mock_err}")
