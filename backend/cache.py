@@ -10,7 +10,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "uploads", "cache.db")
 
 def init_cache_db():
-    """Initializes SQLite database and tables for local sales data caching and whatsapp promoters."""
+    """Initializes SQLite database and tables for local sales data caching, whatsapp promoters, and coordinators."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -26,6 +26,17 @@ def init_cache_db():
             CREATE TABLE IF NOT EXISTS whatsapp_promoters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE,
+                zone TEXT,
+                phone TEXT,
+                active INTEGER DEFAULT 1
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_coordinators (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                cedula TEXT,
+                role TEXT,
                 zone TEXT,
                 phone TEXT,
                 active INTEGER DEFAULT 1
@@ -207,3 +218,121 @@ def clear_cache():
         logger.error(f"Error clearing SQLite cache: {e}")
     finally:
         conn.close()
+
+def seed_coordinators():
+    """Seeds the whatsapp_coordinators table with initial coordinators if empty."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM whatsapp_coordinators")
+        count = cursor.fetchone()[0]
+        if count == 0:
+            initial_coordinators = [
+                ("MORALES BURBANO YUDY ANDREA", "25288490", "Coordinador Comercial", "Centro y Oriente", "3207205166"),
+                ("HURTADO CAICEDO EDGAR ENRIQUE", "76044229", "Senior Comercial", "Empresa", "3185033565"),
+                ("JARAMILLO RUEDA MARIO ANDRES", "94151894", "Coordinador Comercial", "Norte", "3185033572"),
+                ("CUERO OBREGON JAMILTON", "1059446686", "Coordinador Comercial", "Occidente", "3207203927"),
+                ("ORTIZ CASTILLO SERGIO ALEJANDRO", "1002861726", "Coordinador Comercial", "Sur", "3174238003")
+            ]
+            for name, cedula, role, zone, phone in initial_coordinators:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO whatsapp_coordinators (name, cedula, role, zone, phone, active)
+                    VALUES (?, ?, ?, ?, ?, 1)
+                """, (name, cedula, role, zone, phone))
+            conn.commit()
+            logger.info("Seeded initial coordinators into whatsapp_coordinators table.")
+    except Exception as e:
+        logger.error(f"Error seeding coordinators: {e}")
+    finally:
+        conn.close()
+
+def get_all_coordinators():
+    """Retrieves all registered coordinators sorted by name."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, cedula, role, zone, phone, active FROM whatsapp_coordinators ORDER BY name ASC")
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Error getting coordinators: {e}")
+        return []
+    finally:
+        conn.close()
+
+def add_coordinator(name: str, cedula: str, role: str, zone: str, phone: str, active: int = 1):
+    """Inserts a new coordinator, returns the new row ID."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO whatsapp_coordinators (name, cedula, role, zone, phone, active)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (name.strip(), cedula.strip(), role.strip(), zone.strip(), phone.strip(), active))
+        conn.commit()
+        return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        raise ValueError(f"El coordinador '{name}' ya está registrado.")
+    except Exception as e:
+        logger.error(f"Error adding coordinator: {e}")
+        raise e
+    finally:
+        conn.close()
+
+def update_coordinator(cid: int, name: str, cedula: str, role: str, zone: str, phone: str, active: int):
+    """Updates an existing coordinator, returns True if updated."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE whatsapp_coordinators
+            SET name = ?, cedula = ?, role = ?, zone = ?, phone = ?, active = ?
+            WHERE id = ?
+        """, (name.strip(), cedula.strip(), role.strip(), zone.strip(), phone.strip(), active, cid))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.IntegrityError:
+        raise ValueError(f"El nombre '{name}' ya está en uso por otro coordinador.")
+    except Exception as e:
+        logger.error(f"Error updating coordinator {cid}: {e}")
+        raise e
+    finally:
+        conn.close()
+
+def delete_coordinator(cid: int):
+    """Deletes a coordinator by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM whatsapp_coordinators WHERE id = ?", (cid,))
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error deleting coordinator {cid}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def find_active_coordinator_by_phone(phone_num: str):
+    """Normalize input phone and find an active coordinator matching the suffix."""
+    clean_digits = "".join(filter(str.isdigit, phone_num))
+    if not clean_digits:
+        return None
+        
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, cedula, role, zone, phone, active FROM whatsapp_coordinators WHERE active = 1")
+        rows = cursor.fetchall()
+        for r in rows:
+            p_clean = "".join(filter(str.isdigit, r["phone"]))
+            # Match last 10 digits
+            if p_clean and (clean_digits.endswith(p_clean[-10:]) or p_clean.endswith(clean_digits[-10:])):
+                return dict(r)
+    except Exception as e:
+        logger.error(f"Error finding coordinator by phone: {e}")
+    finally:
+        conn.close()
+    return None

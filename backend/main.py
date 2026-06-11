@@ -14,7 +14,8 @@ from backend.excel_parser import parse_metas_excel, parse_promoters_excel
 from backend.cache import (
     init_cache_db, get_cached_sales, set_cached_sales, clear_cache,
     seed_promoters_from_excel, get_all_promoters, add_promoter, update_promoter, delete_promoter,
-    find_active_promoter_by_phone
+    find_active_promoter_by_phone,
+    seed_coordinators, get_all_coordinators, add_coordinator, update_coordinator, delete_coordinator
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -165,6 +166,7 @@ async def startup_event():
     try:
         init_cache_db()
         seed_promoters_from_excel()
+        seed_coordinators()
         db_manager.init_pools()
     except Exception as e:
         logger.error(f"Database pools / cache initialization error: {e}")
@@ -413,6 +415,61 @@ def delete_whatsapp_promoter(pid: int):
         raise HTTPException(status_code=404, detail="Promotor no encontrado.")
     return {"status": "success", "message": "Promotor eliminado."}
 
+
+# Pydantic models for WhatsApp Coordinators
+class CoordinatorSchema(BaseModel):
+    name: str
+    cedula: str
+    role: str
+    zone: str
+    phone: str
+    active: int = 1
+
+@app.get("/api/whatsapp-coordinators")
+def get_whatsapp_coordinators_endpoint():
+    """
+    Returns list of all coordinators in the whatsapp_coordinators table.
+    """
+    return get_all_coordinators()
+
+@app.post("/api/whatsapp-coordinators")
+def create_whatsapp_coordinator(c: CoordinatorSchema):
+    """
+    Adds a new coordinator to the database.
+    """
+    try:
+        cid = add_coordinator(c.name, c.cedula, c.role, c.zone, c.phone, c.active)
+        return {"id": cid, "status": "success", "message": f"Coordinador {c.name} agregado."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error interno al agregar coordinador.")
+
+@app.put("/api/whatsapp-coordinators/{cid}")
+def update_whatsapp_coordinator(cid: int, c: CoordinatorSchema):
+    """
+    Updates an existing coordinator in the database.
+    """
+    try:
+        success = update_coordinator(cid, c.name, c.cedula, c.role, c.zone, c.phone, c.active)
+        if not success:
+            raise HTTPException(status_code=404, detail="Coordinador no encontrado.")
+        return {"status": "success", "message": f"Coordinador {c.name} actualizado."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error interno al actualizar coordinador.")
+
+@app.delete("/api/whatsapp-coordinators/{cid}")
+def delete_whatsapp_coordinator(cid: int):
+    """
+    Deletes a coordinator from the database.
+    """
+    success = delete_coordinator(cid)
+    if not success:
+        raise HTTPException(status_code=404, detail="Coordinador no encontrado.")
+    return {"status": "success", "message": "Coordinador eliminado."}
+
 TABLA_TO_PRODUCT_NAME = {
     'SIGT_CHANCES':              'CHANCE',
     'SIGT_CHANCES_RASPA':        'RASPITA',
@@ -537,37 +594,184 @@ def resolve_product_name(sale, products_by_code=None):
 
 @app.get("/api/whatsapp/query")
 def get_whatsapp_query(
-    phone: str = Query(..., description="Número de celular del promotor"),
+    phone: Optional[str] = Query(None, description="Número de celular del promotor o coordinador"),
     report_type: str = Query("products", description="Tipo de reporte: 'products', 'offices', 'prompt_product', o 'product_office'"),
-    selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina")
+    selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina"),
+    override_promoter_name: Optional[str] = Query(None, description="Nombre de promotor para consulta por coordinador")
 ):
     """
-    Identifica al promotor por su número de teléfono y retorna su resumen
+    Identifica al promotor o coordinador por su número de teléfono y retorna su resumen
     de ventas y cumplimiento consolidado por producto o por oficina.
     """
-    # 1. Buscar promotor por celular
-    promoter = find_active_promoter_by_phone(phone)
-    if not promoter:
-        return {
-            "text": "❌ Lo sentimos, tu número de celular no está registrado o no se encuentra activo para consultas por WhatsApp."
-        }
-        
-    promoter_name = promoter["name"]
+    # 1. Buscar promotor o coordinador por celular
+    if override_promoter_name:
+        user_name = override_promoter_name
+        is_coordinator = False
+        user_label = "Promotor"
+        # Find zone for this promoter
+        user_zone = "Sin Zona"
+        for item in distribution_store:
+            if item.get("promotor") and str(item["promotor"]).strip().lower() == user_name.strip().lower():
+                user_zone = item.get("zona", "Sin Zona")
+                break
+    else:
+        if not phone:
+            return {"text": "❌ Falta número de teléfono o nombre para la consulta."}
+        promoter = find_active_promoter_by_phone(phone)
+        coordinator = None
+        if not promoter:
+            coordinator = find_active_coordinator_by_phone(phone)
+            
+        if not promoter and not coordinator:
+            return {
+                "text": "❌ Lo sentimos, tu número de celular no está registrado o no se encuentra activo para consultas por WhatsApp."
+            }
+            
+        user_name = promoter["name"] if promoter else coordinator["name"]
+        is_coordinator = coordinator is not None
+        user_label = "Coordinador" if is_coordinator else "Promotor"
+        user_zone = coordinator["zone"] if is_coordinator else promoter["zone"]
     
     # 2. Encontrar oficinas asignadas en la distribución comercial
     assigned_offices = set()
-    for item in distribution_store:
-        item_promotor = item.get("promotor", "")
-        if item_promotor and str(item_promotor).strip().lower() == promoter_name.strip().lower():
-            if item.get("cod_oficina") is not None:
-                try:
-                    assigned_offices.add(int(item["cod_oficina"]))
-                except:
-                    pass
+    if is_coordinator:
+        for item in distribution_store:
+            item_zone = item.get("zona", "")
+            if item_zone and str(item_zone).strip().lower() == user_zone.strip().lower():
+                if item.get("cod_oficina") is not None:
+                    try:
+                        assigned_offices.add(int(item["cod_oficina"]))
+                    except:
+                        pass
+    else:
+        for item in distribution_store:
+            item_promotor = item.get("promotor", "")
+            if item_promotor and str(item_promotor).strip().lower() == user_name.strip().lower():
+                if item.get("cod_oficina") is not None:
+                    try:
+                        assigned_offices.add(int(item["cod_oficina"]))
+                    except:
+                        pass
                     
     if not assigned_offices:
+        detail_msg = f"coordinador de la zona {user_zone}" if is_coordinator else "promotor"
         return {
-            "text": f"⚠️ Hola {promoter_name}, estás registrado en WhatsApp pero no tienes oficinas asignadas en la distribución comercial cargada."
+            "text": f"⚠️ Hola {user_name}, estás registrado en WhatsApp como {detail_msg} pero no tienes oficinas asignadas en la distribución comercial cargada."
+        }
+
+    # Calculate individual promoter metrics in coordinator's zone
+    promoter_compliance_list = []
+    if is_coordinator and report_type in {"products", "offices"}:
+        promoter_to_offices = {}
+        for item in distribution_store:
+            item_zone = item.get("zona", "")
+            if item_zone and item_zone.strip().lower() == user_zone.strip().lower():
+                p_name = item.get("promotor")
+                off = item.get("cod_oficina")
+                if p_name and off is not None:
+                    try:
+                        off_int = int(off)
+                        if p_name not in promoter_to_offices:
+                            promoter_to_offices[p_name] = set()
+                        promoter_to_offices[p_name].add(off_int)
+                    except:
+                        pass
+                        
+        sites_data, _ = get_cached_sales("catalog_sitios")
+        site_to_office = {}
+        if sites_data:
+            for s in sites_data:
+                s_code = s.get("Cod_Sitio")
+                off_code = s.get("Cod_Oficina")
+                if s_code is not None and off_code is not None:
+                    site_to_office[int(s_code)] = int(off_code)
+                    
+        products_data, _ = get_cached_sales("catalog_productos")
+        products_by_code = {}
+        if products_data:
+            for p in products_data:
+                cod = p.get("Cod_Producto")
+                if cod is not None:
+                    products_by_code[str(cod)] = p
+                    
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        desde = f"{today_str} 00:00:00"
+        hasta = f"{today_str} 23:59:59"
+        
+        sales_list = []
+        try:
+            sales_resp = get_ventas(desde=desde, hasta=hasta, force_refresh=False)
+            sales_list = sales_resp.get("data", [])
+        except:
+            pass
+            
+        for p_name, p_offices in promoter_to_offices.items():
+            p_sales = 0.0
+            for sale in sales_list:
+                src_table = sale.get("Tabla_Origen")
+                s_code = sale.get("Cod_Producto")
+                if src_table in {'SIGT_SG_GIROS_PAGADOS', 'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+                    continue
+                if src_table == 'SIGT_RECAUDOS_MAESTRO' and str(s_code) != '22005':
+                    continue
+                s_code = sale.get("Cod_Sitio")
+                if s_code is not None:
+                    try:
+                        s_code_int = int(s_code)
+                        off_code = site_to_office.get(s_code_int)
+                        if off_code in p_offices:
+                            v_neta = float(sale.get("Venta_Neta") or 0.0)
+                            prod_name = resolve_product_name(sale, products_by_code)
+                            is_count_based = prod_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+                            p_sales += 1.0 if is_count_based else v_neta
+                    except:
+                        pass
+                        
+            p_meta = 0.0
+            for prod_name, records in goals_store.items():
+                if records and not records[0].get("activo", True):
+                    continue
+                for rec in records:
+                    if rec.get("fecha") == today_str:
+                        off_code = rec.get("cod_oficina")
+                        if off_code is not None:
+                            try:
+                                off_code_int = int(off_code)
+                                if off_code_int in p_offices:
+                                    meta_val = float(rec.get("meta") or 0.0)
+                                    if prod_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}:
+                                        meta_val = float(round(meta_val))
+                                    p_meta += meta_val
+                            except:
+                                pass
+            if p_meta > 0:
+                p_comp = (p_sales / p_meta * 100.0)
+            else:
+                p_comp = 100.0 if p_sales > 0 else 0.0
+            promoter_compliance_list.append((p_name, p_sales, p_meta, p_comp))
+            
+        promoter_compliance_list.sort(key=lambda x: x[0])
+
+    # Early return for prompt_promoter
+    if is_coordinator and report_type == "prompt_promoter":
+        zone_promoters = sorted(list(set([
+            item.get("promotor") for item in distribution_store 
+            if item.get("zona", "").strip().lower() == user_zone.strip().lower() and item.get("promotor")
+        ])))
+        if not zone_promoters:
+            return {
+                "text": "⚠️ No hay promotores asignados a tu zona en la distribución comercial.",
+                "report_type": "prompt_promoter",
+                "is_coordinator": True
+            }
+        msg = f"🔢 *Seleccione un promotor para ver su detalle por producto:*\n\n"
+        for idx, prom in enumerate(zone_promoters, 1):
+            msg += f"*{idx}.* {prom}\n"
+        msg += f"\nPor favor, escribe el *número* del promotor que deseas consultar."
+        return {
+            "text": msg,
+            "report_type": "prompt_promoter",
+            "is_coordinator": True
         }
 
     # Early return for product list prompt
@@ -584,7 +788,7 @@ def get_whatsapp_query(
         return {
             "text": msg,
             "report_type": "prompt_product",
-            "promoter": promoter_name
+            "promoter": user_name
         }
         
     # 3. Obtener catálogo de sitios para mapear sitio -> oficina
@@ -737,6 +941,37 @@ def get_whatsapp_query(
         compliance = 100.0 if total_sales > 0 else 0.0
     emoji_overall = "🟢" if compliance >= 95 else "🔴"
     
+    if is_coordinator and report_type in {"products", "offices"}:
+        msg = f"📊 *REPORTE DE ZONA (GENERAL)*\n"
+        msg += f"👤 *Coordinador:* {user_name}\n"
+        msg += f"📅 *Fecha:* {today_str}\n"
+        msg += f"📍 *Zona:* {user_zone}\n"
+        msg += f"──────────────────\n"
+        msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
+        msg += f"🎯 *Meta Total:* ${round(total_goals):,}\n"
+        msg += f"📈 *Cumplimiento Zona:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"──────────────────\n"
+        msg += f"👥 *Cumplimiento por Promotor:*\n\n"
+        
+        for p_name, p_sales, p_meta, p_comp in promoter_compliance_list:
+            p_emoji = "🟢" if p_comp >= 95 else "🔴"
+            msg += f"• 👤 *{p_name}*\n"
+            msg += f"  ↳ Ventas: ${round(p_sales):,} / Meta: ${round(p_meta):,}\n"
+            msg += f"  ↳ Cumplimiento: {p_emoji} *{p_comp:.1f}%*\n\n"
+            
+        msg += f"──────────────────\n"
+        msg += f"💪 ¡Vamos por la meta! 🚀"
+        
+        return {
+            "text": msg,
+            "report_type": "coordinator_general",
+            "is_coordinator": True,
+            "promoter": user_name,
+            "sales": total_sales,
+            "goal": total_goals,
+            "compliance": compliance
+        }
+    
     if report_type == "products":
         # Sum of next hour goals for all assigned products
         total_next_hour_goal = 0.0
@@ -744,9 +979,9 @@ def get_whatsapp_query(
             total_next_hour_goal += goal_val * next_hour_ratio
 
         msg = f"📊 *CUMPLIMIENTO DIARIO POR PRODUCTO*\n"
-        msg += f"👤 *Promotor:* {promoter_name}\n"
+        msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
-        msg += f"📍 *Zona:* {promoter['zone']}\n"
+        msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"──────────────────\n"
         msg += f"💰 *Venta Acum. (hasta {ref_hour_str}):* ${round(total_sales_acum):,}\n"
         msg += f"🎯 *Meta Hora Sig. ({next_hour_str}):* ${round(total_next_hour_goal):,}\n"
@@ -787,7 +1022,7 @@ def get_whatsapp_query(
         is_count_based = selected_product in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
         
         msg = f"📊 *REPORTE PRODUCTO / OFICINA*\n"
-        msg += f"👤 *Promotor:* {promoter_name}\n"
+        msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📦 *Producto:* *{selected_product}*\n"
         msg += f"──────────────────\n"
@@ -825,9 +1060,9 @@ def get_whatsapp_query(
         
     else: # report_type == "offices"
         msg = f"📊 *REPORTE OFICINA GENERAL*\n"
-        msg += f"👤 *Promotor:* {promoter_name}\n"
+        msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
-        msg += f"📍 *Zona:* {promoter['zone']}\n"
+        msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"──────────────────\n"
         msg += f"💰 *Ventas:* ${round(total_sales):,}\n"
         msg += f"🎯 *Meta:* ${round(total_goals):,}\n"
@@ -856,7 +1091,7 @@ def get_whatsapp_query(
     return {
         "text": msg,
         "report_type": report_type,
-        "promoter": promoter_name,
+        "promoter": user_name,
         "sales": total_sales,
         "goal": total_goals,
         "compliance": compliance
@@ -1199,66 +1434,121 @@ async def receive_whatsapp_webhook(request: Request):
     selected_product = None
     query_result = None
     
-    # Check if the user is replying to the product number prompt
-    if (session_data and isinstance(session_data, dict) and 
-        session_data.get("state") == "awaiting_product_selection" and 
-        message_type == "text" and 
-        not any(keyword in user_msg_text.lower() for keyword in ["oficina", "producto", "hola", "menu", "menú"])):
+    # 2. Check user role
+    promoter = find_active_promoter_by_phone(sender_phone)
+    coordinator = None
+    if not promoter:
+        coordinator = find_active_coordinator_by_phone(sender_phone)
         
-        if user_msg_text.isdigit():
-            num = int(user_msg_text)
-            active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
-            if 1 <= num <= len(active_products):
-                selected_product = active_products[num - 1]
-                set_cached_sales(session_key, {"state": "idle"})
-                report_type = "product_office"
-                query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
+    # Check if the user is replying to a prompt (state machine)
+    if coordinator:
+        # Coordinator Session Routing
+        coord_zone = coordinator["zone"]
+        zone_promoters = sorted(list(set([
+            item.get("promotor") for item in distribution_store 
+            if item.get("zona", "").strip().lower() == coord_zone.strip().lower() and item.get("promotor")
+        ])))
+        
+        if (session_data and isinstance(session_data, dict) and 
+            session_data.get("state") == "awaiting_promoter_selection" and 
+            message_type == "text" and 
+            not any(keyword in user_msg_text.lower() for keyword in ["hola", "menu", "menú", "zona"])):
+            
+            if user_msg_text.isdigit():
+                num = int(user_msg_text)
+                if 1 <= num <= len(zone_promoters):
+                    selected_promoter = zone_promoters[num - 1]
+                    set_cached_sales(session_key, {"state": "idle"})
+                    query_result = get_whatsapp_query(phone=None, report_type="products", override_promoter_name=selected_promoter)
+                else:
+                    reply_text = f"❌ Número inválido. Por favor escribe un número entre 1 y {len(zone_promoters)}."
+                    query_result = {"text": reply_text, "report_type": "prompt_promoter", "is_coordinator": True}
             else:
-                reply_text = f"❌ Número inválido. Por favor escribe un número entre 1 y {len(active_products)}."
-                query_result = {"text": reply_text}
+                reply_text = f"⚠️ Por favor escribe únicamente el número del promotor (1-{len(zone_promoters)}) o escribe *menu* para cancelar."
+                query_result = {"text": reply_text, "report_type": "prompt_promoter", "is_coordinator": True}
         else:
-            active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
-            reply_text = f"⚠️ Por favor escribe únicamente el número del producto (1-{len(active_products)}) o escribe *menu* para cancelar."
-            query_result = {"text": reply_text}
-            
-    else:
-        # Normal routing (interactive button clicks or keywords)
-        if message_type == "interactive":
-            interactive = message.get("interactive", {})
-            button_reply = interactive.get("button_reply", {})
-            button_id = button_reply.get("id")
-            # Clear session on any button interaction
-            set_cached_sales(session_key, {"state": "idle"})
-            
-            if button_id == "view_office_report" or button_id == "view_office_general":
-                report_type = "offices"
-            elif button_id == "view_product_report":
-                report_type = "products"
-            elif button_id == "view_prod_office_report":
-                report_type = "prompt_product"
-                set_cached_sales(session_key, {"state": "awaiting_product_selection"})
-        else:
-            # Check text body for keywords
-            user_msg_lower = user_msg_text.lower()
-            if "oficina general" in user_msg_lower:
+            # Normal routing for coordinator
+            report_type = "products" # Default to zone report
+            if message_type == "interactive":
+                interactive = message.get("interactive", {})
+                button_reply = interactive.get("button_reply", {})
+                button_id = button_reply.get("id")
                 set_cached_sales(session_key, {"state": "idle"})
-                report_type = "offices"
-            elif "producto / oficina" in user_msg_lower or "producto/oficina" in user_msg_lower:
-                report_type = "prompt_product"
-                set_cached_sales(session_key, {"state": "awaiting_product_selection"})
-            elif "oficina" in user_msg_lower:
-                set_cached_sales(session_key, {"state": "idle"})
-                report_type = "offices"
-            elif "producto" in user_msg_lower:
-                set_cached_sales(session_key, {"state": "idle"})
-                report_type = "products"
-            elif "menu" in user_msg_lower or "menú" in user_msg_lower or "hola" in user_msg_lower:
-                set_cached_sales(session_key, {"state": "idle"})
-                report_type = "products"
                 
-        # Execute actual query if not already resolved
-        if query_result is None:
-            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
+                if button_id == "view_zone_report":
+                    report_type = "products"
+                elif button_id == "view_promoter_by_product":
+                    report_type = "prompt_promoter"
+                    set_cached_sales(session_key, {"state": "awaiting_promoter_selection"})
+            else:
+                user_msg_lower = user_msg_text.lower()
+                if "promotor" in user_msg_lower:
+                    report_type = "prompt_promoter"
+                    set_cached_sales(session_key, {"state": "awaiting_promoter_selection"})
+                elif "zona" in user_msg_lower or "menu" in user_msg_lower or "menú" in user_msg_lower or "hola" in user_msg_lower:
+                    set_cached_sales(session_key, {"state": "idle"})
+                    report_type = "products"
+            
+            if query_result is None:
+                query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+    else:
+        # Promoter Session Routing
+        if (session_data and isinstance(session_data, dict) and 
+            session_data.get("state") == "awaiting_product_selection" and 
+            message_type == "text" and 
+            not any(keyword in user_msg_text.lower() for keyword in ["oficina", "producto", "hola", "menu", "menú"])):
+            
+            if user_msg_text.isdigit():
+                num = int(user_msg_text)
+                active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
+                if 1 <= num <= len(active_products):
+                    selected_product = active_products[num - 1]
+                    set_cached_sales(session_key, {"state": "idle"})
+                    report_type = "product_office"
+                    query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
+                else:
+                    reply_text = f"❌ Número inválido. Por favor escribe un número entre 1 y {len(active_products)}."
+                    query_result = {"text": reply_text}
+            else:
+                active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
+                reply_text = f"⚠️ Por favor escribe únicamente el número del producto (1-{len(active_products)}) o escribe *menu* para cancelar."
+                query_result = {"text": reply_text}
+                
+        else:
+            # Normal routing for promoter
+            if message_type == "interactive":
+                interactive = message.get("interactive", {})
+                button_reply = interactive.get("button_reply", {})
+                button_id = button_reply.get("id")
+                set_cached_sales(session_key, {"state": "idle"})
+                
+                if button_id == "view_office_report" or button_id == "view_office_general":
+                    report_type = "offices"
+                elif button_id == "view_product_report":
+                    report_type = "products"
+                elif button_id == "view_prod_office_report":
+                    report_type = "prompt_product"
+                    set_cached_sales(session_key, {"state": "awaiting_product_selection"})
+            else:
+                user_msg_lower = user_msg_text.lower()
+                if "oficina general" in user_msg_lower:
+                    set_cached_sales(session_key, {"state": "idle"})
+                    report_type = "offices"
+                elif "producto / oficina" in user_msg_lower or "producto/oficina" in user_msg_lower:
+                    report_type = "prompt_product"
+                    set_cached_sales(session_key, {"state": "awaiting_product_selection"})
+                elif "oficina" in user_msg_lower:
+                    set_cached_sales(session_key, {"state": "idle"})
+                    report_type = "offices"
+                elif "producto" in user_msg_lower:
+                    set_cached_sales(session_key, {"state": "idle"})
+                    report_type = "products"
+                elif "menu" in user_msg_lower or "menú" in user_msg_lower or "hola" in user_msg_lower:
+                    set_cached_sales(session_key, {"state": "idle"})
+                    report_type = "products"
+                    
+            if query_result is None:
+                query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
         
     reply_text = query_result.get("text", "❌ Error al procesar consulta.")
     
@@ -1317,7 +1607,44 @@ async def receive_whatsapp_webhook(request: Request):
     # 2. Send the interactive menu buttons as a separate short message (limit 1024 characters, completely safe)
     buttons = []
     button_prompt = ""
-    if "promoter" in query_result:
+    if query_result.get("is_coordinator") is True:
+        res_report_type = query_result.get("report_type")
+        if res_report_type == "coordinator_general":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_promoter_by_product",
+                    "title": "Promotor por Prod."
+                }
+            })
+            button_prompt = "🔍 ¿Deseas ver el detalle de un promotor específico por producto?"
+        elif res_report_type == "prompt_promoter":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_zone_report",
+                    "title": "Volver al Menú"
+                }
+            })
+            button_prompt = "❌ O presiona para cancelar:"
+        else:
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_zone_report",
+                    "title": "Reporte de Zona"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_promoter_by_product",
+                    "title": "Otro Promotor"
+                }
+            })
+            button_prompt = "📦 Seleccione una opción:"
+            
+    elif "promoter" in query_result:
         res_report_type = query_result.get("report_type")
         if res_report_type == "products":
             buttons.append({

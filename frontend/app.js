@@ -7,6 +7,7 @@ const State = {
     products: [],          // Products catalogue
     expandedOffices: new Set(), // Set of offices expanded in tree grid
     whatsappPromoters: [],     // List of whatsapp authorized promoters
+    whatsappCoordinators: [],   // List of whatsapp authorized coordinators
     
     // Selected Filter Values
     selectedDate: '',
@@ -195,6 +196,23 @@ const elements = {
     searchPromoters: document.getElementById('search-promoters'),
     promotersListBody: document.getElementById('promoters-list-body'),
 
+    // WhatsApp Coordinators Management
+    btnManageCoordinators: document.getElementById('btn-manage-coordinators'),
+    modalCoordinators: document.getElementById('modal-coordinators'),
+    btnCloseCoordinatorsModal: document.getElementById('btn-close-coordinators-modal'),
+    formCoordinator: document.getElementById('form-coordinator'),
+    coordinatorEditId: document.getElementById('coordinator-edit-id'),
+    coordinatorFormTitle: document.getElementById('coordinator-form-title'),
+    coordinatorName: document.getElementById('coordinator-name'),
+    coordinatorCedula: document.getElementById('coordinator-cedula'),
+    coordinatorRole: document.getElementById('coordinator-role'),
+    coordinatorPhone: document.getElementById('coordinator-phone'),
+    coordinatorZone: document.getElementById('coordinator-zone'),
+    btnSaveCoordinator: document.getElementById('btn-save-coordinator'),
+    btnCancelCoordinatorEdit: document.getElementById('btn-cancel-coordinator-edit'),
+    searchCoordinators: document.getElementById('search-coordinators'),
+    coordinatorsListBody: document.getElementById('coordinators-list-body'),
+
     // Goals Management Modal
     modalGoals: document.getElementById('modal-goals'),
     btnCloseGoalsModal: document.getElementById('btn-close-goals-modal'),
@@ -208,6 +226,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupRefreshHandlers();
     setupTreeControls();
     setupPromoterManagement();
+    setupCoordinatorManagement();
     setupGoalsManagement();
     
     // Load initial data
@@ -1958,24 +1977,265 @@ function logger(msg) {
 
 // --- WHATSAPP PROMOTERS MANAGEMENT ---
 
+// --- WHATSAPP PROMOTERS MANAGEMENT ---
+
 async function loadWhatsAppPromoters() {
     try {
         const res = await fetch(`${API_BASE}/api/whatsapp-promoters`);
         if (!res.ok) throw new Error("Error al obtener promotores");
         State.whatsappPromoters = await res.json();
         renderPromotersList();
-        updatePromoterSidebarCount();
+        updatePersonnelSidebarCount();
     } catch (e) {
         console.error("Error loading whatsapp promoters:", e);
     }
 }
 
-function updatePromoterSidebarCount() {
-    const activeCount = State.whatsappPromoters.filter(p => p.active === 1).length;
+function updatePersonnelSidebarCount() {
+    const activePromoters = State.whatsappPromoters.filter(p => p.active === 1).length;
+    const activeCoordinators = State.whatsappCoordinators ? State.whatsappCoordinators.filter(c => c.active === 1).length : 0;
     const badge = document.querySelector('.promoters-whatsapp-section .section-desc');
     if (badge) {
-        badge.innerHTML = `Gestiona los promotores autorizados (${activeCount} activos, ${State.whatsappPromoters.length} total).`;
+        badge.innerHTML = `Autorizados: ${activePromoters} Promotores y ${activeCoordinators} Coordinadores activos.`;
     }
+}
+
+
+// --- WHATSAPP COORDINATORS MANAGEMENT ---
+
+async function loadWhatsAppCoordinators() {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators`);
+        if (!res.ok) throw new Error("Error al obtener coordinadores");
+        State.whatsappCoordinators = await res.json();
+        renderCoordinatorsList();
+        updatePersonnelSidebarCount();
+    } catch (e) {
+        console.error("Error loading whatsapp coordinators:", e);
+    }
+}
+
+function renderCoordinatorsList() {
+    if (!elements.coordinatorsListBody) return;
+    
+    const searchVal = elements.searchCoordinators.value.toLowerCase().trim();
+    
+    const filtered = State.whatsappCoordinators.filter(c => {
+        return (
+            (c.name && c.name.toLowerCase().includes(searchVal)) || 
+            (c.cedula && c.cedula.toLowerCase().includes(searchVal)) || 
+            (c.role && c.role.toLowerCase().includes(searchVal)) || 
+            (c.zone && c.zone.toLowerCase().includes(searchVal)) || 
+            (c.phone && c.phone.toLowerCase().includes(searchVal))
+        );
+    });
+    
+    if (filtered.length === 0) {
+        elements.coordinatorsListBody.innerHTML = `
+            <tr>
+                <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 20px;">
+                    No se encontraron coordinadores.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    elements.coordinatorsListBody.innerHTML = filtered.map(c => `
+        <tr data-id="${c.id}">
+            <td style="font-weight: 600; color: #ffffff;">${c.name}</td>
+            <td>${c.cedula}</td>
+            <td>${c.role}</td>
+            <td><span class="badge" style="background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 6px;">${c.zone}</span></td>
+            <td>${c.phone}</td>
+            <td style="text-align: center;">
+                <label class="switch">
+                    <input type="checkbox" class="toggle-coordinator-active" ${c.active === 1 ? 'checked' : ''}>
+                    <span class="slider"></span>
+                </label>
+            </td>
+            <td style="text-align: center;">
+                <button class="btn-icon btn-icon-edit btn-edit-coordinator" title="Editar"><i class="fa-solid fa-pen"></i></button>
+                <button class="btn-icon btn-icon-delete btn-delete-coordinator" title="Eliminar"><i class="fa-solid fa-trash-can"></i></button>
+            </td>
+        </tr>
+    `).join('');
+    
+    // Add event listeners to the list
+    elements.coordinatorsListBody.querySelectorAll('.toggle-coordinator-active').forEach(checkbox => {
+        checkbox.addEventListener('change', async (e) => {
+            const tr = e.target.closest('tr');
+            const cid = parseInt(tr.dataset.id);
+            const coordinator = State.whatsappCoordinators.find(c => c.id === cid);
+            if (coordinator) {
+                const newActive = e.target.checked ? 1 : 0;
+                // Visual feedback: disable checkbox and fade the row
+                checkbox.disabled = true;
+                tr.style.opacity = '0.5';
+                const slider = checkbox.nextElementSibling;
+                if (slider) slider.style.filter = 'grayscale(1) opacity(0.5)';
+                
+                await saveCoordinatorStatus(cid, { ...coordinator, active: newActive });
+            }
+        });
+    });
+    
+    elements.coordinatorsListBody.querySelectorAll('.btn-edit-coordinator').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const tr = e.target.closest('tr');
+            const cid = parseInt(tr.dataset.id);
+            const coordinator = State.whatsappCoordinators.find(c => c.id === cid);
+            if (coordinator) {
+                startEditCoordinator(coordinator);
+            }
+        });
+    });
+
+    elements.coordinatorsListBody.querySelectorAll('.btn-delete-coordinator').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const tr = e.target.closest('tr');
+            const cid = parseInt(tr.dataset.id);
+            const coordinator = State.whatsappCoordinators.find(c => c.id === cid);
+            if (coordinator && confirm(`¿Estás seguro de eliminar al coordinador ${coordinator.name}?`)) {
+                await deleteCoordinatorRequest(cid);
+            }
+        });
+    });
+}
+
+function startEditCoordinator(coordinator) {
+    elements.coordinatorEditId.value = coordinator.id;
+    elements.coordinatorName.value = coordinator.name;
+    elements.coordinatorCedula.value = coordinator.cedula;
+    elements.coordinatorRole.value = coordinator.role;
+    elements.coordinatorPhone.value = coordinator.phone;
+    elements.coordinatorZone.value = coordinator.zone;
+    elements.coordinatorFormTitle.textContent = "Editar Coordinador: " + coordinator.name;
+    elements.btnCancelCoordinatorEdit.style.display = "inline-block";
+    elements.coordinatorName.focus();
+}
+
+function resetCoordinatorForm() {
+    elements.coordinatorEditId.value = "";
+    elements.formCoordinator.reset();
+    elements.coordinatorFormTitle.textContent = "Agregar Nuevo Coordinador";
+    elements.btnCancelCoordinatorEdit.style.display = "none";
+}
+
+async function saveCoordinatorStatus(cid, coordinatorData) {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(coordinatorData)
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "Error al actualizar");
+        }
+        await loadWhatsAppCoordinators();
+    } catch (e) {
+        alert("Error al actualizar coordinador: " + e.message);
+        loadWhatsAppCoordinators(); // reload to reset UI checkbox
+    }
+}
+
+async function deleteCoordinatorRequest(cid) {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) throw new Error("Error al eliminar");
+        await loadWhatsAppCoordinators();
+    } catch (e) {
+        alert("Error al eliminar coordinador: " + e.message);
+    }
+}
+
+function setupCoordinatorManagement() {
+    if (!elements.btnManageCoordinators) return;
+    
+    // Toggle modal visibility
+    elements.btnManageCoordinators.addEventListener('click', () => {
+        elements.modalCoordinators.style.display = 'flex';
+        loadWhatsAppCoordinators();
+    });
+    
+    elements.btnCloseCoordinatorsModal.addEventListener('click', () => {
+        elements.modalCoordinators.style.display = 'none';
+        resetCoordinatorForm();
+    });
+    
+    // Close on click outside modal content
+    elements.modalCoordinators.addEventListener('click', (e) => {
+        if (e.target === elements.modalCoordinators) {
+            elements.modalCoordinators.style.display = 'none';
+            resetCoordinatorForm();
+        }
+    });
+    
+    // Search filter
+    elements.searchCoordinators.addEventListener('input', () => {
+        renderCoordinatorsList();
+    });
+    
+    // Form submit
+    elements.formCoordinator.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const cid = elements.coordinatorEditId.value;
+        const name = elements.coordinatorName.value;
+        const cedula = elements.coordinatorCedula.value;
+        const role = elements.coordinatorRole.value;
+        const phone = elements.coordinatorPhone.value;
+        const zone = elements.coordinatorZone.value;
+        
+        const payload = { name, cedula, role, phone, zone, active: 1 };
+        
+        const submitBtn = elements.formCoordinator.querySelector('button[type="submit"]');
+        const originalText = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Guardando...';
+        
+        try {
+            let url = `${API_BASE}/api/whatsapp-coordinators`;
+            let method = 'POST';
+            
+            if (cid) {
+                // We are editing. Find existing to preserve active status.
+                const existing = State.whatsappCoordinators.find(c => c.id === parseInt(cid));
+                payload.active = existing ? existing.active : 1;
+                url = `${url}/${cid}`;
+                method = 'PUT';
+            }
+            
+            const res = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || "Error al guardar");
+            }
+            
+            resetCoordinatorForm();
+            await loadWhatsAppCoordinators();
+        } catch (e) {
+            alert("Error al guardar coordinador: " + e.message);
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+        }
+    });
+    
+    elements.btnCancelCoordinatorEdit.addEventListener('click', () => {
+        resetCoordinatorForm();
+    });
+    
+    // Load counts initially
+    loadWhatsAppCoordinators();
 }
 
 function renderPromotersList() {
@@ -2028,6 +2288,12 @@ function renderPromotersList() {
             const promoter = State.whatsappPromoters.find(p => p.id === pid);
             if (promoter) {
                 const newActive = e.target.checked ? 1 : 0;
+                // Visual feedback: disable checkbox and fade the row
+                checkbox.disabled = true;
+                tr.style.opacity = '0.5';
+                const slider = checkbox.nextElementSibling;
+                if (slider) slider.style.filter = 'grayscale(1) opacity(0.5)';
+                
                 await savePromoterStatus(pid, { ...promoter, active: newActive });
             }
         });
@@ -2130,7 +2396,6 @@ function setupPromoterManagement() {
         renderPromotersList();
     });
     
-    // Form submit
     elements.formPromoter.addEventListener('submit', async (e) => {
         e.preventDefault();
         
@@ -2140,6 +2405,11 @@ function setupPromoterManagement() {
         const zone = elements.promoterZone.value;
         
         const payload = { name, phone, zone, active: 1 };
+        
+        const submitBtn = elements.formPromoter.querySelector('button[type="submit"]');
+        const originalText = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Guardando...';
         
         try {
             let url = `${API_BASE}/api/whatsapp-promoters`;
@@ -2168,6 +2438,9 @@ function setupPromoterManagement() {
             await loadWhatsAppPromoters();
         } catch (e) {
             alert("Error al guardar promotor: " + e.message);
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
         }
     });
     

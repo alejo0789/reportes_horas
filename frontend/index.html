@@ -86,11 +86,16 @@
             <aside class="sidebar-panel">
                 <!-- WHATSAPP PROMOTERS PANEL -->
                 <div class="glass-panel promoters-whatsapp-section">
-                    <h3 class="section-title"><i class="fa-brands fa-whatsapp"></i> Promotores WhatsApp</h3>
-                    <p class="section-desc">Gestiona los promotores autorizados para realizar consultas por WhatsApp.</p>
-                    <button class="action-btn-primary" id="btn-manage-promoters" style="width: 100%; margin-top: 10px;">
-                        <i class="fa-solid fa-users-gear"></i> Gestionar Promotores
-                    </button>
+                    <h3 class="section-title"><i class="fa-solid fa-users"></i> Control de Personal</h3>
+                    <p class="section-desc">Gestiona promotores y coordinadores autorizados.</p>
+                    <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+                        <button class="action-btn-primary" id="btn-manage-promoters" style="width: 100%;">
+                            <i class="fa-solid fa-users-gear"></i> Gestionar Promotores
+                        </button>
+                        <button class="action-btn-primary" id="btn-manage-coordinators" style="width: 100%; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);">
+                            <i class="fa-solid fa-user-shield"></i> Gestionar Coordinadores
+                        </button>
+                    </div>
                 </div>
 
                 <!-- EXCEL UPLOADS -->
@@ -410,6 +415,92 @@
                         </thead>
                         <tbody id="promoters-list-body">
                             <!-- Filas de promotores se cargan dinámicamente -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- MODAL DE GESTIÓN DE COORDINADORES DE ÁREA -->
+    <div class="modal-overlay" id="modal-coordinators" style="display: none;">
+        <div class="modal-container" style="max-width: 800px;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-user-shield"></i> Coordinadores de Área</h3>
+                <button class="modal-close-btn" id="btn-close-coordinators-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- FORMULARIO DE AGREGAR / EDITAR -->
+                <form class="promoter-form" id="form-coordinator">
+                    <input type="hidden" id="coordinator-edit-id" value="">
+                    <h4 id="coordinator-form-title">Agregar Nuevo Coordinador</h4>
+                    <div class="form-row-three" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                        <div class="form-group">
+                            <label for="coordinator-name">Nombre Completo</label>
+                            <input type="text" id="coordinator-name" required placeholder="Ej. Yudy Andrea Morales">
+                        </div>
+                        <div class="form-group">
+                            <label for="coordinator-cedula">Cédula / Documento</label>
+                            <input type="text" id="coordinator-cedula" required placeholder="Ej. 25288490">
+                        </div>
+                        <div class="form-group">
+                            <label for="coordinator-role">Cargo / Rol</label>
+                            <input type="text" id="coordinator-role" required placeholder="Ej. Coordinador Comercial">
+                        </div>
+                    </div>
+                    <div class="form-row-three" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                        <div class="form-group">
+                            <label for="coordinator-phone">Celular</label>
+                            <input type="text" id="coordinator-phone" required placeholder="Ej. 3207205166">
+                        </div>
+                        <div class="form-group">
+                            <label for="coordinator-zone">Zona Asignada</label>
+                            <select id="coordinator-zone" required>
+                                <option value="Centro y Oriente">Centro y Oriente</option>
+                                <option value="Empresa">Empresa</option>
+                                <option value="Norte">Norte</option>
+                                <option value="Occidente">Occidente</option>
+                                <option value="Sur">Sur</option>
+                                <option value="Centro">Centro</option>
+                                <option value="Oriente">Oriente</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button type="submit" class="action-btn-primary" id="btn-save-coordinator">
+                            <i class="fa-solid fa-floppy-disk"></i> Guardar Coordinador
+                        </button>
+                        <button type="button" class="action-btn-secondary" id="btn-cancel-coordinator-edit" style="display: none;">
+                            Cancelar
+                        </button>
+                    </div>
+                </form>
+
+                <hr class="modal-divider">
+
+                <!-- LISTADO Y BÚSQUEDA -->
+                <div class="modal-list-header">
+                    <h4>Coordinadores Registrados</h4>
+                    <div class="search-box-container">
+                        <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                        <input type="text" id="search-coordinators" placeholder="Buscar por nombre, cédula o zona..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                    </div>
+                </div>
+
+                <div class="promoters-table-container">
+                    <table class="modal-table">
+                        <thead>
+                            <tr>
+                                <th>Nombre</th>
+                                <th>Cédula</th>
+                                <th>Cargo</th>
+                                <th>Zona</th>
+                                <th>Celular</th>
+                                <th style="text-align: center;">Estado</th>
+                                <th style="text-align: center;">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="coordinators-list-body">
+                            <!-- Filas de coordinadores se cargan dinámicamente -->
                         </tbody>
                     </table>
                 </div>
