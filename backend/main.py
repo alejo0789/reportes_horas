@@ -15,7 +15,8 @@ from backend.cache import (
     init_cache_db, get_cached_sales, set_cached_sales, clear_cache,
     seed_promoters_from_excel, get_all_promoters, add_promoter, update_promoter, delete_promoter,
     find_active_promoter_by_phone,
-    seed_coordinators, get_all_coordinators, add_coordinator, update_coordinator, delete_coordinator
+    seed_coordinators, get_all_coordinators, add_coordinator, update_coordinator, delete_coordinator,
+    find_active_coordinator_by_phone
 )
 
 logging.basicConfig(level=logging.INFO)
