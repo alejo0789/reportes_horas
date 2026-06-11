@@ -480,6 +480,7 @@ TABLA_TO_PRODUCT_NAME = {
     'SIGT_BALOTO':               'BALOTO',
     'SIGT_RECARGAS':             'RECARGA EN LINEA',
     'SIGT_SG_GIROS_CREADOS':     'GIROS',
+    'SIGT_SG_GIROS_PAGADOS':     'GIROS',
     'SIGT_LOTERIAS_LINEA':       'LOTERIA EN LINEA',
     'SIGT_RECAUDOS_EMPRESAS':    'RECAUDOS EMPRESARIALES',
     'SIGT_VENTA_INCENTIVO_COBRO':'TRANSACCIONES CNB',
@@ -727,7 +728,7 @@ def get_whatsapp_query(
             for sale in sales_list:
                 src_table = sale.get("Tabla_Origen")
                 s_code = sale.get("Cod_Producto")
-                if src_table in {'SIGT_SG_GIROS_PAGADOS', 'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+                if src_table in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
                     continue
                 if src_table == 'SIGT_RECAUDOS_MAESTRO' and str(s_code) != '22005':
                     continue
@@ -895,7 +896,7 @@ def get_whatsapp_query(
         s_code = sale.get("Cod_Producto")
         
         # Filter out payouts and general non-sales flows, but preserve CNB (22005)
-        if src_table in {'SIGT_SG_GIROS_PAGADOS', 'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+        if src_table in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
             continue
         if src_table == 'SIGT_RECAUDOS_MAESTRO' and str(s_code) != '22005':
             continue

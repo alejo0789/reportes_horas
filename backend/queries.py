@@ -171,7 +171,7 @@ base_transaccional AS (
     t.ide_sitioventa,
     t.ide_usuario,
     CAST(t.fec_pago AS DATE) AS fec_event,
-    NVL(t.valor_total, 0) AS venta_neta
+    1 AS venta_neta
   FROM GANA_SIGA.SIGT_SG_GIROS_PAGADOS t, params p
   WHERE t.fec_pago >= p.desde
     AND t.fec_pago <  p.hasta

@@ -801,8 +801,7 @@ function getFilteredCombinedData() {
         const sDate = s.Fecha_Dia ? s.Fecha_Dia.split('T')[0] : '';
         const isSameDate = sDate === State.selectedDate;
         
-        const isPayout = s.Tabla_Origen === 'SIGT_SG_GIROS_PAGADOS' || 
-                          s.Tabla_Origen === 'SIGT_PAGOS' || 
+        const isPayout = s.Tabla_Origen === 'SIGT_PAGOS' || 
                           s.Tabla_Origen === 'SIGT_PAGOGEN_MAESTRO';
                           
         const isNonSalesFlow = s.Tabla_Origen === 'SIGT_RECAUDOS_MAESTRO' && String(s.Cod_Producto) !== '22005';
@@ -894,6 +893,7 @@ function getFilteredCombinedData() {
             'SIGT_BALOTO':               'BALOTO',
             'SIGT_RECARGAS':             'RECARGA EN LINEA',
             'SIGT_SG_GIROS_CREADOS':     'GIROS',
+            'SIGT_SG_GIROS_PAGADOS':     'GIROS',
             'SIGT_LOTERIAS_LINEA':       'LOTERIA EN LINEA',
             'SIGT_RECAUDOS_EMPRESAS':    'RECAUDOS EMPRESARIALES',
             'SIGT_VENTA_INCENTIVO_COBRO':'TRANSACCIONES CNB',
