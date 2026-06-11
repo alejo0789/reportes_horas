@@ -960,6 +960,7 @@ def get_whatsapp_query(
     emoji_overall = "🟢" if compliance >= 95 else "🔴"
     
     if is_coordinator and report_type in {"products", "offices"}:
+        total_faltante_meta = max(0.0, total_goals - total_sales)
         msg = f"📊 *REPORTE DE ZONA (GENERAL)*\n"
         msg += f"👤 *Coordinador:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
@@ -967,8 +968,9 @@ def get_whatsapp_query(
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
-        msg += f"🎯 *Meta Total:* ${round(total_goals):,}\n"
-        msg += f"📈 *Cumplimiento Zona:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"📊 *Cumplimiento Zona:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
+        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
         msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n\n"
         
@@ -1013,21 +1015,17 @@ def get_whatsapp_query(
         }
     
     if report_type == "products":
-        # Sum of next hour goals for all assigned products
-        total_next_hour_goal = 0.0
-        for p_name, goal_val in goals_by_product.items():
-            total_next_hour_goal += goal_val * next_hour_ratio
-
+        total_faltante_meta = max(0.0, total_goals - total_sales)
         msg = f"📊 *CUMPLIMIENTO DIARIO POR PRODUCTO*\n"
         msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"💰 *Venta Acum. (hasta {ref_hour_str}):* ${round(total_sales_acum):,}\n"
-        msg += f"🎯 *Meta Hora Sig. ({next_hour_str}):* ${round(total_next_hour_goal):,}\n"
-        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
+        msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
         msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
+        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
         msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n"
         
