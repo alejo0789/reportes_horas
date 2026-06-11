@@ -1022,7 +1022,6 @@ def get_whatsapp_query(
         msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
         msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
         msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
         msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
@@ -1068,12 +1067,10 @@ def get_whatsapp_query(
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         if is_count_based:
-            msg += f"💰 *Venta Acumulada:* {round(total_sales):,}\n"
             msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
             msg += f"📈 *Meta del Día:* {round(total_goals):,}\n"
             msg += f"🎯 *Faltante Meta:* {round(total_faltante_meta):,}\n"
         else:
-            msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
             msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
             msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
             msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
