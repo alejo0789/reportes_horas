@@ -1532,28 +1532,17 @@ async def receive_whatsapp_webhook(request: Request):
                 button_id = button_reply.get("id")
                 set_cached_sales(session_key, {"state": "idle"})
                 
-                if button_id == "view_office_report" or button_id == "view_office_general":
-                    report_type = "offices"
-                elif button_id == "view_product_report":
+                if button_id == "view_product_report":
                     report_type = "products"
                 elif button_id == "view_prod_office_report":
                     report_type = "prompt_product"
                     set_cached_sales(session_key, {"state": "awaiting_product_selection"})
             else:
                 user_msg_lower = user_msg_text.lower()
-                if "oficina general" in user_msg_lower:
-                    set_cached_sales(session_key, {"state": "idle"})
-                    report_type = "offices"
-                elif "producto / oficina" in user_msg_lower or "producto/oficina" in user_msg_lower:
+                if "producto / oficina" in user_msg_lower or "producto/oficina" in user_msg_lower:
                     report_type = "prompt_product"
                     set_cached_sales(session_key, {"state": "awaiting_product_selection"})
-                elif "oficina" in user_msg_lower:
-                    set_cached_sales(session_key, {"state": "idle"})
-                    report_type = "offices"
-                elif "producto" in user_msg_lower:
-                    set_cached_sales(session_key, {"state": "idle"})
-                    report_type = "products"
-                elif "menu" in user_msg_lower or "menú" in user_msg_lower or "hola" in user_msg_lower:
+                elif "producto" in user_msg_lower or "menu" in user_msg_lower or "menú" in user_msg_lower or "hola" in user_msg_lower:
                     set_cached_sales(session_key, {"state": "idle"})
                     report_type = "products"
                     
@@ -1645,34 +1634,11 @@ async def receive_whatsapp_webhook(request: Request):
             buttons.append({
                 "type": "reply",
                 "reply": {
-                    "id": "view_office_general",
-                    "title": "Oficina General"
-                }
-            })
-            buttons.append({
-                "type": "reply",
-                "reply": {
                     "id": "view_prod_office_report",
                     "title": "Producto / Oficina"
                 }
             })
-            button_prompt = "📊 Selecciona el tipo de reporte por oficina:"
-        elif res_report_type == "offices":
-            buttons.append({
-                "type": "reply",
-                "reply": {
-                    "id": "view_product_report",
-                    "title": "Reporte Productos"
-                }
-            })
-            buttons.append({
-                "type": "reply",
-                "reply": {
-                    "id": "view_prod_office_report",
-                    "title": "Producto / Oficina"
-                }
-            })
-            button_prompt = "📦 Selecciona otra opción para consultar:"
+            button_prompt = "🔍 ¿Deseas ver el detalle de un producto por oficina?"
         elif res_report_type == "product_office":
             buttons.append({
                 "type": "reply",
@@ -1681,21 +1647,7 @@ async def receive_whatsapp_webhook(request: Request):
                     "title": "Reporte Productos"
                 }
             })
-            buttons.append({
-                "type": "reply",
-                "reply": {
-                    "id": "view_office_general",
-                    "title": "Oficina General"
-                }
-            })
-            buttons.append({
-                "type": "reply",
-                "reply": {
-                    "id": "view_prod_office_report",
-                    "title": "Producto / Oficina"
-                }
-            })
-            button_prompt = "📦 Selecciona otra opción para consultar:"
+            button_prompt = "📦 Seleccione una opción:"
             
     if buttons:
         payload_buttons = {
