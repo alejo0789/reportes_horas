@@ -236,14 +236,15 @@ def get_ventas(
         is_today = desde.startswith(today_str)
         
         cache_valid = True
-        if is_today:
-            try:
-                dt_updated = datetime.fromisoformat(last_updated)
-                # Expire after 1 hour
-                if datetime.now() - dt_updated > timedelta(hours=1):
-                    cache_valid = False
-            except Exception:
-                cache_valid = False
+        # Expiration check disabled temporarily by user request
+        # if is_today:
+        #     try:
+        #         dt_updated = datetime.fromisoformat(last_updated)
+        #         # Expire after 1 hour
+        #         if datetime.now() - dt_updated > timedelta(hours=1):
+        #             cache_valid = False
+        #     except Exception:
+        #         cache_valid = False
         
         if cache_valid:
             logger.info(f"Serving sales data from SQLite Cache for key {cache_key} (updated: {last_updated}).")
