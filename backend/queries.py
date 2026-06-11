@@ -207,7 +207,7 @@ base_transaccional AS (
     t.ide_sitioventa,
     t.ide_usuario,
     CAST(t.fec_venta AS DATE) AS fec_event,
-    1 AS venta_neta
+    NVL(t.vlr_pago_total, 0) AS venta_neta
   FROM GANA_SIGA.SIGT_VENTA_INCENTIVO_COBRO t, params p
   WHERE t.fec_venta >= p.desde
     AND t.fec_venta <  p.hasta

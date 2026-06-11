@@ -979,8 +979,14 @@ function getFilteredCombinedData() {
     let reportingSites = new Set();
 
     joined.forEach(item => {
-        totalSales += item.venta;
-        totalGoals += item.meta;
+        // Exclude count-based products from overall totals if no specific product filter is active
+        const isCountBased = ["RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"].includes(item.producto);
+        const shouldExclude = !State.selectedProduct && isCountBased;
+
+        if (!shouldExclude) {
+            totalSales += item.venta;
+            totalGoals += item.meta;
+        }
         if (item.venta > 0) {
             reportingSites.add(item.cod_sitio);
         }
