@@ -1059,19 +1059,24 @@ def get_whatsapp_query(
         
     elif report_type == "product_office":
         is_count_based = selected_product in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+        total_faltante_meta = max(0.0, total_goals - total_sales)
         
         msg = f"📊 *REPORTE PRODUCTO / OFICINA*\n"
         msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📦 *Producto:* *{selected_product}*\n"
+        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         if is_count_based:
-            msg += f"💰 *Ventas:* {round(total_sales):,}\n"
-            msg += f"🎯 *Meta:* {round(total_goals):,}\n"
+            msg += f"💰 *Venta Acumulada:* {round(total_sales):,}\n"
+            msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+            msg += f"📈 *Meta del Día:* {round(total_goals):,}\n"
+            msg += f"🎯 *Faltante Meta:* {round(total_faltante_meta):,}\n"
         else:
-            msg += f"💰 *Ventas:* ${round(total_sales):,}\n"
-            msg += f"🎯 *Meta:* ${round(total_goals):,}\n"
-        msg += f"📈 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+            msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
+            msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+            msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
+            msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
         msg += f"──────────────────\n"
         msg += f"🏢 *Detalle por Oficina:*\n"
         
@@ -1087,12 +1092,16 @@ def get_whatsapp_query(
                 off_comp = 100.0 if off_sales > 0 else 0.0
                 
             emoji_off = "🟢" if off_comp >= 95 else "🔴"
+            off_faltante = max(0.0, off_goal - off_sales)
+            
             if is_count_based:
                 msg += f"• 🏢 *{off_name}* ({emoji_off} *{off_comp:.1f}%*)\n"
-                msg += f"  ↳ Venta: {round(off_sales):,} / Meta: {round(off_goal):,}\n"
+                msg += f"  ↳ Meta del Día: {round(off_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {round(off_faltante):,}\n\n"
             else:
                 msg += f"• 🏢 *{off_name}* ({emoji_off} *{off_comp:.1f}%*)\n"
-                msg += f"  ↳ Venta: ${round(off_sales):,} / Meta: ${round(off_goal):,}\n"
+                msg += f"  ↳ Meta del Día: ${round(off_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: ${round(off_faltante):,}\n\n"
                 
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
