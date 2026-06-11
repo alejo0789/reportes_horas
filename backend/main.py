@@ -668,7 +668,7 @@ def get_whatsapp_query(
 
     # Calculate individual promoter metrics in coordinator's zone
     promoter_compliance_list = []
-    if is_coordinator and report_type in {"products", "offices"}:
+    if is_coordinator and report_type in {"products", "offices", "prompt_promoter"}:
         promoter_to_offices = {}
         for item in distribution_store:
             item_zone = item.get("zona", "")
@@ -761,20 +761,20 @@ def get_whatsapp_query(
 
     # Early return for prompt_promoter
     if is_coordinator and report_type == "prompt_promoter":
-        zone_promoters = sorted(list(set([
-            item.get("promotor") for item in distribution_store 
-            if item.get("zona", "").strip().lower() == user_zone.strip().lower() and item.get("promotor")
-        ])))
-        if not zone_promoters:
+        if not promoter_compliance_list:
             return {
-                "text": "⚠️ No hay promotores asignados a tu zona en la distribución comercial.",
+                "text": "⚠️ No hay promotores asignados a tu zona en la distribución comercial o no tienen ventas/metas cargadas.",
                 "report_type": "prompt_promoter",
                 "is_coordinator": True
             }
-        msg = f"🔢 *Seleccione un promotor para ver su detalle por producto:*\n\n"
-        for idx, prom in enumerate(zone_promoters, 1):
-            msg += f"*{idx}.* {prom}\n"
-        msg += f"\nPor favor, escribe el *número* del promotor que deseas consultar."
+        msg = f"👥 *PROMOTORES DE LA ZONA: {user_zone}*\n"
+        msg += f"🔢 *Seleccione un promotor para ver su detalle por producto:*\n\n"
+        for idx, (p_name, p_sales, p_meta, p_comp) in enumerate(promoter_compliance_list, 1):
+            p_emoji = "🟢" if p_comp >= 95 else "🔴"
+            msg += f"*{idx}.* 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
+            msg += f"   ↳ Venta: ${round(p_sales):,} / Meta: ${round(p_meta):,}\n\n"
+            
+        msg += f"Por favor, escribe el *número* del promotor que deseas consultar."
         return {
             "text": msg,
             "report_type": "prompt_promoter",
