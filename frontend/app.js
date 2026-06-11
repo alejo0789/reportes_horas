@@ -965,8 +965,7 @@ function getFilteredCombinedData() {
             };
         }
 
-        const isCountBased = ["RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"].includes(normProd);
-        const increment = isCountBased ? 1 : (s.Venta_Neta || 0);
+        const increment = s.Venta_Neta || 0;
 
         compositeStore[key].venta += increment;
         if (hourIdx >= 0 && hourIdx < 24) {

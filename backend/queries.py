@@ -99,7 +99,7 @@ base_transaccional AS (
     t.ide_sitioventa,
     t.ide_usuario,
     CAST(t.fec_venta AS DATE) AS fec_event,
-    NVL(t.vlr_total_recaudo, 0) AS venta_neta
+    CASE WHEN t.ide_producto = 22005 THEN 1 ELSE NVL(t.vlr_total_recaudo, 0) END AS venta_neta
   FROM GANA_SIGA.SIGT_RECAUDOS_MAESTRO t, params p
   WHERE t.fec_venta >= p.desde
     AND t.fec_venta <  p.hasta
@@ -141,7 +141,7 @@ base_transaccional AS (
     t.ide_sitioventa,
     t.ide_usuario,
     CAST(t.fec_venta AS DATE) AS fec_event,
-    NVL(t.vlr_recaudado, 0) AS venta_neta
+    1 AS venta_neta
   FROM GANA_SIGA.SIGT_RECAUDOS_EMPRESAS t, params p
   WHERE t.fec_venta >= p.desde
     AND t.fec_venta <  p.hasta
@@ -155,7 +155,7 @@ base_transaccional AS (
     t.ide_sitioventa,
     t.ide_usuario,
     CAST(t.fec_giro AS DATE) AS fec_event,
-    NVL(t.valor_total, 0) AS venta_neta
+    1 AS venta_neta
   FROM GANA_SIGA.SIGT_SG_GIROS_CREADOS t, params p
   WHERE t.fec_giro >= p.desde
     AND t.fec_giro <  p.hasta
@@ -219,7 +219,7 @@ base_transaccional AS (
     t.ide_sitioventa,
     t.ide_usuario,
     CAST(t.fec_venta AS DATE) AS fec_event,
-    NVL(t.vlr_pago_total, 0) AS venta_neta
+    1 AS venta_neta
   FROM GANA_SIGA.SIGT_VENTA_INCENTIVO_COBRO t, params p
   WHERE t.fec_venta >= p.desde
     AND t.fec_venta <  p.hasta
