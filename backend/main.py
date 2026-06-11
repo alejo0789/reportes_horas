@@ -1095,7 +1095,7 @@ def get_whatsapp_query(
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
-    return {
+    ret = {
         "text": msg,
         "report_type": report_type,
         "promoter": user_name,
@@ -1103,6 +1103,9 @@ def get_whatsapp_query(
         "goal": total_goals,
         "compliance": compliance
     }
+    if override_promoter_name:
+        ret["is_coordinator_promoter_view"] = True
+    return ret
 
 @app.get("/api/sitios")
 def get_sitios(force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de sitios")):
@@ -1456,6 +1459,7 @@ async def receive_whatsapp_webhook(request: Request):
             if item.get("zona", "").strip().lower() == coord_zone.strip().lower() and item.get("promotor")
         ])))
         
+        # 1. Check if coordinator is responding to promoter selection prompt
         if (session_data and isinstance(session_data, dict) and 
             session_data.get("state") == "awaiting_promoter_selection" and 
             message_type == "text" and 
@@ -1465,7 +1469,8 @@ async def receive_whatsapp_webhook(request: Request):
                 num = int(user_msg_text)
                 if 1 <= num <= len(zone_promoters):
                     selected_promoter = zone_promoters[num - 1]
-                    set_cached_sales(session_key, {"state": "idle"})
+                    # Save viewing promoter state and keep selected promoter name
+                    set_cached_sales(session_key, {"state": "viewing_promoter", "selected_promoter": selected_promoter})
                     query_result = get_whatsapp_query(phone=None, report_type="products", override_promoter_name=selected_promoter)
                 else:
                     reply_text = f"❌ Número inválido. Por favor escribe un número entre 1 y {len(zone_promoters)}."
@@ -1473,31 +1478,67 @@ async def receive_whatsapp_webhook(request: Request):
             else:
                 reply_text = f"⚠️ Por favor escribe únicamente el número del promotor (1-{len(zone_promoters)}) o escribe *menu* para cancelar."
                 query_result = {"text": reply_text, "report_type": "prompt_promoter", "is_coordinator": True}
+                
+        # 2. Check if coordinator is responding to product selection prompt for the selected promoter
+        elif (session_data and isinstance(session_data, dict) and 
+              session_data.get("state") == "awaiting_product_selection" and 
+              message_type == "text" and 
+              not any(keyword in user_msg_text.lower() for keyword in ["hola", "menu", "menú", "zona", "promotor"])):
+            
+            current_promoter = session_data.get("selected_promoter")
+            if user_msg_text.isdigit():
+                num = int(user_msg_text)
+                active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
+                if 1 <= num <= len(active_products):
+                    selected_product = active_products[num - 1]
+                    # Set back to viewing promoter
+                    set_cached_sales(session_key, {"state": "viewing_promoter", "selected_promoter": current_promoter})
+                    report_type = "product_office"
+                    query_result = get_whatsapp_query(phone=None, report_type=report_type, selected_product=selected_product, override_promoter_name=current_promoter)
+                else:
+                    reply_text = f"❌ Número inválido. Por favor escribe un número entre 1 y {len(active_products)}."
+                    query_result = {"text": reply_text}
+            else:
+                active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
+                reply_text = f"⚠️ Por favor escribe únicamente el número del producto (1-{len(active_products)}) o escribe *menu* para cancelar."
+                query_result = {"text": reply_text}
+                
         else:
             # Normal routing for coordinator
             report_type = "products" # Default to zone report
+            button_id = None
             if message_type == "interactive":
                 interactive = message.get("interactive", {})
                 button_reply = interactive.get("button_reply", {})
                 button_id = button_reply.get("id")
-                set_cached_sales(session_key, {"state": "idle"})
                 
-                if button_id == "view_zone_report":
-                    report_type = "products"
-                elif button_id == "view_promoter_by_product":
-                    report_type = "prompt_promoter"
-                    set_cached_sales(session_key, {"state": "awaiting_promoter_selection"})
-            else:
-                user_msg_lower = user_msg_text.lower()
-                if "promotor" in user_msg_lower:
-                    report_type = "prompt_promoter"
-                    set_cached_sales(session_key, {"state": "awaiting_promoter_selection"})
-                elif "zona" in user_msg_lower or "menu" in user_msg_lower or "menú" in user_msg_lower or "hola" in user_msg_lower:
-                    set_cached_sales(session_key, {"state": "idle"})
-                    report_type = "products"
+            user_msg_lower = user_msg_text.lower()
+            
+            # If they want to exit to the general zone report
+            if (button_id == "view_zone_report" or 
+                any(keyword in user_msg_lower for keyword in ["zona", "menu", "menú", "hola"])):
+                set_cached_sales(session_key, {"state": "idle"})
+                session_data = None
+                report_type = "products"
+            elif button_id == "view_promoter_by_product" or "promotor" in user_msg_lower:
+                report_type = "prompt_promoter"
+                set_cached_sales(session_key, {"state": "awaiting_promoter_selection"})
+            elif button_id == "view_office_general":
+                report_type = "offices"
+            elif button_id == "view_prod_office_report":
+                report_type = "prompt_product"
+                current_promoter = session_data.get("selected_promoter") if (session_data and isinstance(session_data, dict)) else None
+                set_cached_sales(session_key, {"state": "awaiting_product_selection", "selected_promoter": current_promoter})
+            elif button_id == "view_product_report":
+                report_type = "products"
             
             if query_result is None:
-                query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+                # If they are currently viewing a selected promoter, use their name
+                current_promoter = session_data.get("selected_promoter") if (session_data and isinstance(session_data, dict)) else None
+                if current_promoter and report_type != "prompt_promoter":
+                    query_result = get_whatsapp_query(phone=None, report_type=report_type, selected_product=selected_product, override_promoter_name=current_promoter)
+                else:
+                    query_result = get_whatsapp_query(sender_phone, report_type=report_type)
     else:
         # Promoter Session Routing
         if (session_data and isinstance(session_data, dict) and 
@@ -1614,7 +1655,80 @@ async def receive_whatsapp_webhook(request: Request):
     # 2. Send the interactive menu buttons as a separate short message (limit 1024 characters, completely safe)
     buttons = []
     button_prompt = ""
-    if query_result.get("is_coordinator") is True:
+    
+    if query_result.get("is_coordinator_promoter_view") is True:
+        res_report_type = query_result.get("report_type")
+        if res_report_type == "products":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_office_general",
+                    "title": "Oficina General"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_prod_office_report",
+                    "title": "Producto / Oficina"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_zone_report",
+                    "title": "Reporte de Zona"
+                }
+            })
+            button_prompt = "📊 Selecciona el tipo de reporte por oficina:"
+        elif res_report_type == "offices":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_product_report",
+                    "title": "Reporte Productos"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_prod_office_report",
+                    "title": "Producto / Oficina"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_zone_report",
+                    "title": "Reporte de Zona"
+                }
+            })
+            button_prompt = "📦 Selecciona otra opción para consultar:"
+        elif res_report_type == "product_office":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_product_report",
+                    "title": "Reporte Productos"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_office_general",
+                    "title": "Oficina General"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_zone_report",
+                    "title": "Reporte de Zona"
+                }
+            })
+            button_prompt = "📦 Selecciona otra opción para consultar:"
+            
+    elif query_result.get("is_coordinator") is True:
         res_report_type = query_result.get("report_type")
         if res_report_type == "coordinator_general":
             buttons.append({
@@ -1626,14 +1740,7 @@ async def receive_whatsapp_webhook(request: Request):
             })
             button_prompt = "🔍 ¿Deseas ver el detalle de un promotor específico por producto?"
         elif res_report_type == "prompt_promoter":
-            buttons.append({
-                "type": "reply",
-                "reply": {
-                    "id": "view_zone_report",
-                    "title": "Volver al Menú"
-                }
-            })
-            button_prompt = "❌ O presiona para cancelar:"
+            pass
         else:
             buttons.append({
                 "type": "reply",
