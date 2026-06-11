@@ -829,9 +829,18 @@ def get_whatsapp_query(
     hasta = f"{today_str} 23:59:59"
     
     sales_list = []
+    db_update_time_str = "Desconocida"
     try:
         sales_resp = get_ventas(desde=desde, hasta=hasta, force_refresh=False)
         sales_list = sales_resp.get("data", [])
+        last_updated = sales_resp.get("last_updated")
+        if last_updated:
+            try:
+                from datetime import datetime as dt_class
+                dt = dt_class.fromisoformat(last_updated)
+                db_update_time_str = dt.strftime("%d/%m/%Y %I:%M %p")
+            except Exception:
+                db_update_time_str = str(last_updated)
     except Exception as e:
         logger.error(f"Error fetching sales for WhatsApp query: {e}")
         return {
@@ -955,6 +964,7 @@ def get_whatsapp_query(
         msg += f"👤 *Coordinador:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {user_zone}\n"
+        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
         msg += f"🎯 *Meta Total:* ${round(total_goals):,}\n"
@@ -973,15 +983,21 @@ def get_whatsapp_query(
                 p_compliance = 100.0 if p_sales > 0 else 0.0
                 
             p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+            p_next_hour_goal = p_goal * next_hour_ratio
+            p_faltante = max(0.0, p_goal - p_sales)
             
             # Format according to count-based products
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
             if is_count_based:
                 msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Venta: {round(p_sales):,} / Meta: {round(p_goal):,}\n"
+                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
+                msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
             else:
                 msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Venta: ${round(p_sales):,} / Meta: ${round(p_goal):,}\n"
+                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
+                msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
                 
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
@@ -1006,6 +1022,7 @@ def get_whatsapp_query(
         msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {user_zone}\n"
+        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         msg += f"💰 *Venta Acum. (hasta {ref_hour_str}):* ${round(total_sales_acum):,}\n"
         msg += f"🎯 *Meta Hora Sig. ({next_hour_str}):* ${round(total_next_hour_goal):,}\n"
@@ -1016,7 +1033,6 @@ def get_whatsapp_query(
         
         all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
         for p_name in all_products:
-            p_sales_acum = sales_acum_by_product.get(p_name, 0.0)
             p_goal = goals_by_product.get(p_name, 0.0)
             p_sales_total = sales_by_product.get(p_name, 0.0)
             
@@ -1027,18 +1043,19 @@ def get_whatsapp_query(
                 
             p_emoji = "🟢" if p_compliance >= 95 else "🔴"
             p_next_hour_goal = p_goal * next_hour_ratio
+            p_faltante = max(0.0, p_goal - p_sales_total)
             
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
             if is_count_based:
                 msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Acumulado: {round(p_sales_acum):,}\n"
+                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
                 msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n\n"
+                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
             else:
                 msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Acumulado: ${round(p_sales_acum):,}\n"
+                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
                 msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n\n"
+                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
