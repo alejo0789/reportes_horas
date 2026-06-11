@@ -781,7 +781,8 @@ def get_whatsapp_query(
                 off_comp = 100.0 if off_sales > 0 else 0.0
                 
             emoji_off = "🟢" if off_comp >= 95 else "🔴"
-            msg += f"• *{off_name}:* {emoji_off} {off_comp:.1f}% (Vta: ${round(off_sales):,} / Meta: ${round(off_goal):,})\n"
+            msg += f"• 🏢 *{off_name}* ({emoji_off} *{off_comp:.1f}%*)\n"
+            msg += f"  ↳ Venta: ${round(off_sales):,} / Meta: ${round(off_goal):,}\n"
             
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
