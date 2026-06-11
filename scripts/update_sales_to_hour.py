@@ -22,7 +22,7 @@ def row_to_dict(columns, row):
 def main():
     parser = argparse.ArgumentParser(description="Actualiza la caché de ventas para una fecha y hasta una hora específica.")
     parser.add_argument("--fecha", default=datetime.now().strftime("%Y-%m-%d"), help="Fecha YYYY-MM-DD (por defecto hoy)")
-    parser.add_argument("--hora", default="17:12", help="Hora límite HH:MM (por defecto 17:12)")
+    parser.add_argument("--hora", default="17:12", help="Hora límite HH:MM o HH:MM:SS (por defecto 17:12)")
     
     args = parser.parse_args()
     
@@ -30,7 +30,10 @@ def main():
     hora = args.hora
     
     desde = f"{fecha} 00:00:00"
-    hasta_consulta = f"{fecha} {hora}:00"
+    if len(hora.split(":")) == 3:
+        hasta_consulta = f"{fecha} {hora}"
+    else:
+        hasta_consulta = f"{fecha} {hora}:00"
     # La clave de caché que busca el dashboard web y los reportes (día completo)
     cache_key = f"{fecha} 00:00:00_{fecha} 23:59:59"
     
@@ -93,7 +96,10 @@ def main():
         
         try:
             # Custom timestamp showing the cut-off hour
-            cutoff_iso = f"{fecha}T{hora}:00"
+            if len(hora.split(":")) == 3:
+                cutoff_iso = f"{fecha}T{hora}"
+            else:
+                cutoff_iso = f"{fecha}T{hora}:00"
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute("""
