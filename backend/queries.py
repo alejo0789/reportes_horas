@@ -99,11 +99,12 @@ base_transaccional AS (
     t.ide_sitioventa,
     t.ide_usuario,
     CAST(t.fec_venta AS DATE) AS fec_event,
-    CASE WHEN t.ide_producto = 22005 THEN 1 ELSE NVL(t.vlr_total_recaudo, 0) END AS venta_neta
+    1 AS venta_neta
   FROM GANA_SIGA.SIGT_RECAUDOS_MAESTRO t, params p
   WHERE t.fec_venta >= p.desde
     AND t.fec_venta <  p.hasta
     AND t.ide_estado IN (3)
+    AND t.ide_producto != 35
 
   UNION ALL
 
@@ -133,19 +134,6 @@ base_transaccional AS (
     AND t.fec_venta <  p.hasta
     AND t.ide_estado IN (3)
 
-  UNION ALL
-
-  SELECT
-    'SIGT_RECAUDOS_EMPRESAS' AS src_table,
-    t.ide_producto,
-    t.ide_sitioventa,
-    t.ide_usuario,
-    CAST(t.fec_venta AS DATE) AS fec_event,
-    1 AS venta_neta
-  FROM GANA_SIGA.SIGT_RECAUDOS_EMPRESAS t, params p
-  WHERE t.fec_venta >= p.desde
-    AND t.fec_venta <  p.hasta
-    AND t.ide_estado IN (44)
 
   UNION ALL
 

@@ -730,8 +730,6 @@ def get_whatsapp_query(
                 s_code = sale.get("Cod_Producto")
                 if src_table in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
                     continue
-                if src_table == 'SIGT_RECAUDOS_MAESTRO' and str(s_code) != '22005':
-                    continue
                 s_code = sale.get("Cod_Sitio")
                 if s_code is not None:
                     try:
@@ -897,8 +895,6 @@ def get_whatsapp_query(
         
         # Filter out payouts and general non-sales flows, but preserve CNB (22005)
         if src_table in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
-            continue
-        if src_table == 'SIGT_RECAUDOS_MAESTRO' and str(s_code) != '22005':
             continue
 
         s_code = sale.get("Cod_Sitio")

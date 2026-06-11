@@ -804,9 +804,7 @@ function getFilteredCombinedData() {
         const isPayout = s.Tabla_Origen === 'SIGT_PAGOS' || 
                           s.Tabla_Origen === 'SIGT_PAGOGEN_MAESTRO';
                           
-        const isNonSalesFlow = s.Tabla_Origen === 'SIGT_RECAUDOS_MAESTRO' && String(s.Cod_Producto) !== '22005';
-                          
-        return isSameDate && !isPayout && !isNonSalesFlow;
+        return isSameDate && !isPayout;
     });
 
     // 3. Setup dynamic mappings for joins
