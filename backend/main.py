@@ -958,14 +958,29 @@ def get_whatsapp_query(
         msg += f"🎯 *Meta Total:* ${round(total_goals):,}\n"
         msg += f"📈 *Cumplimiento Zona:* {emoji_overall} *{compliance:.1f}%*\n"
         msg += f"──────────────────\n"
-        msg += f"👥 *Cumplimiento por Promotor:*\n\n"
+        msg += f"📦 *Detalle por Producto:*\n\n"
         
-        for p_name, p_sales, p_meta, p_comp in promoter_compliance_list:
-            p_emoji = "🟢" if p_comp >= 95 else "🔴"
-            msg += f"• 👤 *{p_name}*\n"
-            msg += f"  ↳ Ventas: ${round(p_sales):,} / Meta: ${round(p_meta):,}\n"
-            msg += f"  ↳ Cumplimiento: {p_emoji} *{p_comp:.1f}%*\n\n"
+        all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
+        for p_name in all_products:
+            p_sales = sales_by_product.get(p_name, 0.0)
+            p_goal = goals_by_product.get(p_name, 0.0)
             
+            if p_goal > 0:
+                p_compliance = (p_sales / p_goal * 100.0)
+            else:
+                p_compliance = 100.0 if p_sales > 0 else 0.0
+                
+            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+            
+            # Format according to count-based products
+            is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+            if is_count_based:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Venta: {round(p_sales):,} / Meta: {round(p_goal):,}\n"
+            else:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Venta: ${round(p_sales):,} / Meta: ${round(p_goal):,}\n"
+                
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
