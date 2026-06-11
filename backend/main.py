@@ -600,10 +600,16 @@ def get_whatsapp_query(
     selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina"),
     override_promoter_name: Optional[str] = Query(None, description="Nombre de promotor para consulta por coordinador")
 ):
-    """
-    Identifica al promotor o coordinador por su número de teléfono y retorna su resumen
-    de ventas y cumplimiento consolidado por producto o por oficina.
-    """
+    # Resolve FastAPI Query defaults if called directly in Python
+    if not isinstance(selected_product, str):
+        selected_product = None
+    if not isinstance(override_promoter_name, str):
+        override_promoter_name = None
+    if not isinstance(phone, str):
+        phone = None
+    if not isinstance(report_type, str):
+        report_type = "products"
+
     # 1. Buscar promotor o coordinador por celular
     if override_promoter_name:
         user_name = override_promoter_name
