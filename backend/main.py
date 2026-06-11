@@ -706,9 +706,18 @@ def get_whatsapp_query(
         hasta = f"{today_str} 23:59:59"
         
         sales_list = []
+        db_update_time_str = "Desconocida"
         try:
             sales_resp = get_ventas(desde=desde, hasta=hasta, force_refresh=False)
             sales_list = sales_resp.get("data", [])
+            last_updated = sales_resp.get("last_updated")
+            if last_updated:
+                try:
+                    from datetime import datetime as dt_class
+                    dt = dt_class.fromisoformat(last_updated)
+                    db_update_time_str = dt.strftime("%d/%m/%Y %I:%M %p")
+                except:
+                    db_update_time_str = str(last_updated)
         except:
             pass
             
@@ -769,11 +778,14 @@ def get_whatsapp_query(
             }
         msg = f"👥 *RESUMEN DE PROMOTORES - ZONA: {user_zone}*\n"
         msg += f"📅 *Fecha:* {today_str}\n"
+        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         for idx, (p_name, p_sales, p_meta, p_comp) in enumerate(promoter_compliance_list, 1):
             p_emoji = "🟢" if p_comp >= 95 else "🔴"
+            p_faltante = max(0.0, p_meta - p_sales)
             msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
-            msg += f"  ↳ Venta: ${round(p_sales):,} / Meta: ${round(p_meta):,}\n\n"
+            msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
+            msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
             
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
@@ -967,7 +979,6 @@ def get_whatsapp_query(
         msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
         msg += f"📊 *Cumplimiento Zona:* {emoji_overall} *{compliance:.1f}%*\n"
         msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
         msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
