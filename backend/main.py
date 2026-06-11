@@ -538,7 +538,8 @@ def resolve_product_name(sale, products_by_code=None):
 @app.get("/api/whatsapp/query")
 def get_whatsapp_query(
     phone: str = Query(..., description="Número de celular del promotor"),
-    report_type: str = Query("products", description="Tipo de reporte: 'products' o 'offices'")
+    report_type: str = Query("products", description="Tipo de reporte: 'products', 'offices', 'prompt_product', o 'product_office'"),
+    selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina")
 ):
     """
     Identifica al promotor por su número de teléfono y retorna su resumen
@@ -567,6 +568,23 @@ def get_whatsapp_query(
     if not assigned_offices:
         return {
             "text": f"⚠️ Hola {promoter_name}, estás registrado en WhatsApp pero no tienes oficinas asignadas en la distribución comercial cargada."
+        }
+
+    # Early return for product list prompt
+    if report_type == "prompt_product":
+        active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
+        if not active_products:
+            return {
+                "text": "⚠️ No hay productos con metas activas en este momento."
+            }
+        msg = f"🔢 *Seleccione un producto para ver el detalle de oficinas:*\n\n"
+        for idx, prod in enumerate(active_products, 1):
+            msg += f"*{idx}.* {prod}\n"
+        msg += f"\nPor favor, escribe el *número* del producto que deseas consultar."
+        return {
+            "text": msg,
+            "report_type": "prompt_product",
+            "promoter": promoter_name
         }
         
     # 3. Obtener catálogo de sitios para mapear sitio -> oficina
@@ -658,6 +676,10 @@ def get_whatsapp_query(
                     v_neta = float(sale.get("Venta_Neta") or 0.0)
                     prod_name = resolve_product_name(sale, products_by_code)
                     
+                    # Filtro para reporte producto/oficina
+                    if report_type == "product_office" and prod_name != selected_product:
+                        continue
+                        
                     # Measured by transaction count (increment of 1) for specific products
                     is_count_based = prod_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
                     increment = 1.0 if is_count_based else v_neta
@@ -688,6 +710,10 @@ def get_whatsapp_query(
     for prod_name, records in goals_store.items():
         if records and not records[0].get("activo", True):
             continue
+        # Filtro para reporte producto/oficina
+        if report_type == "product_office" and prod_name != selected_product:
+            continue
+            
         for rec in records:
             if rec.get("fecha") == today_str:
                 off_code = rec.get("cod_oficina")
@@ -757,8 +783,48 @@ def get_whatsapp_query(
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
+    elif report_type == "product_office":
+        is_count_based = selected_product in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+        
+        msg = f"📊 *REPORTE PRODUCTO / OFICINA*\n"
+        msg += f"👤 *Promotor:* {promoter_name}\n"
+        msg += f"📅 *Fecha:* {today_str}\n"
+        msg += f"📦 *Producto:* *{selected_product}*\n"
+        msg += f"──────────────────\n"
+        if is_count_based:
+            msg += f"💰 *Ventas:* {round(total_sales):,}\n"
+            msg += f"🎯 *Meta:* {round(total_goals):,}\n"
+        else:
+            msg += f"💰 *Ventas:* ${round(total_sales):,}\n"
+            msg += f"🎯 *Meta:* ${round(total_goals):,}\n"
+        msg += f"📈 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"──────────────────\n"
+        msg += f"🏢 *Detalle por Oficina:*\n"
+        
+        sorted_office_codes = sorted(list(assigned_offices))
+        for off_code in sorted_office_codes:
+            off_name = office_names.get(off_code, f"Oficina {off_code}")
+            off_sales = sales_by_office.get(off_code, 0.0)
+            off_goal = goals_by_office.get(off_code, 0.0)
+            
+            if off_goal > 0:
+                off_comp = (off_sales / off_goal * 100.0)
+            else:
+                off_comp = 100.0 if off_sales > 0 else 0.0
+                
+            emoji_off = "🟢" if off_comp >= 95 else "🔴"
+            if is_count_based:
+                msg += f"• 🏢 *{off_name}* ({emoji_off} *{off_comp:.1f}%*)\n"
+                msg += f"  ↳ Venta: {round(off_sales):,} / Meta: {round(off_goal):,}\n"
+            else:
+                msg += f"• 🏢 *{off_name}* ({emoji_off} *{off_comp:.1f}%*)\n"
+                msg += f"  ↳ Venta: ${round(off_sales):,} / Meta: ${round(off_goal):,}\n"
+                
+        msg += f"──────────────────\n"
+        msg += f"💪 ¡Vamos por la meta! 🚀"
+        
     else: # report_type == "offices"
-        msg = f"📊 *CUMPLIMIENTO DIARIO POR OFICINA*\n"
+        msg = f"📊 *REPORTE OFICINA GENERAL*\n"
         msg += f"👤 *Promotor:* {promoter_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {promoter['zone']}\n"
@@ -1120,28 +1186,80 @@ async def receive_whatsapp_webhook(request: Request):
         return {"status": "error", "message": "No sender phone found"}
         
     # Check if the incoming message is an interactive button click or text query
-    report_type = "products"
+    user_msg_text = ""
     message_type = message.get("type")
-    
-    if message_type == "interactive":
-        interactive = message.get("interactive", {})
-        button_reply = interactive.get("button_reply", {})
-        button_id = button_reply.get("id")
-        if button_id == "view_office_report":
-            report_type = "offices"
-        elif button_id == "view_product_report":
-            report_type = "products"
-    else:
-        # Check text body for keywords
+    if message_type == "text":
         text_obj = message.get("text", {})
-        user_msg_text = text_obj.get("body", "").strip().lower()
-        if "oficina" in user_msg_text:
-            report_type = "offices"
-        elif "producto" in user_msg_text:
-            report_type = "products"
+        user_msg_text = text_obj.get("body", "").strip()
+        
+    session_key = f"session_{sender_phone}"
+    session_data, _ = get_cached_sales(session_key)
+    
+    report_type = "products"
+    selected_product = None
+    query_result = None
+    
+    # Check if the user is replying to the product number prompt
+    if (session_data and isinstance(session_data, dict) and 
+        session_data.get("state") == "awaiting_product_selection" and 
+        message_type == "text" and 
+        not any(keyword in user_msg_text.lower() for keyword in ["oficina", "producto", "hola", "menu", "menú"])):
+        
+        if user_msg_text.isdigit():
+            num = int(user_msg_text)
+            active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
+            if 1 <= num <= len(active_products):
+                selected_product = active_products[num - 1]
+                set_cached_sales(session_key, {"state": "idle"})
+                report_type = "product_office"
+                query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
+            else:
+                reply_text = f"❌ Número inválido. Por favor escribe un número entre 1 y {len(active_products)}."
+                query_result = {"text": reply_text}
+        else:
+            active_products = sorted([p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)])
+            reply_text = f"⚠️ Por favor escribe únicamente el número del producto (1-{len(active_products)}) o escribe *menu* para cancelar."
+            query_result = {"text": reply_text}
             
-    # 2. Query promoter data and format response
-    query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+    else:
+        # Normal routing (interactive button clicks or keywords)
+        if message_type == "interactive":
+            interactive = message.get("interactive", {})
+            button_reply = interactive.get("button_reply", {})
+            button_id = button_reply.get("id")
+            # Clear session on any button interaction
+            set_cached_sales(session_key, {"state": "idle"})
+            
+            if button_id == "view_office_report" or button_id == "view_office_general":
+                report_type = "offices"
+            elif button_id == "view_product_report":
+                report_type = "products"
+            elif button_id == "view_prod_office_report":
+                report_type = "prompt_product"
+                set_cached_sales(session_key, {"state": "awaiting_product_selection"})
+        else:
+            # Check text body for keywords
+            user_msg_lower = user_msg_text.lower()
+            if "oficina general" in user_msg_lower:
+                set_cached_sales(session_key, {"state": "idle"})
+                report_type = "offices"
+            elif "producto / oficina" in user_msg_lower or "producto/oficina" in user_msg_lower:
+                report_type = "prompt_product"
+                set_cached_sales(session_key, {"state": "awaiting_product_selection"})
+            elif "oficina" in user_msg_lower:
+                set_cached_sales(session_key, {"state": "idle"})
+                report_type = "offices"
+            elif "producto" in user_msg_lower:
+                set_cached_sales(session_key, {"state": "idle"})
+                report_type = "products"
+            elif "menu" in user_msg_lower or "menú" in user_msg_lower or "hola" in user_msg_lower:
+                set_cached_sales(session_key, {"state": "idle"})
+                report_type = "products"
+                
+        # Execute actual query if not already resolved
+        if query_result is None:
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
+        
     reply_text = query_result.get("text", "❌ Error al procesar consulta.")
     
     # 3. Reply to sender via Meta's Graph API
@@ -1200,24 +1318,62 @@ async def receive_whatsapp_webhook(request: Request):
     buttons = []
     button_prompt = ""
     if "promoter" in query_result:
-        if query_result.get("report_type") == "products":
+        res_report_type = query_result.get("report_type")
+        if res_report_type == "products":
             buttons.append({
                 "type": "reply",
                 "reply": {
-                    "id": "view_office_report",
-                    "title": "Ver Reporte Oficinas"
+                    "id": "view_office_general",
+                    "title": "Oficina General"
                 }
             })
-            button_prompt = "📊 Haz clic abajo para ver el detalle de cumplimiento por oficina:"
-        elif query_result.get("report_type") == "offices":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_prod_office_report",
+                    "title": "Producto / Oficina"
+                }
+            })
+            button_prompt = "📊 Selecciona el tipo de reporte por oficina:"
+        elif res_report_type == "offices":
             buttons.append({
                 "type": "reply",
                 "reply": {
                     "id": "view_product_report",
-                    "title": "Ver Reporte Productos"
+                    "title": "Reporte Productos"
                 }
             })
-            button_prompt = "📦 Haz clic abajo para volver al reporte de cumplimiento por producto:"
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_prod_office_report",
+                    "title": "Producto / Oficina"
+                }
+            })
+            button_prompt = "📦 Selecciona otra opción para consultar:"
+        elif res_report_type == "product_office":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_product_report",
+                    "title": "Reporte Productos"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_office_general",
+                    "title": "Oficina General"
+                }
+            })
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_prod_office_report",
+                    "title": "Producto / Oficina"
+                }
+            })
+            button_prompt = "📦 Selecciona otra opción para consultar:"
             
     if buttons:
         payload_buttons = {
