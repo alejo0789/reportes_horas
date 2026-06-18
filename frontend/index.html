@@ -95,6 +95,9 @@
                         <button class="action-btn-primary" id="btn-manage-coordinators" style="width: 100%; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);">
                             <i class="fa-solid fa-user-shield"></i> Gestionar Coordinadores
                         </button>
+                        <button class="action-btn-primary" id="btn-manage-administrators" style="width: 100%; background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);">
+                            <i class="fa-solid fa-user-gear"></i> Gestionar Administradores
+                        </button>
                     </div>
                 </div>
 
@@ -501,6 +504,72 @@
                         </thead>
                         <tbody id="coordinators-list-body">
                             <!-- Filas de coordinadores se cargan dinámicamente -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- MODAL DE GESTIÓN DE ADMINISTRADORES -->
+    <div class="modal-overlay" id="modal-administrators" style="display: none;">
+        <div class="modal-container" style="max-width: 800px;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-user-gear"></i> Administradores Autorizados</h3>
+                <button class="modal-close-btn" id="btn-close-administrators-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- FORMULARIO DE AGREGAR / EDITAR -->
+                <form class="promoter-form" id="form-administrator">
+                    <input type="hidden" id="administrator-edit-id" value="">
+                    <h4 id="administrator-form-title">Agregar Nuevo Administrador</h4>
+                    <div class="form-row-three" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                        <div class="form-group">
+                            <label for="administrator-name">Nombre Completo</label>
+                            <input type="text" id="administrator-name" required placeholder="Ej. Carlos Giraldo">
+                        </div>
+                        <div class="form-group">
+                            <label for="administrator-cedula">Cédula / Documento</label>
+                            <input type="text" id="administrator-cedula" required placeholder="Ej. 1061738492">
+                        </div>
+                        <div class="form-group">
+                            <label for="administrator-phone">Celular</label>
+                            <input type="text" id="administrator-phone" required placeholder="Ej. 3147892305">
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button type="submit" class="action-btn-primary" id="btn-save-administrator">
+                            <i class="fa-solid fa-floppy-disk"></i> Guardar Administrador
+                        </button>
+                        <button type="button" class="action-btn-secondary" id="btn-cancel-administrator-edit" style="display: none;">
+                            Cancelar
+                        </button>
+                    </div>
+                </form>
+
+                <hr class="modal-divider">
+
+                <!-- LISTADO Y BÚSQUEDA -->
+                <div class="modal-list-header">
+                    <h4>Administradores Registrados</h4>
+                    <div class="search-box-container">
+                        <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                        <input type="text" id="search-administrators" placeholder="Buscar por nombre o cédula..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                    </div>
+                </div>
+
+                <div class="promoters-table-container">
+                    <table class="modal-table">
+                        <thead>
+                            <tr>
+                                <th>Nombre</th>
+                                <th>Cédula</th>
+                                <th>Celular</th>
+                                <th style="text-align: center;">Estado</th>
+                                <th style="text-align: center;">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="administrators-list-body">
+                            <!-- Filas de administradores se cargan dinámicamente -->
                         </tbody>
                     </table>
                 </div>

@@ -16,7 +16,9 @@ from backend.cache import (
     seed_promoters_from_excel, get_all_promoters, add_promoter, update_promoter, delete_promoter,
     find_active_promoter_by_phone,
     seed_coordinators, get_all_coordinators, add_coordinator, update_coordinator, delete_coordinator,
-    find_active_coordinator_by_phone
+    find_active_coordinator_by_phone,
+    get_all_administrators, add_administrator, update_administrator, delete_administrator,
+    find_active_administrator_by_phone
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -448,6 +450,57 @@ class CoordinatorSchema(BaseModel):
     phone: str
     active: int = 1
 
+class AdministratorSchema(BaseModel):
+    name: str
+    cedula: str
+    phone: str
+    active: int = 1
+
+@app.get("/api/whatsapp-administrators")
+def get_whatsapp_administrators_endpoint():
+    """
+    Returns list of all administrators in the whatsapp_administrators table.
+    """
+    return get_all_administrators()
+
+@app.post("/api/whatsapp-administrators")
+def create_whatsapp_administrator(a: AdministratorSchema):
+    """
+    Adds a new administrator to the database.
+    """
+    try:
+        aid = add_administrator(a.name, a.cedula, a.phone, a.active)
+        return {"id": aid, "status": "success", "message": f"Administrador {a.name} agregado."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error interno al agregar administrador.")
+
+@app.put("/api/whatsapp-administrators/{aid}")
+def update_whatsapp_administrator(aid: int, a: AdministratorSchema):
+    """
+    Updates an existing administrator in the database.
+    """
+    try:
+        success = update_administrator(aid, a.name, a.cedula, a.phone, a.active)
+        if not success:
+            raise HTTPException(status_code=404, detail="Administrador no encontrado.")
+        return {"status": "success", "message": f"Administrador {a.name} actualizado."}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Error interno al actualizar administrador.")
+
+@app.delete("/api/whatsapp-administrators/{aid}")
+def delete_whatsapp_administrator(aid: int):
+    """
+    Deletes an administrator from the database.
+    """
+    success = delete_administrator(aid)
+    if not success:
+        raise HTTPException(status_code=404, detail="Administrador no encontrado.")
+    return {"status": "success", "message": "Administrador eliminado."}
+
 @app.get("/api/whatsapp-coordinators")
 def get_whatsapp_coordinators_endpoint():
     """
@@ -621,19 +674,25 @@ def get_whatsapp_query(
     phone: Optional[str] = Query(None, description="Número de celular del promotor o coordinador"),
     report_type: str = Query("products", description="Tipo de reporte: 'products', 'offices', 'prompt_product', o 'product_office'"),
     selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina"),
-    override_promoter_name: Optional[str] = Query(None, description="Nombre de promotor para consulta por coordinador")
+    override_promoter_name: Optional[str] = Query(None, description="Nombre de promotor para consulta por coordinador"),
+    override_coordinator_name: Optional[str] = Query(None, description="Nombre de coordinador para consulta por administrador")
 ):
     # Resolve FastAPI Query defaults if called directly in Python
     if not isinstance(selected_product, str):
         selected_product = None
     if not isinstance(override_promoter_name, str):
         override_promoter_name = None
+    if not isinstance(override_coordinator_name, str):
+        override_coordinator_name = None
     if not isinstance(phone, str):
         phone = None
     if not isinstance(report_type, str):
         report_type = "products"
 
-    # 1. Buscar promotor o coordinador por celular
+    # 1. Buscar promotor, coordinador o administrador por celular
+    is_administrator = False
+    is_coordinator = False
+    
     if override_promoter_name:
         user_name = override_promoter_name
         is_coordinator = False
@@ -644,27 +703,61 @@ def get_whatsapp_query(
             if item.get("promotor") and str(item["promotor"]).strip().lower() == user_name.strip().lower():
                 user_zone = item.get("zona", "Sin Zona")
                 break
+    elif override_coordinator_name:
+        user_name = override_coordinator_name
+        is_coordinator = True
+        user_label = "Coordinador"
+        from backend.cache import get_all_coordinators
+        coors = get_all_coordinators()
+        user_zone = "Sin Zona"
+        for c in coors:
+            if c["name"].strip().lower() == user_name.strip().lower():
+                user_zone = c["zone"]
+                break
     else:
         if not phone:
             return {"text": "❌ Falta número de teléfono o nombre para la consulta."}
-        promoter = find_active_promoter_by_phone(phone)
+        
+        administrator = find_active_administrator_by_phone(phone)
+        promoter = None
         coordinator = None
-        if not promoter:
-            coordinator = find_active_coordinator_by_phone(phone)
-            
-        if not promoter and not coordinator:
+        if not administrator:
+            promoter = find_active_promoter_by_phone(phone)
+            if not promoter:
+                coordinator = find_active_coordinator_by_phone(phone)
+                
+        if not administrator and not promoter and not coordinator:
             return {
                 "text": "❌ Lo sentimos, tu número de celular no está registrado o no se encuentra activo para consultas por WhatsApp."
             }
             
-        user_name = promoter["name"] if promoter else coordinator["name"]
-        is_coordinator = coordinator is not None
-        user_label = "Coordinador" if is_coordinator else "Promotor"
-        user_zone = coordinator["zone"] if is_coordinator else promoter["zone"]
+        if administrator:
+            user_name = administrator["name"]
+            is_administrator = True
+            user_label = "Administrador"
+            user_zone = "Nivel Nacional"
+        elif promoter:
+            user_name = promoter["name"]
+            is_coordinator = False
+            user_label = "Promotor"
+            user_zone = promoter["zone"]
+        else:
+            user_name = coordinator["name"]
+            is_coordinator = True
+            user_label = "Coordinador"
+            user_zone = coordinator["zone"]
     
     # 2. Encontrar oficinas asignadas en la distribución comercial
     assigned_offices = set()
-    if is_coordinator:
+    if is_administrator:
+        # Administrators see all offices
+        for item in distribution_store:
+            if item.get("cod_oficina") is not None:
+                try:
+                    assigned_offices.add(int(item["cod_oficina"]))
+                except:
+                    pass
+    elif is_coordinator:
         for item in distribution_store:
             item_zone = item.get("zona", "")
             if item_zone and str(item_zone).strip().lower() == user_zone.strip().lower():
@@ -688,6 +781,88 @@ def get_whatsapp_query(
         return {
             "text": f"⚠️ Hola {user_name}, estás registrado en WhatsApp como {detail_msg} pero no tienes oficinas asignadas en la distribución comercial cargada."
         }
+
+    # Calculate coordinator summary list for administrators
+    coor_compliance_list = []
+    if is_administrator and report_type in {"products", "coordinators"}:
+        from backend.cache import get_all_coordinators
+        all_coors = get_all_coordinators()
+        active_coors = [c for c in all_coors if c.get("active", 1)]
+        
+        # Site to office mapping
+        sites_data, _ = get_cached_sales("catalog_sitios")
+        site_to_office_local = {}
+        if sites_data:
+            for s in sites_data:
+                s_code = s.get("Cod_Sitio")
+                off_code = s.get("Cod_Oficina")
+                if s_code is not None and off_code is not None:
+                    site_to_office_local[int(s_code)] = int(off_code)
+        site_to_office_local[333033] = 333
+        site_to_office_local[334034] = 334
+        
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        sales_list_local = []
+        try:
+            sales_resp_local = get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=False)
+            sales_list_local = sales_resp_local.get("data", [])
+        except:
+            pass
+            
+        for c in active_coors:
+            c_name = c["name"]
+            c_zone = c["zone"]
+            
+            c_offices = set()
+            for item in distribution_store:
+                item_zone = item.get("zona", "")
+                if item_zone and item_zone.strip().lower() == c_zone.strip().lower():
+                    if item.get("cod_oficina") is not None:
+                        try:
+                            c_offices.add(int(item["cod_oficina"]))
+                        except:
+                            pass
+            
+            c_sales = 0.0
+            for sale in sales_list_local:
+                src_table = sale.get("Tabla_Origen")
+                if src_table in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+                    continue
+                s_code = sale.get("Cod_Sitio")
+                if s_code is not None:
+                    try:
+                        s_code_int = int(s_code)
+                        off_code = site_to_office_local.get(s_code_int)
+                        if off_code in c_offices:
+                            c_sales += float(sale.get("Venta_Neta") or 0.0)
+                    except:
+                        pass
+                        
+            c_meta = 0.0
+            for prod_name, records in goals_store.items():
+                if records and not records[0].get("activo", True):
+                    continue
+                for rec in records:
+                    if rec.get("fecha") == today_str:
+                        off_code = rec.get("cod_oficina")
+                        if off_code is not None:
+                            try:
+                                off_code_int = int(off_code)
+                                if off_code_int in c_offices:
+                                    meta_val = float(rec.get("meta") or 0.0)
+                                    if prod_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}:
+                                        meta_val = float(round(meta_val))
+                                    c_meta += meta_val
+                            except:
+                                pass
+                                
+            if c_meta > 0:
+                c_comp = (c_sales / c_meta * 100.0)
+            else:
+                c_comp = 100.0 if c_sales > 0 else 0.0
+                
+            coor_compliance_list.append((c_name, c_zone, c_sales, c_meta, c_comp))
+        coor_compliance_list.sort(key=lambda x: x[0])
 
     # Calculate individual promoter metrics in coordinator's zone
     promoter_compliance_list = []
@@ -789,6 +964,43 @@ def get_whatsapp_query(
             promoter_compliance_list.append((p_name, p_sales, p_meta, p_comp))
             
         promoter_compliance_list.sort(key=lambda x: x[0])
+
+    # Early return for coordinators summary for administrator
+    if is_administrator and report_type == "coordinators":
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        db_update_time_str = "Desconocida"
+        try:
+            sales_resp = get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=False)
+            last_updated = sales_resp.get("last_updated")
+            if last_updated:
+                try:
+                    from datetime import datetime as dt_class
+                    dt = dt_class.fromisoformat(last_updated)
+                    db_update_time_str = dt.strftime("%d/%m/%Y %I:%M %p")
+                except:
+                    db_update_time_str = str(last_updated)
+        except:
+            pass
+            
+        msg = f"👥 *CUMPLIMIENTO POR COORDINADOR*\n"
+        msg += f"📅 *Fecha:* {today_str}\n"
+        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+        msg += f"──────────────────\n"
+        for c_name, c_zone, c_sales, c_meta, c_comp in coor_compliance_list:
+            c_emoji = "🟢" if c_comp >= 95 else "🔴"
+            c_faltante = max(0.0, c_meta - c_sales)
+            msg += f"• 👤 *{c_name}* ({c_zone}) ({c_emoji} *{c_comp:.1f}%*)\n"
+            msg += f"  ↳ Venta: ${round(c_sales):,}\n"
+            msg += f"  ↳ Meta: ${round(c_meta):,}\n"
+            msg += f"  ↳ Faltante: ${round(c_faltante):,}\n\n"
+            
+        msg += f"──────────────────\n"
+        msg += f"💪 ¡Vamos por la meta! 🚀"
+        return {
+            "text": msg,
+            "report_type": "coordinators_summary",
+            "is_administrator": True
+        }
 
     # Early return for prompt_promoter (promoter summary for coordinator)
     if is_coordinator and report_type == "prompt_promoter":
@@ -994,6 +1206,58 @@ def get_whatsapp_query(
         compliance = 100.0 if total_sales > 0 else 0.0
     emoji_overall = "🟢" if compliance >= 95 else "🔴"
     
+    if is_administrator and report_type in {"products", "offices"}:
+        total_faltante_meta = max(0.0, total_goals - total_sales)
+        msg = f"📊 *REPORTE ADMINISTRADOR (GENERAL)*\n"
+        msg += f"👤 *Administrador:* {user_name}\n"
+        msg += f"📅 *Fecha:* {today_str}\n"
+        msg += f"📍 *Ámbito:* Nacional\n"
+        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+        msg += f"──────────────────\n"
+        msg += f"📊 *Cumplimiento General:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"📈 *Meta Total:* ${round(total_goals):,}\n"
+        msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
+        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
+        msg += f"──────────────────\n"
+        msg += f"📦 *Detalle por Producto:*\n\n"
+        
+        all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
+        for p_name in all_products:
+            p_sales = sales_by_product.get(p_name, 0.0)
+            p_goal = goals_by_product.get(p_name, 0.0)
+            
+            if p_goal > 0:
+                p_compliance = (p_sales / p_goal * 100.0)
+            else:
+                p_compliance = 100.0 if p_sales > 0 else 0.0
+                
+            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+            p_faltante = max(0.0, p_goal - p_sales)
+            
+            is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+            if is_count_based:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Venta Acumulada: {round(p_sales):,}\n"
+                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            else:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Venta Acumulada: ${round(p_sales):,}\n"
+                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                
+        msg += f"──────────────────\n"
+        msg += f"💪 ¡Vamos por la meta! 🚀"
+        
+        return {
+            "text": msg,
+            "report_type": "administrator_general",
+            "is_administrator": True,
+            "sales": total_sales,
+            "goal": total_goals,
+            "compliance": compliance
+        }
+
     if is_coordinator and report_type in {"products", "offices"}:
         total_faltante_meta = max(0.0, total_goals - total_sales)
         msg = f"📊 *REPORTE DE ZONA (GENERAL)*\n"
@@ -1517,13 +1781,34 @@ async def receive_whatsapp_webhook(request: Request):
     query_result = None
     
     # 2. Check user role
-    promoter = find_active_promoter_by_phone(sender_phone)
+    administrator = find_active_administrator_by_phone(sender_phone)
+    promoter = None
     coordinator = None
-    if not promoter:
-        coordinator = find_active_coordinator_by_phone(sender_phone)
+    if not administrator:
+        promoter = find_active_promoter_by_phone(sender_phone)
+        if not promoter:
+            coordinator = find_active_coordinator_by_phone(sender_phone)
         
     # Check if the user is replying to a prompt (state machine)
-    if coordinator:
+    if administrator:
+        # Administrator Session Routing
+        report_type = "products" # Default to general report
+        button_id = None
+        if message_type == "interactive":
+            interactive = message.get("interactive", {})
+            button_reply = interactive.get("button_reply", {})
+            button_id = button_reply.get("id")
+            
+        user_msg_lower = user_msg_text.lower()
+        
+        if (button_id == "view_general_report" or 
+            any(keyword in user_msg_lower for keyword in ["general", "menu", "menú", "hola"])):
+            report_type = "products"
+        elif button_id == "view_coordinators_summary" or "coordinador" in user_msg_lower:
+            report_type = "coordinators"
+            
+        query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+    elif coordinator:
         # Coordinator Session Routing
         report_type = "products" # Default to zone report
         button_id = None
@@ -1647,7 +1932,28 @@ async def receive_whatsapp_webhook(request: Request):
     buttons = []
     button_prompt = ""
     
-    if query_result.get("is_coordinator") is True:
+    if query_result.get("is_administrator") is True:
+        res_report_type = query_result.get("report_type")
+        if res_report_type == "administrator_general":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_coordinators_summary",
+                    "title": "Ver Coordinadores"
+                }
+            })
+            button_prompt = "🔍 ¿Deseas ver el cumplimiento de los coordinadores?"
+        elif res_report_type == "coordinators_summary":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_general_report",
+                    "title": "Reporte General"
+                }
+            })
+            button_prompt = "📦 Seleccione una opción:"
+
+    elif query_result.get("is_coordinator") is True:
         res_report_type = query_result.get("report_type")
         if res_report_type == "coordinator_general":
             buttons.append({

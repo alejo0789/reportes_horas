@@ -8,6 +8,7 @@ const State = {
     expandedOffices: new Set(), // Set of offices expanded in tree grid
     whatsappPromoters: [],     // List of whatsapp authorized promoters
     whatsappCoordinators: [],   // List of whatsapp authorized coordinators
+    whatsappAdministrators: [], // List of whatsapp authorized administrators
     
     // Selected Filter Values
     selectedDate: '',
@@ -213,6 +214,21 @@ const elements = {
     searchCoordinators: document.getElementById('search-coordinators'),
     coordinatorsListBody: document.getElementById('coordinators-list-body'),
 
+    // WhatsApp Administrators Management
+    btnManageAdministrators: document.getElementById('btn-manage-administrators'),
+    modalAdministrators: document.getElementById('modal-administrators'),
+    btnCloseAdministratorsModal: document.getElementById('btn-close-administrators-modal'),
+    formAdministrator: document.getElementById('form-administrator'),
+    administratorEditId: document.getElementById('administrator-edit-id'),
+    administratorFormTitle: document.getElementById('administrator-form-title'),
+    administratorName: document.getElementById('administrator-name'),
+    administratorCedula: document.getElementById('administrator-cedula'),
+    administratorPhone: document.getElementById('administrator-phone'),
+    btnSaveAdministrator: document.getElementById('btn-save-administrator'),
+    btnCancelAdministratorEdit: document.getElementById('btn-cancel-administrator-edit'),
+    searchAdministrators: document.getElementById('search-administrators'),
+    administratorsListBody: document.getElementById('administrators-list-body'),
+
     // Goals Management Modal
     modalGoals: document.getElementById('modal-goals'),
     btnCloseGoalsModal: document.getElementById('btn-close-goals-modal'),
@@ -227,6 +243,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupTreeControls();
     setupPromoterManagement();
     setupCoordinatorManagement();
+    setupAdministratorManagement();
     setupGoalsManagement();
     
     // Load initial data
@@ -2002,9 +2019,10 @@ async function loadWhatsAppPromoters() {
 function updatePersonnelSidebarCount() {
     const activePromoters = State.whatsappPromoters.filter(p => p.active === 1).length;
     const activeCoordinators = State.whatsappCoordinators ? State.whatsappCoordinators.filter(c => c.active === 1).length : 0;
+    const activeAdministrators = State.whatsappAdministrators ? State.whatsappAdministrators.filter(a => a.active === 1).length : 0;
     const badge = document.querySelector('.promoters-whatsapp-section .section-desc');
     if (badge) {
-        badge.innerHTML = `Autorizados: ${activePromoters} Promotores y ${activeCoordinators} Coordinadores activos.`;
+        badge.innerHTML = `Autorizados: ${activePromoters} Promotores, ${activeCoordinators} Coordinadores y ${activeAdministrators} Administradores activos.`;
     }
 }
 
@@ -2244,6 +2262,233 @@ function setupCoordinatorManagement() {
     
     // Load counts initially
     loadWhatsAppCoordinators();
+}
+
+// --- WHATSAPP ADMINISTRATORS MANAGEMENT ---
+
+async function loadWhatsAppAdministrators() {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp-administrators`);
+        if (!res.ok) throw new Error("Error al obtener administradores");
+        State.whatsappAdministrators = await res.json();
+        renderAdministratorsList();
+        updatePersonnelSidebarCount();
+    } catch (e) {
+        console.error("Error loading whatsapp administrators:", e);
+    }
+}
+
+function renderAdministratorsList() {
+    if (!elements.administratorsListBody) return;
+    
+    const searchVal = elements.searchAdministrators.value.toLowerCase().trim();
+    
+    const filtered = State.whatsappAdministrators.filter(a => {
+        return (
+            (a.name && a.name.toLowerCase().includes(searchVal)) || 
+            (a.cedula && a.cedula.toLowerCase().includes(searchVal)) || 
+            (a.phone && a.phone.toLowerCase().includes(searchVal))
+        );
+    });
+    
+    if (filtered.length === 0) {
+        elements.administratorsListBody.innerHTML = `
+            <tr>
+                <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 20px;">
+                    No se encontraron administradores.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    elements.administratorsListBody.innerHTML = filtered.map(a => `
+        <tr data-id="${a.id}">
+            <td style="font-weight: 600; color: #ffffff;">${a.name}</td>
+            <td>${a.cedula}</td>
+            <td>${a.phone}</td>
+            <td style="text-align: center;">
+                <label class="switch">
+                    <input type="checkbox" class="toggle-administrator-active" ${a.active === 1 ? 'checked' : ''}>
+                    <span class="slider"></span>
+                </label>
+            </td>
+            <td style="text-align: center;">
+                <button class="btn-icon btn-icon-edit btn-edit-administrator" title="Editar"><i class="fa-solid fa-pen"></i></button>
+                <button class="btn-icon btn-icon-delete btn-delete-administrator" title="Eliminar"><i class="fa-solid fa-trash-can"></i></button>
+            </td>
+        </tr>
+    `).join('');
+    
+    // Add event listeners to the list
+    elements.administratorsListBody.querySelectorAll('.toggle-administrator-active').forEach(checkbox => {
+        checkbox.addEventListener('change', async (e) => {
+            const tr = e.target.closest('tr');
+            const aid = parseInt(tr.dataset.id);
+            const administrator = State.whatsappAdministrators.find(a => a.id === aid);
+            if (administrator) {
+                const newActive = e.target.checked ? 1 : 0;
+                checkbox.disabled = true;
+                tr.style.opacity = '0.5';
+                const slider = checkbox.nextElementSibling;
+                if (slider) slider.style.filter = 'grayscale(1) opacity(0.5)';
+                
+                await saveAdministratorStatus(aid, { ...administrator, active: newActive });
+            }
+        });
+    });
+    
+    elements.administratorsListBody.querySelectorAll('.btn-edit-administrator').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const tr = e.target.closest('tr');
+            const aid = parseInt(tr.dataset.id);
+            const administrator = State.whatsappAdministrators.find(a => a.id === aid);
+            if (administrator) {
+                startEditAdministrator(administrator);
+            }
+        });
+    });
+
+    elements.administratorsListBody.querySelectorAll('.btn-delete-administrator').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const tr = e.target.closest('tr');
+            const aid = parseInt(tr.dataset.id);
+            const administrator = State.whatsappAdministrators.find(a => a.id === aid);
+            if (administrator && confirm(`¿Estás seguro de eliminar al administrador ${administrator.name}?`)) {
+                await deleteAdministratorRequest(aid);
+            }
+        });
+    });
+}
+
+function startEditAdministrator(administrator) {
+    elements.administratorEditId.value = administrator.id;
+    elements.administratorName.value = administrator.name;
+    elements.administratorCedula.value = administrator.cedula;
+    elements.administratorPhone.value = administrator.phone;
+    elements.administratorFormTitle.textContent = "Editar Administrador: " + administrator.name;
+    elements.btnCancelAdministratorEdit.style.display = "inline-block";
+    elements.administratorName.focus();
+}
+
+function resetAdministratorForm() {
+    elements.administratorEditId.value = "";
+    elements.formAdministrator.reset();
+    elements.administratorFormTitle.textContent = "Agregar Nuevo Administrador";
+    elements.btnCancelAdministratorEdit.style.display = "none";
+}
+
+async function saveAdministratorStatus(aid, administratorData) {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(administratorData)
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "Error al actualizar");
+        }
+        await loadWhatsAppAdministrators();
+    } catch (e) {
+        alert("Error al actualizar administrador: " + e.message);
+        loadWhatsAppAdministrators();
+    }
+}
+
+async function deleteAdministratorRequest(aid) {
+    try {
+        const res = await fetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) throw new Error("Error al eliminar");
+        await loadWhatsAppAdministrators();
+    } catch (e) {
+        alert("Error al eliminar administrador: " + e.message);
+    }
+}
+
+function setupAdministratorManagement() {
+    if (!elements.btnManageAdministrators) return;
+    
+    // Toggle modal visibility
+    elements.btnManageAdministrators.addEventListener('click', () => {
+        elements.modalAdministrators.style.display = 'flex';
+        loadWhatsAppAdministrators();
+    });
+    
+    elements.btnCloseAdministratorsModal.addEventListener('click', () => {
+        elements.modalAdministrators.style.display = 'none';
+        resetAdministratorForm();
+    });
+    
+    // Close on click outside modal content
+    elements.modalAdministrators.addEventListener('click', (e) => {
+        if (e.target === elements.modalAdministrators) {
+            elements.modalAdministrators.style.display = 'none';
+            resetAdministratorForm();
+        }
+    });
+    
+    // Search filter
+    elements.searchAdministrators.addEventListener('input', () => {
+        renderAdministratorsList();
+    });
+    
+    // Form submit
+    elements.formAdministrator.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const aid = elements.administratorEditId.value;
+        const name = elements.administratorName.value;
+        const cedula = elements.administratorCedula.value;
+        const phone = elements.administratorPhone.value;
+        
+        const payload = { name, cedula, phone, active: 1 };
+        
+        const submitBtn = elements.formAdministrator.querySelector('button[type="submit"]');
+        const originalText = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Guardando...';
+        
+        try {
+            let url = `${API_BASE}/api/whatsapp-administrators`;
+            let method = 'POST';
+            
+            if (aid) {
+                const existing = State.whatsappAdministrators.find(a => a.id === parseInt(aid));
+                payload.active = existing ? existing.active : 1;
+                url = `${url}/${aid}`;
+                method = 'PUT';
+            }
+            
+            const res = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || "Error al guardar");
+            }
+            
+            resetAdministratorForm();
+            await loadWhatsAppAdministrators();
+        } catch (e) {
+            alert("Error al guardar administrador: " + e.message);
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = originalText;
+        }
+    });
+    
+    elements.btnCancelAdministratorEdit.addEventListener('click', () => {
+        resetAdministratorForm();
+    });
+    
+    // Load counts initially
+    loadWhatsAppAdministrators();
 }
 
 function renderPromotersList() {

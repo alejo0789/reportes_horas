@@ -42,6 +42,15 @@ def init_cache_db():
                 active INTEGER DEFAULT 1
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS whatsapp_administrators (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cedula TEXT UNIQUE,
+                name TEXT UNIQUE,
+                phone TEXT,
+                active INTEGER DEFAULT 1
+            )
+        """)
         conn.commit()
         logger.info("SQLite Cache DB initialized successfully.")
     except Exception as e:
@@ -333,6 +342,97 @@ def find_active_coordinator_by_phone(phone_num: str):
                 return dict(r)
     except Exception as e:
         logger.error(f"Error finding coordinator by phone: {e}")
+    finally:
+        conn.close()
+    return None
+
+def get_all_administrators():
+    """Retrieves all registered administrators sorted by name."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, cedula, phone, active FROM whatsapp_administrators ORDER BY name ASC")
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Error getting administrators: {e}")
+        return []
+    finally:
+        conn.close()
+
+def add_administrator(name: str, cedula: str, phone: str, active: int = 1):
+    """Inserts a new administrator, returns the new row ID."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO whatsapp_administrators (name, cedula, phone, active)
+            VALUES (?, ?, ?, ?)
+        """, (name.strip(), cedula.strip(), phone.strip(), active))
+        conn.commit()
+        return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        raise ValueError(f"El administrador '{name}' o la cédula '{cedula}' ya está registrado.")
+    except Exception as e:
+        logger.error(f"Error adding administrator: {e}")
+        raise e
+    finally:
+        conn.close()
+
+def update_administrator(aid: int, name: str, cedula: str, phone: str, active: int):
+    """Updates an existing administrator, returns True if updated."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE whatsapp_administrators
+            SET name = ?, cedula = ?, phone = ?, active = ?
+            WHERE id = ?
+        """, (name.strip(), cedula.strip(), phone.strip(), active, aid))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.IntegrityError:
+        raise ValueError(f"El nombre '{name}' o cédula '{cedula}' ya está en uso por otro administrador.")
+    except Exception as e:
+        logger.error(f"Error updating administrator {aid}: {e}")
+        raise e
+    finally:
+        conn.close()
+
+def delete_administrator(aid: int):
+    """Deletes an administrator by ID."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM whatsapp_administrators WHERE id = ?", (aid,))
+        conn.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error deleting administrator {aid}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def find_active_administrator_by_phone(phone_num: str):
+    """Normalize input phone and find an active administrator matching the suffix."""
+    clean_digits = "".join(filter(str.isdigit, phone_num))
+    if not clean_digits:
+        return None
+        
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, cedula, phone, active FROM whatsapp_administrators WHERE active = 1")
+        rows = cursor.fetchall()
+        for r in rows:
+            p_clean = "".join(filter(str.isdigit, r["phone"]))
+            # Match last 10 digits
+            if p_clean and (clean_digits.endswith(p_clean[-10:]) or p_clean.endswith(clean_digits[-10:])):
+                return dict(r)
+    except Exception as e:
+        logger.error(f"Error finding administrator by phone: {e}")
     finally:
         conn.close()
     return None
