@@ -237,7 +237,7 @@ def seed_coordinators():
         count = cursor.fetchone()[0]
         if count == 0:
             initial_coordinators = [
-                ("MORALES BURBANO YUDY ANDREA", "25288490", "Coordinador Comercial", "Centro y Oriente", "3207205166"),
+                ("MORALES BURBANO YUDY ANDREA", "25288490", "Coordinador Comercial", "Oriente y municipios Centro", "3207205166"),
                 ("HURTADO CAICEDO EDGAR ENRIQUE", "76044229", "Senior Comercial", "Empresa", "3185033565"),
                 ("JARAMILLO RUEDA MARIO ANDRES", "94151894", "Coordinador Comercial", "Norte", "3185033572"),
                 ("CUERO OBREGON JAMILTON", "1059446686", "Coordinador Comercial", "Occidente", "3207203927"),
