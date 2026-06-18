@@ -227,6 +227,22 @@ def get_ventas(
     """
     cache_key = f"{desde}_{hasta}"
     
+    # Helper to normalize OWO / APP sites
+    def normalize_sale_records(records):
+        if not records:
+            return
+        for r in records:
+            site_code = r.get("Cod_Sitio")
+            if site_code is not None:
+                try:
+                    site_code_int = int(site_code)
+                    if site_code_int == 136033:
+                        r["Cod_Sitio"] = 333033
+                    elif site_code_int == 136034:
+                        r["Cod_Sitio"] = 334034
+                except:
+                    pass
+
     # 1. Check local SQLite cache first if not forcing refresh
     cached_data, last_updated = get_cached_sales(cache_key)
     
@@ -248,6 +264,7 @@ def get_ventas(
         
         if cache_valid:
             logger.info(f"Serving sales data from SQLite Cache for key {cache_key} (updated: {last_updated}).")
+            normalize_sale_records(cached_data)
             return {
                 "source": "LOCAL_CACHE",
                 "last_updated": last_updated,
@@ -307,9 +324,13 @@ def get_ventas(
         errors.append("FORTUMED pool not initialized.")
         db_failures = True
 
+    # Normalize the fresh database results
+    normalize_sale_records(results)
+
     # 3. Fallback to cache if database fails/is incomplete but we have stale cache
     if (db_failures or not results) and cached_data is not None:
         logger.warning(f"Database query failed or is incomplete. Errors: {errors}. Serving stale SQLite Cache.")
+        normalize_sale_records(cached_data)
         return {
             "source": "LOCAL_CACHE_STALE",
             "last_updated": last_updated,
@@ -694,6 +715,9 @@ def get_whatsapp_query(
                 off_code = s.get("Cod_Oficina")
                 if s_code is not None and off_code is not None:
                     site_to_office[int(s_code)] = int(off_code)
+        # Register OWO / APP sites manually to offices 333 / 334
+        site_to_office[333033] = 333
+        site_to_office[334034] = 334
                     
         products_data, _ = get_cached_sales("catalog_productos")
         products_by_code = {}
@@ -823,6 +847,11 @@ def get_whatsapp_query(
             if s_code is not None and off_code is not None:
                 site_to_office[int(s_code)] = int(off_code)
                 office_names[int(off_code)] = off_name
+    # Register OWO / APP sites manually to offices 333 / 334
+    site_to_office[333033] = 333
+    site_to_office[334034] = 334
+    office_names[333] = "Ventas OWO"
+    office_names[334] = "Ventas APP Su Red"
 
     # Load products catalog to map cod_producto to product info (same as frontend app.js)
     products_data, _ = get_cached_sales("catalog_productos")

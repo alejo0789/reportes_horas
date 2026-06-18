@@ -308,6 +308,11 @@ async function loadInitialCatalogues() {
         const prodsData = await resProds.json();
         
         State.sites = sitiosData.data || [];
+        // Inject OWO and APP custom sites manually so they map to offices 333 / 334 respectively
+        State.sites.push(
+            { Cod_Sitio: 333033, Sitio_Venta: "Ventas OWO", Cod_Oficina: 333, Oficina: "Ventas OWO", Zona: "Aplicativo" },
+            { Cod_Sitio: 334034, Sitio_Venta: "Ventas APP Su Red", Cod_Oficina: 334, Oficina: "Ventas APP Su Red", Zona: "Aplicativo" }
+        );
         State.products = prodsData.data || [];
         
         console.log(`Loaded catalogues: ${State.sites.length} sites, ${State.products.length} products`);
