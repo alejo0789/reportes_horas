@@ -1,0 +1,30 @@
+# Git
+.git
+.gitignore
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Variables de entorno
+.env
+.env.*
+
+# Scripts temporales
+scratch/
+scripts/
+
+# Archivos de caché o temporales de SO
+.DS_Store
+Thumbs.db
+
+# Evitar subir los archivos de base de datos locales al contenedor 
+# (deberían inyectarse por volumen si quieres persistencia en Coolify)
+uploads/cache.db
