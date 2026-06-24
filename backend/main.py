@@ -704,7 +704,9 @@ def get_whatsapp_query(
             c.execute("SELECT last_date FROM whatsapp_user_requests WHERE phone = ?", (phone,))
             row = c.fetchone()
             if not row or row[0] != today_str_real:
-                date_filter = "yesterday"
+                # Excepción: no aplicar si hoy es el día de despliegue para evitar confusiones a media tarde
+                if today_str_real != "2026-06-24":
+                    date_filter = "yesterday"
                 c.execute("INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date) VALUES (?, ?)", (phone, today_str_real))
                 conn.commit()
             conn.close()
