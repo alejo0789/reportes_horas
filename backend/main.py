@@ -762,7 +762,7 @@ def get_whatsapp_query(
             item_zone = item.get("zona", "")
             
             match_zone = False
-            is_yudy = "yudy" in user_name.strip().lower() or "morales burbano" in user_name.strip().lower()
+            is_yudy = "yud" in user_name.strip().lower() or "moral" in user_name.strip().lower() or "oriente y municipios centro" in user_zone.strip().lower()
             if is_yudy:
                 item_z_lower = str(item_zone).strip().lower()
                 if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
@@ -831,7 +831,7 @@ def get_whatsapp_query(
                 item_zone = item.get("zona", "")
                 
                 match_zone = False
-                is_yudy_admin = "yudy" in c_name.strip().lower() or "morales burbano" in c_name.strip().lower()
+                is_yudy_admin = "yud" in c_name.strip().lower() or "moral" in c_name.strip().lower() or "oriente y municipios centro" in c_zone.strip().lower()
                 if is_yudy_admin:
                     item_z_lower = str(item_zone).strip().lower()
                     if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
@@ -899,7 +899,7 @@ def get_whatsapp_query(
             item_zone = item.get("zona", "")
             
             match_zone = False
-            is_yudy = "yudy" in user_name.strip().lower() or "morales burbano" in user_name.strip().lower()
+            is_yudy = "yud" in user_name.strip().lower() or "moral" in user_name.strip().lower() or "oriente y municipios centro" in user_zone.strip().lower()
             if is_yudy:
                 item_z_lower = str(item_zone).strip().lower()
                 if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
@@ -1055,9 +1055,9 @@ def get_whatsapp_query(
                 "report_type": "prompt_promoter",
                 "is_coordinator": True
             }
-        is_yudy = "yudy" in user_name.strip().lower() or "morales burbano" in user_name.strip().lower()
+        is_yudy = "yud" in user_name.strip().lower() or "moral" in user_name.strip().lower() or "oriente y municipios centro" in user_zone.strip().lower()
         if is_yudy:
-            msg = f"👥 *RESUMEN DE PROMOTORES (v3) - ZONA: ORIENTE Y CENTRO*\n"
+            msg = f"👥 *RESUMEN DE PROMOTORES (v4) - ZONA: ORIENTE Y CENTRO*\n"
             msg += f"📅 *Fecha:* {today_str}\n"
             msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
             
@@ -1082,7 +1082,8 @@ def get_whatsapp_query(
             msg += f"──────────────────\n"
             msg += f"💪 ¡Vamos por la meta! 🚀"
         else:
-            msg = f"👥 *RESUMEN DE PROMOTORES - ZONA: {user_zone}*\n"
+            msg = f"👥 *RESUMEN DE PROMOTORES (Debug) - ZONA: {user_zone}*\n"
+            msg += f"👤 *Coordinador:* {user_name}\n"
             msg += f"📅 *Fecha:* {today_str}\n"
             msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
             msg += f"──────────────────\n"
