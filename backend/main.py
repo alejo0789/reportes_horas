@@ -675,7 +675,8 @@ def get_whatsapp_query(
     report_type: str = Query("products", description="Tipo de reporte: 'products', 'offices', 'prompt_product', o 'product_office'"),
     selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina"),
     override_promoter_name: Optional[str] = Query(None, description="Nombre de promotor para consulta por coordinador"),
-    override_coordinator_name: Optional[str] = Query(None, description="Nombre de coordinador para consulta por administrador")
+    override_coordinator_name: Optional[str] = Query(None, description="Nombre de coordinador para consulta por administrador"),
+    date_filter: str = Query("today", description="Fecha de consulta: 'today' o 'yesterday'")
 ):
     # Resolve FastAPI Query defaults if called directly in Python
     if not isinstance(selected_product, str):
@@ -688,6 +689,8 @@ def get_whatsapp_query(
         phone = None
     if not isinstance(report_type, str):
         report_type = "products"
+    if not isinstance(date_filter, str):
+        date_filter = "today"
 
     # 1. Buscar promotor, coordinador o administrador por celular
     is_administrator = False
@@ -947,7 +950,11 @@ def get_whatsapp_query(
                 if cod is not None:
                     products_by_code[str(cod)] = p
                     
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        target_dt = datetime.now()
+        if date_filter == "yesterday":
+            from datetime import timedelta
+            target_dt = target_dt - timedelta(days=1)
+        today_str = target_dt.strftime("%Y-%m-%d")
         desde = f"{today_str} 00:00:00"
         hasta = f"{today_str} 23:59:59"
         
@@ -1149,8 +1156,12 @@ def get_whatsapp_query(
             if cod is not None:
                 products_by_code[str(cod)] = p
                 
-    # 4. Obtener ventas del día de hoy
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # 4. Obtener ventas del día correspondiente
+    target_dt_main = datetime.now()
+    if date_filter == "yesterday":
+        from datetime import timedelta
+        target_dt_main = target_dt_main - timedelta(days=1)
+    today_str = target_dt_main.strftime("%Y-%m-%d")
     desde = f"{today_str} 00:00:00"
     hasta = f"{today_str} 23:59:59"
     
@@ -1177,8 +1188,13 @@ def get_whatsapp_query(
     from datetime import timezone, timedelta
     colombia_tz = timezone(timedelta(hours=-5))
     now_colombia = datetime.now(colombia_tz)
-    ref_hour = now_colombia.hour
-    ref_hour = max(7, min(21, ref_hour))
+    
+    if date_filter == "yesterday":
+        ref_hour = 21
+    else:
+        ref_hour = now_colombia.hour
+        ref_hour = max(7, min(21, ref_hour))
+        
     ref_hour_str = f"{ref_hour:02d}:00"
     next_hour = ref_hour + 1 if ref_hour < 21 else 21
     next_hour_str = f"{next_hour:02d}:00"
@@ -1335,7 +1351,10 @@ def get_whatsapp_query(
 
     if is_coordinator and report_type in {"products", "offices"}:
         total_faltante_meta = max(0.0, total_goals - total_sales)
-        msg = f"📊 *REPORTE DE ZONA (GENERAL)*\n"
+        if date_filter == "yesterday":
+            msg = f"📊 *REPORTE DE ZONA (AYER)*\n"
+        else:
+            msg = f"📊 *REPORTE DE ZONA (GENERAL)*\n"
         msg += f"👤 *Coordinador:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {user_zone}\n"
@@ -1366,12 +1385,14 @@ def get_whatsapp_query(
             if is_count_based:
                 msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
                 msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
-                msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
+                if date_filter != "yesterday":
+                    msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
                 msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
             else:
                 msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
                 msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
-                msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
+                if date_filter != "yesterday":
+                    msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
                 msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
                 
         msg += f"──────────────────\n"
@@ -1389,13 +1410,16 @@ def get_whatsapp_query(
     
     if report_type == "products":
         total_faltante_meta = max(0.0, total_goals - total_sales)
-        msg = f"📊 *CUMPLIMIENTO DIARIO POR PRODUCTO*\n"
+        if date_filter == "yesterday":
+            msg = f"📊 *TU RESUMEN DE AYER*\n"
+        else:
+            msg = f"📊 *CUMPLIMIENTO DIARIO POR PRODUCTO*\n"
         msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"📊 *Cumplimiento Final:* {emoji_overall} *{compliance:.1f}%*\n" if date_filter == "yesterday" else f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
         msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
         msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
         msg += f"──────────────────\n"
@@ -1419,12 +1443,14 @@ def get_whatsapp_query(
             if is_count_based:
                 msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
                 msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
-                msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
+                if date_filter != "yesterday":
+                    msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
                 msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
             else:
                 msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
                 msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
-                msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
+                if date_filter != "yesterday":
+                    msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
                 msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
