@@ -692,6 +692,25 @@ def get_whatsapp_query(
     if not isinstance(date_filter, str):
         date_filter = "today"
 
+    # Track first message of the day
+    if phone and date_filter == "today" and report_type == "products":
+        from datetime import datetime as dt_class
+        today_str_real = dt_class.now().strftime("%Y-%m-%d")
+        import sqlite3
+        try:
+            conn = sqlite3.connect("uploads/cache.db")
+            c = conn.cursor()
+            c.execute("CREATE TABLE IF NOT EXISTS whatsapp_user_requests (phone TEXT PRIMARY KEY, last_date TEXT)")
+            c.execute("SELECT last_date FROM whatsapp_user_requests WHERE phone = ?", (phone,))
+            row = c.fetchone()
+            if not row or row[0] != today_str_real:
+                date_filter = "yesterday"
+                c.execute("INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date) VALUES (?, ?)", (phone, today_str_real))
+                conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error checking first message of day: {e}")
+
     # 1. Buscar promotor, coordinador o administrador por celular
     is_administrator = False
     is_coordinator = False
