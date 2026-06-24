@@ -760,7 +760,16 @@ def get_whatsapp_query(
     elif is_coordinator:
         for item in distribution_store:
             item_zone = item.get("zona", "")
-            if item_zone and str(item_zone).strip().lower() == user_zone.strip().lower():
+            
+            match_zone = False
+            if user_name.strip().lower() == "morales burbano yudy andrea":
+                if item_zone and str(item_zone).strip().lower() in ["oriente y municipios centro", "centro"]:
+                    match_zone = True
+            else:
+                if item_zone and str(item_zone).strip().lower() == user_zone.strip().lower():
+                    match_zone = True
+                    
+            if match_zone:
                 if item.get("cod_oficina") is not None:
                     try:
                         assigned_offices.add(int(item["cod_oficina"]))
@@ -816,7 +825,16 @@ def get_whatsapp_query(
             c_offices = set()
             for item in distribution_store:
                 item_zone = item.get("zona", "")
-                if item_zone and item_zone.strip().lower() == c_zone.strip().lower():
+                
+                match_zone = False
+                if c_name.strip().lower() == "morales burbano yudy andrea":
+                    if item_zone and str(item_zone).strip().lower() in ["oriente y municipios centro", "centro"]:
+                        match_zone = True
+                else:
+                    if item_zone and item_zone.strip().lower() == c_zone.strip().lower():
+                        match_zone = True
+                        
+                if match_zone:
                     if item.get("cod_oficina") is not None:
                         try:
                             c_offices.add(int(item["cod_oficina"]))
@@ -868,9 +886,19 @@ def get_whatsapp_query(
     promoter_compliance_list = []
     if is_coordinator and report_type in {"products", "offices", "prompt_promoter"}:
         promoter_to_offices = {}
+        promoter_zones = {}
         for item in distribution_store:
             item_zone = item.get("zona", "")
-            if item_zone and item_zone.strip().lower() == user_zone.strip().lower():
+            
+            match_zone = False
+            if user_name.strip().lower() == "morales burbano yudy andrea":
+                if item_zone and str(item_zone).strip().lower() in ["oriente y municipios centro", "centro"]:
+                    match_zone = True
+            else:
+                if item_zone and item_zone.strip().lower() == user_zone.strip().lower():
+                    match_zone = True
+                    
+            if match_zone:
                 p_name = item.get("promotor")
                 off = item.get("cod_oficina")
                 if p_name and off is not None:
@@ -879,6 +907,10 @@ def get_whatsapp_query(
                         if p_name not in promoter_to_offices:
                             promoter_to_offices[p_name] = set()
                         promoter_to_offices[p_name].add(off_int)
+                        if str(item_zone).strip().lower() == "centro":
+                            promoter_zones[p_name] = "Centro"
+                        else:
+                            promoter_zones[p_name] = "Oriente"
                     except:
                         pass
                         
@@ -961,7 +993,7 @@ def get_whatsapp_query(
                 p_comp = (p_sales / p_meta * 100.0)
             else:
                 p_comp = 100.0 if p_sales > 0 else 0.0
-            promoter_compliance_list.append((p_name, p_sales, p_meta, p_comp))
+            promoter_compliance_list.append((p_name, p_sales, p_meta, p_comp, promoter_zones.get(p_name, "")))
             
         promoter_compliance_list.sort(key=lambda x: x[0])
 
@@ -1010,19 +1042,47 @@ def get_whatsapp_query(
                 "report_type": "prompt_promoter",
                 "is_coordinator": True
             }
-        msg = f"👥 *RESUMEN DE PROMOTORES - ZONA: {user_zone}*\n"
-        msg += f"📅 *Fecha:* {today_str}\n"
-        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
-        msg += f"──────────────────\n"
-        for idx, (p_name, p_sales, p_meta, p_comp) in enumerate(promoter_compliance_list, 1):
-            p_emoji = "🟢" if p_comp >= 95 else "🔴"
-            p_faltante = max(0.0, p_meta - p_sales)
-            msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
-            msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
-            msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+        if user_name.strip().lower() == "morales burbano yudy andrea":
+            msg = f"👥 *RESUMEN DE PROMOTORES - ZONA: ORIENTE Y CENTRO*\n"
+            msg += f"📅 *Fecha:* {today_str}\n"
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
             
-        msg += f"──────────────────\n"
-        msg += f"💪 ¡Vamos por la meta! 🚀"
+            msg += f"\n---- promotores zona oriente ----\n"
+            for (p_name, p_sales, p_meta, p_comp, p_zone) in promoter_compliance_list:
+                if p_zone != "Centro":
+                    p_emoji = "🟢" if p_comp >= 95 else "🔴"
+                    p_faltante = max(0.0, p_meta - p_sales)
+                    msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
+                    msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
+                    msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                    
+            msg += f"---- zona centro ----\n"
+            for (p_name, p_sales, p_meta, p_comp, p_zone) in promoter_compliance_list:
+                if p_zone == "Centro":
+                    p_emoji = "🟢" if p_comp >= 95 else "🔴"
+                    p_faltante = max(0.0, p_meta - p_sales)
+                    msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
+                    msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
+                    msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                    
+            msg += f"──────────────────\n"
+            msg += f"💪 ¡Vamos por la meta! 🚀"
+        else:
+            msg = f"👥 *RESUMEN DE PROMOTORES - ZONA: {user_zone}*\n"
+            msg += f"📅 *Fecha:* {today_str}\n"
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+            msg += f"──────────────────\n"
+            for idx, item in enumerate(promoter_compliance_list, 1):
+                p_name, p_sales, p_meta, p_comp = item[:4]
+                p_emoji = "🟢" if p_comp >= 95 else "🔴"
+                p_faltante = max(0.0, p_meta - p_sales)
+                msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
+                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                
+            msg += f"──────────────────\n"
+            msg += f"💪 ¡Vamos por la meta! 🚀"
+
         return {
             "text": msg,
             "report_type": "prompt_promoter",
