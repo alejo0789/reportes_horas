@@ -1320,7 +1320,10 @@ def get_whatsapp_query(
     
     if is_administrator and report_type in {"products", "offices"}:
         total_faltante_meta = max(0.0, total_goals - total_sales)
-        msg = f"📊 *REPORTE ADMINISTRADOR (GENERAL)*\n"
+        if date_filter == "yesterday":
+            msg = f"📊 *REPORTE ADMINISTRADOR (AYER)*\n"
+        else:
+            msg = f"📊 *REPORTE ADMINISTRADOR (GENERAL)*\n"
         msg += f"👤 *Administrador:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Ámbito:* Nacional\n"
