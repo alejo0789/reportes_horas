@@ -762,11 +762,12 @@ def get_whatsapp_query(
             item_zone = item.get("zona", "")
             
             match_zone = False
-            if user_name.strip().lower() == "morales burbano yudy andrea":
+            is_yudy = "yudy" in user_name.strip().lower() or "morales burbano" in user_name.strip().lower()
+            if is_yudy:
                 item_z_lower = str(item_zone).strip().lower()
-                if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro"]:
+                if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
                     match_zone = True
-                elif "centro" in item_z_lower and "oriente" not in item_z_lower:
+                elif "centro" in item_z_lower or "oriente" in item_z_lower:
                     match_zone = True
             else:
                 if item_zone and str(item_zone).strip().lower() == user_zone.strip().lower():
@@ -830,11 +831,12 @@ def get_whatsapp_query(
                 item_zone = item.get("zona", "")
                 
                 match_zone = False
-                if c_name.strip().lower() == "morales burbano yudy andrea":
+                is_yudy_admin = "yudy" in c_name.strip().lower() or "morales burbano" in c_name.strip().lower()
+                if is_yudy_admin:
                     item_z_lower = str(item_zone).strip().lower()
-                    if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro"]:
+                    if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
                         match_zone = True
-                    elif "centro" in item_z_lower and "oriente" not in item_z_lower:
+                    elif "centro" in item_z_lower or "oriente" in item_z_lower:
                         match_zone = True
                 else:
                     if item_zone and item_zone.strip().lower() == c_zone.strip().lower():
@@ -897,11 +899,12 @@ def get_whatsapp_query(
             item_zone = item.get("zona", "")
             
             match_zone = False
-            if user_name.strip().lower() == "morales burbano yudy andrea":
+            is_yudy = "yudy" in user_name.strip().lower() or "morales burbano" in user_name.strip().lower()
+            if is_yudy:
                 item_z_lower = str(item_zone).strip().lower()
-                if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro"]:
+                if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
                     match_zone = True
-                elif "centro" in item_z_lower and "oriente" not in item_z_lower:
+                elif "centro" in item_z_lower or "oriente" in item_z_lower:
                     match_zone = True
             else:
                 if item_zone and item_zone.strip().lower() == user_zone.strip().lower():
@@ -1052,8 +1055,9 @@ def get_whatsapp_query(
                 "report_type": "prompt_promoter",
                 "is_coordinator": True
             }
-        if user_name.strip().lower() == "morales burbano yudy andrea":
-            msg = f"👥 *RESUMEN DE PROMOTORES (v2) - ZONA: ORIENTE Y CENTRO*\n"
+        is_yudy = "yudy" in user_name.strip().lower() or "morales burbano" in user_name.strip().lower()
+        if is_yudy:
+            msg = f"👥 *RESUMEN DE PROMOTORES (v3) - ZONA: ORIENTE Y CENTRO*\n"
             msg += f"📅 *Fecha:* {today_str}\n"
             msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
             
