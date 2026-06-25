@@ -772,37 +772,61 @@ def get_whatsapp_query(
         now = dt_class.now()
         today_str_real = now.strftime("%Y-%m-%d")
         
-        # 3 mensajes para promotores y administradores, 2 para coordinadores
-        session_limit = 3 if not is_coordinator else 2
+        # Solo el primer mensaje del día debe devolver el reporte de ayer
+        session_limit = 1
         
         import sqlite3
         try:
             conn = sqlite3.connect("uploads/cache.db")
             c = conn.cursor()
             c.execute("CREATE TABLE IF NOT EXISTS whatsapp_user_requests (phone TEXT PRIMARY KEY, last_date TEXT)")
+            
+            # Migrations for new columns
             try:
                 c.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN msg_count INTEGER DEFAULT 0")
             except:
                 pass
+            try:
+                c.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN session_start_time TEXT")
+            except:
+                pass
                 
-            c.execute("SELECT last_date, msg_count FROM whatsapp_user_requests WHERE phone = ?", (phone,))
+            c.execute("SELECT last_date, msg_count, session_start_time FROM whatsapp_user_requests WHERE phone = ?", (phone,))
             row = c.fetchone()
             
             is_yesterday_session = False
+            now_iso = now.isoformat()
+            
             if not row or row[0] != today_str_real:
-                # Primer mensaje del día
+                # Primer mensaje del día (inicia el ciclo de "ayer")
                 if today_str_real != "2026-06-24":
                     is_yesterday_session = True
-                c.execute("INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date, msg_count) VALUES (?, ?, ?)", 
-                          (phone, today_str_real, 1))
+                
+                # Insertamos o actualizamos con el inicio del ciclo (session_start_time)
+                # Si la tabla ya existe y usamos REPLACE, se deben proveer todos los campos.
+                # Mejor usar UPDATE para asegurar no perder otros campos si existieran, o REPLACE con cuidado.
+                # Como 'phone' es PK, INSERT OR REPLACE reemplazará toda la fila.
+                c.execute("INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date, msg_count, session_start_time) VALUES (?, ?, ?, ?)", 
+                          (phone, today_str_real, 1, now_iso))
                 conn.commit()
             else:
-                # Ya interactuó hoy, verificar cantidad de mensajes permitidos para su rol
-                msg_count = row[1] if len(row) > 1 and row[1] is not None else 1
-                if msg_count < session_limit:
-                    is_yesterday_session = True
+                # Ya interactuó hoy, verificamos si aún está dentro de la ventana de tiempo del ciclo inicial.
+                # Ventana de 60 minutos para permitirle consultar varias opciones con datos de "ayer".
+                session_start_str = row[2] if len(row) > 2 else None
                 
-                c.execute("UPDATE whatsapp_user_requests SET msg_count = ? WHERE phone = ?", (msg_count + 1, phone))
+                if session_start_str:
+                    try:
+                        from datetime import datetime as dt_class_parse
+                        session_start_dt = dt_class_parse.fromisoformat(session_start_str)
+                        # Si han pasado menos de 3 minutos, sigue siendo "ayer"
+                        if (now - session_start_dt).total_seconds() < 180:
+                            is_yesterday_session = True
+                    except Exception as parse_err:
+                        pass
+                
+                msg_count = row[1] if len(row) > 1 and row[1] is not None else 1
+                c.execute("UPDATE whatsapp_user_requests SET msg_count = ?, session_start_time = COALESCE(session_start_time, ?) WHERE phone = ?", 
+                          (msg_count + 1, now_iso, phone))
                 conn.commit()
                         
             if is_yesterday_session:
