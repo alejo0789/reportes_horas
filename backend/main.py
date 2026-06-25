@@ -758,8 +758,8 @@ def get_whatsapp_query(
         now = dt_class.now()
         today_str_real = now.strftime("%Y-%m-%d")
         
-        # 3 mensajes para promotores (para que puedan ver oficinas), 2 para los demás
-        session_limit = 3 if (not is_coordinator and not is_administrator) else 2
+        # 3 mensajes para promotores y administradores, 2 para coordinadores
+        session_limit = 3 if not is_coordinator else 2
         
         import sqlite3
         try:
@@ -1099,21 +1099,50 @@ def get_whatsapp_query(
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        for c_name, c_zone, c_sales, c_meta, c_comp in coor_compliance_list:
+        for i, (c_name, c_zone, c_sales, c_meta, c_comp) in enumerate(coor_compliance_list, 1):
             c_emoji = "🟢" if c_comp >= 95 else "🔴"
             c_faltante = max(0.0, c_meta - c_sales)
-            msg += f"• 👤 *{c_name}* ({c_zone}) ({c_emoji} *{c_comp:.1f}%*)\n"
+            msg += f"{i}. 👤 *{c_name}* ({c_zone}) ({c_emoji} *{c_comp:.1f}%*)\n"
             msg += f"  ↳ Venta: ${round(c_sales):,}\n"
             msg += f"  ↳ Meta: ${round(c_meta):,}\n"
             msg += f"  ↳ Faltante: ${round(c_faltante):,}\n\n"
             
         msg += f"──────────────────\n"
+        msg += f"📲 Para ver el detalle por producto, responde con el número del coordinador (Ej: *1*)\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
         return {
             "text": msg,
             "report_type": "coordinators_summary",
             "is_administrator": True
         }
+
+    # Early return for administrator looking at a specific coordinator's details
+    if is_administrator and report_type == "administrator_coordinator_detail":
+        if selected_product and selected_product.isdigit():
+            idx = int(selected_product) - 1
+            if 0 <= idx < len(coor_compliance_list):
+                selected_coord_name = coor_compliance_list[idx][0]
+                # Recursively call the function as if the administrator is that coordinator requesting "products"
+                return get_whatsapp_query(
+                    phone=None,
+                    report_type="products",
+                    selected_product=None,
+                    override_promoter_name=None,
+                    override_coordinator_name=selected_coord_name,
+                    date_filter=date_filter
+                )
+            else:
+                return {
+                    "text": "❌ El número ingresado no corresponde a ningún coordinador de la lista.",
+                    "report_type": "administrator_coordinator_detail",
+                    "is_administrator": True
+                }
+        else:
+            return {
+                "text": "❌ Formato inválido. Por favor, responde únicamente con el número del coordinador.",
+                "report_type": "administrator_coordinator_detail",
+                "is_administrator": True
+            }
 
     # Early return for prompt_promoter (promoter summary for coordinator)
     if is_coordinator and report_type == "prompt_promoter":
