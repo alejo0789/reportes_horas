@@ -9,7 +9,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.db import db_manager
-from backend.queries import VENTAS_POR_HORA_QUERY, SITIOS_VENTA_QUERY, PRODUCTOS_QUERY
+from backend.queries import (
+    VENTAS_POR_HORA_QUERY, SITIOS_VENTA_QUERY, PRODUCTOS_QUERY,
+    PAGOS_BETPLAY_COMPLETO, RECARGAS_BETPLAY_COMPLETO
+)
 from backend.excel_parser import parse_metas_excel, parse_promoters_excel
 from backend.cache import (
     init_cache_db, get_cached_sales, set_cached_sales, clear_cache,
@@ -78,6 +81,10 @@ def rows_to_dicts(cursor):
             # Format datetime objects as strings
             if isinstance(val, (datetime, date)):
                 row_dict[col_name] = val.isoformat()
+            elif isinstance(val, (bytes, bytearray)):
+                # Columnas binarias (RAW/GUID/BLOB): representar como hex para evitar
+                # fallos de serialización JSON (UnicodeDecodeError).
+                row_dict[col_name] = bytes(val).hex()
             else:
                 row_dict[col_name] = val
         results.append(row_dict)
@@ -1549,6 +1556,239 @@ def get_productos(force_refresh: bool = Query(False, description="Forzar consult
             {"Cod_Producto": 22069, "Producto": "CHANCE RASPA", "Tipo_Producto": "RASPA"},
             {"Cod_Producto": 13, "Producto": "GIROS CREADOS", "Tipo_Producto": "GIROS"}
         ]
+    }
+
+
+# ============================ BETPLAY ============================
+
+# Configuration per Betplay transaction type: which query to run and which
+# columns hold the amount and the event date.
+BETPLAY_CONFIG = {
+    "pagos": {
+        "query": PAGOS_BETPLAY_COMPLETO,
+        "amount_key": "VALOR_PAGO",
+        "date_key": "FEC_PAGO",
+    },
+    "recargas": {
+        "query": RECARGAS_BETPLAY_COMPLETO,
+        "amount_key": "VLR_RECARGA",
+        "date_key": "FEC_VENTA",
+    },
+}
+
+
+def _to_float(val):
+    """Safe numeric conversion; returns 0.0 for None/invalid values."""
+    if val is None:
+        return 0.0
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _hour_of(date_str):
+    """Extracts the hour (0-23) from an ISO datetime string; None if unparseable."""
+    if not date_str:
+        return None
+    try:
+        return datetime.fromisoformat(str(date_str)).hour
+    except ValueError:
+        return None
+
+
+def _day_of(date_str):
+    """Extracts the day 'YYYY-MM-DD' from an ISO datetime string; None if unparseable."""
+    if not date_str:
+        return None
+    try:
+        return datetime.fromisoformat(str(date_str)).date().isoformat()
+    except ValueError:
+        return None
+
+
+def aggregate_betplay(rows, amount_key, date_key):
+    """
+    Builds pre-calculated aggregations over raw Betplay rows.
+    Each group carries both 'monto' (sum of amount) and 'cantidad' (row count).
+    """
+    by_hour = {}        # hour(int) -> {monto, cantidad}
+    by_day = {}         # 'YYYY-MM-DD' -> {monto, cantidad}
+    by_zone = {}        # zona -> {monto, cantidad}
+    by_type_sv = {}     # tipo SV -> {monto, cantidad}
+    by_office = {}      # cod_oficina -> {oficina, monto, cantidad}
+    by_site = {}        # cod_sitio -> {sitio, oficina, zona, cx, cy, monto, cantidad}
+    by_user = {}        # identificacion -> {monto, cantidad}
+    by_channel = {}     # canal -> {monto, cantidad}
+
+    total_monto = 0.0
+    total_cantidad = 0
+    usuarios = set()
+    sitios = set()
+
+    def bump(d, key, monto, **labels):
+        if key not in d:
+            d[key] = {"monto": 0.0, "cantidad": 0, **labels}
+        d[key]["monto"] += monto
+        d[key]["cantidad"] += 1
+
+    for r in rows:
+        monto = _to_float(r.get(amount_key))
+        total_monto += monto
+        total_cantidad += 1
+
+        # Por hora / por día
+        h = _hour_of(r.get(date_key))
+        if h is not None:
+            bump(by_hour, h, monto)
+        d = _day_of(r.get(date_key))
+        if d is not None:
+            bump(by_day, d, monto)
+
+        # Por zona
+        zona = r.get("Zona") or "Sin Zona"
+        bump(by_zone, zona, monto)
+
+        # Por tipo de sitio de venta
+        tipo = r.get("Tipo SV") or "Sin Tipo"
+        bump(by_type_sv, tipo, monto)
+
+        # Por oficina
+        cod_of = r.get("Cod. Oficina")
+        bump(by_office, cod_of, monto, oficina=(r.get("Oficina") or "Sin Oficina"), cod_oficina=cod_of)
+
+        # Por sitio (incluye coordenadas para el mapa)
+        cod_sitio = r.get("Cod. Sitio")
+        bump(
+            by_site, cod_sitio, monto,
+            cod_sitio=cod_sitio,
+            sitio=(r.get("Sitio de venta") or "Sin Sitio"),
+            oficina=(r.get("Oficina") or "Sin Oficina"),
+            zona=zona,
+            cx=r.get("CX"),
+            cy=r.get("CY"),
+        )
+        if cod_sitio is not None:
+            sitios.add(cod_sitio)
+
+        # Por usuario (identificación)
+        ident = r.get("NUM_IDENTIFICACION")
+        if ident is not None and str(ident).strip() != "":
+            bump(by_user, ident, monto, identificacion=ident)
+            usuarios.add(ident)
+
+        # Por canal
+        canal = r.get("IDE_CANAL")
+        bump(by_channel, canal if canal is not None else "Sin Canal", monto, canal=canal)
+
+    # Sort helpers
+    def as_sorted_list(d, sort_key="monto", reverse=True, label_key=None):
+        items = []
+        for k, v in d.items():
+            entry = dict(v)
+            if label_key:
+                entry[label_key] = k
+            items.append(entry)
+        items.sort(key=lambda x: x.get(sort_key, 0), reverse=reverse)
+        return items
+
+    return {
+        "totales": {
+            "monto": round(total_monto, 2),
+            "cantidad": total_cantidad,
+            "usuarios_unicos": len(usuarios),
+            "sitios_unicos": len(sitios),
+            "ticket_promedio": round(total_monto / total_cantidad, 2) if total_cantidad else 0,
+        },
+        # por_hora / por_dia ordenados cronológicamente
+        "por_hora": [
+            {"hora": h, **by_hour[h]} for h in sorted(by_hour.keys())
+        ],
+        "por_dia": [
+            {"fecha": d, **by_day[d]} for d in sorted(by_day.keys())
+        ],
+        "por_zona": as_sorted_list(by_zone, label_key="zona"),
+        "por_tipo_sv": as_sorted_list(by_type_sv, label_key="tipo"),
+        "por_oficina": as_sorted_list(by_office),
+        "por_sitio": as_sorted_list(by_site),
+        "por_usuario": as_sorted_list(by_user),
+        "por_canal": as_sorted_list(by_channel, label_key="canal_label"),
+    }
+
+
+@app.get("/api/betplay/resumen")
+def get_betplay_resumen(
+    tipo: str = Query("pagos", description="Tipo de transacción: 'pagos' o 'recargas'"),
+    desde: str = Query(..., description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
+    hasta: str = Query(..., description="Fecha fin (exclusiva) YYYY-MM-DD HH:MM:SS"),
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar caché"),
+):
+    """
+    Returns pre-calculated aggregations of Betplay payments/recharges for the
+    given period, querying both CAUCAMED and FORTUMED. Cached in SQLite per key.
+    """
+    tipo = (tipo or "").lower().strip()
+    if tipo not in BETPLAY_CONFIG:
+        raise HTTPException(status_code=400, detail="tipo debe ser 'pagos' o 'recargas'.")
+
+    cfg = BETPLAY_CONFIG[tipo]
+    cache_key = f"betplay_{tipo}_{desde}_{hasta}"
+
+    # 1. Serve from cache unless forcing refresh
+    cached_data, last_updated = get_cached_sales(cache_key)
+    if cached_data is not None and not force_refresh:
+        logger.info(f"Serving Betplay '{tipo}' summary from SQLite Cache (key {cache_key}).")
+        return {"source": "LOCAL_CACHE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
+
+    # 2. Query both Oracle databases
+    logger.info(f"Fetching Betplay '{tipo}' from Oracle: {desde} -> {hasta}")
+    rows = []
+    errors = []
+    db_failures = False
+    params = {"desde": desde, "hasta": hasta}
+
+    for db_name, get_conn, pool in (
+        ("CAUCAMED", db_manager.get_cauca_connection, db_manager.pool_cauca),
+        ("FORTUMED", db_manager.get_fortuna_connection, db_manager.pool_fortuna),
+    ):
+        if not pool:
+            errors.append(f"{db_name} pool not initialized.")
+            db_failures = True
+            continue
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(cfg["query"], params)
+                    res = rows_to_dicts(cursor)
+                    for r in res:
+                        r["Fuente"] = "CAUCA" if db_name == "CAUCAMED" else "FORTUNA"
+                    rows.extend(res)
+                    logger.info(f"Retrieved {len(res)} Betplay rows from {db_name}.")
+        except Exception as e:
+            msg = f"{db_name} Betplay query failed: {e}"
+            logger.error(msg)
+            errors.append(msg)
+            db_failures = True
+
+    # 3. Fallback to stale cache if DB failed and we have something cached
+    if db_failures and not rows and cached_data is not None:
+        logger.warning(f"Betplay DB query failed. Serving stale cache. Errors: {errors}")
+        return {"source": "LOCAL_CACHE_STALE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
+
+    # 4. Aggregate and cache (incluye filas crudas con tope para no inflar el payload)
+    DETALLE_LIMIT = 2000
+    resumen = aggregate_betplay(rows, cfg["amount_key"], cfg["date_key"])
+    resumen["detalle"] = rows[:DETALLE_LIMIT]
+    resumen["detalle_total"] = len(rows)
+    set_cached_sales(cache_key, resumen)
+
+    return {
+        "source": "DATABASE",
+        "tipo": tipo,
+        "desde": desde,
+        "hasta": hasta,
+        "errors": errors,
+        "data": resumen,
     }
 
 @app.post("/api/upload/metas")

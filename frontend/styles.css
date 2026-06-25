@@ -25,6 +25,11 @@
     box-sizing: border-box;
 }
 
+/* El atributo hidden debe ganar sobre cualquier display de las reglas siguientes */
+[hidden] {
+    display: none !important;
+}
+
 body {
     background-color: var(--bg-color);
     color: var(--text-primary);
@@ -1700,6 +1705,209 @@ input:checked + .slider:before {
 .action-btn-secondary:hover {
     background: rgba(255, 255, 255, 0.08);
     color: #ffffff;
+}
+
+/* ===================== TAB NAVIGATION ===================== */
+.tab-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+}
+
+.tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    background: var(--panel-bg);
+    backdrop-filter: blur(var(--blur-strength));
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.tab-btn:hover {
+    color: var(--text-primary);
+    border-color: rgba(99, 102, 241, 0.4);
+}
+
+.tab-btn.active {
+    color: #ffffff;
+    background: linear-gradient(135deg, var(--primary) 0%, #4f46e5 100%);
+    border-color: transparent;
+    box-shadow: 0 4px 18px var(--primary-glow);
+}
+
+.tab-btn i {
+    font-size: 15px;
+}
+
+.tab-view[hidden] {
+    display: none;
+}
+
+/* ===================== BETPLAY CONTROLS ===================== */
+.betplay-controls {
+    margin-bottom: 24px;
+}
+
+.betplay-controls-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.betplay-controls-row .filter-group {
+    flex: 1 1 180px;
+    min-width: 160px;
+    margin-bottom: 0;
+}
+
+.betplay-apply-group {
+    flex: 0 0 auto;
+}
+
+.betplay-apply-group .action-btn-primary {
+    width: 100%;
+    white-space: nowrap;
+}
+
+.betplay-selection-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    padding: 10px 14px;
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: 10px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.betplay-selection-summary i {
+    color: var(--primary);
+}
+
+/* TOGGLE MONTO / CANTIDAD y PUNTOS / CALOR */
+.betplay-metric-toggle,
+.betplay-map-toggle {
+    display: inline-flex;
+    gap: 4px;
+    padding: 4px;
+    background: rgba(11, 13, 25, 0.5);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+}
+
+.metric-btn {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.18s ease;
+    white-space: nowrap;
+}
+
+.metric-btn:hover {
+    color: var(--text-primary);
+}
+
+.metric-btn.active {
+    background: linear-gradient(135deg, var(--primary) 0%, #4f46e5 100%);
+    color: #ffffff;
+}
+
+/* MAPA LEAFLET */
+#bp-map {
+    height: 460px;
+    width: 100%;
+    border-radius: 12px;
+    overflow: hidden;
+    margin-top: 12px;
+    background: rgba(11, 13, 25, 0.5);
+}
+
+/* El popup de Leaflet hereda fondo claro; ajustamos a tema oscuro */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+    background: #14182e;
+    color: var(--text-primary);
+}
+
+.leaflet-popup-content {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+/* TABLA DE DATOS CRUDOS: scroll vertical con cabecera fija */
+.betplay-raw-scroll {
+    max-height: 460px;
+    overflow: auto;
+}
+
+.betplay-raw-scroll thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #14182e;
+}
+
+/* ESTADO DE CARGA */
+.betplay-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 60px 20px;
+    color: var(--text-secondary);
+    font-size: 15px;
+    font-weight: 500;
+}
+
+.betplay-loading i {
+    color: var(--primary);
+    font-size: 20px;
+}
+
+/* PLACEHOLDER VISUALIZACIONES */
+.betplay-placeholder {
+    min-height: 260px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.betplay-placeholder-content {
+    color: var(--text-muted);
+    max-width: 420px;
+}
+
+.betplay-placeholder-content i {
+    font-size: 42px;
+    color: rgba(99, 102, 241, 0.4);
+    margin-bottom: 14px;
+    display: block;
+}
+
+.betplay-placeholder-content p {
+    font-size: 14px;
+    line-height: 1.5;
 }
 
 
