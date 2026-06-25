@@ -1067,7 +1067,12 @@ def get_whatsapp_query(
 
     # Early return for coordinators summary for administrator
     if is_administrator and report_type == "coordinators":
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        target_dt_coor = datetime.now()
+        if date_filter == "yesterday":
+            from datetime import timedelta
+            target_dt_coor = target_dt_coor - timedelta(days=1)
+        today_str = target_dt_coor.strftime("%Y-%m-%d")
+        
         db_update_time_str = "Desconocida"
         try:
             sales_resp = get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=False)
@@ -1082,7 +1087,10 @@ def get_whatsapp_query(
         except:
             pass
             
-        msg = f"👥 *CUMPLIMIENTO POR COORDINADOR*\n"
+        if date_filter == "yesterday":
+            msg = f"👥 *CUMPLIMIENTO POR COORDINADOR (AYER)*\n"
+        else:
+            msg = f"👥 *CUMPLIMIENTO POR COORDINADOR*\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
@@ -1112,7 +1120,10 @@ def get_whatsapp_query(
             }
         is_yudy = "yud" in user_name.strip().lower() or "moral" in user_name.strip().lower() or "oriente y municipios centro" in user_zone.strip().lower()
         if is_yudy:
-            msg = f"👥 *RESUMEN DE PROMOTORES (v4) - ZONA: ORIENTE Y CENTRO*\n"
+            if date_filter == "yesterday":
+                msg = f"👥 *RESUMEN DE PROMOTORES (AYER) - ZONA: ORIENTE Y CENTRO*\n"
+            else:
+                msg = f"👥 *RESUMEN DE PROMOTORES (v4) - ZONA: ORIENTE Y CENTRO*\n"
             msg += f"📅 *Fecha:* {today_str}\n"
             msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
             
@@ -1137,7 +1148,10 @@ def get_whatsapp_query(
             msg += f"──────────────────\n"
             msg += f"💪 ¡Vamos por la meta! 🚀"
         else:
-            msg = f"👥 *RESUMEN DE PROMOTORES (Debug) - ZONA: {user_zone}*\n"
+            if date_filter == "yesterday":
+                msg = f"👥 *RESUMEN DE PROMOTORES (AYER) - ZONA: {user_zone}*\n"
+            else:
+                msg = f"👥 *RESUMEN DE PROMOTORES (Debug) - ZONA: {user_zone}*\n"
             msg += f"👤 *Coordinador:* {user_name}\n"
             msg += f"📅 *Fecha:* {today_str}\n"
             msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
