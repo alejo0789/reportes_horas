@@ -1319,6 +1319,9 @@ def get_whatsapp_query(
                 db_update_time_str = dt.strftime("%d/%m/%Y %I:%M %p")
             except Exception:
                 db_update_time_str = str(last_updated)
+                
+        if date_filter == "yesterday":
+            db_update_time_str = "Cierre del día"
     except Exception as e:
         logger.error(f"Error fetching sales for WhatsApp query: {e}")
         return {
