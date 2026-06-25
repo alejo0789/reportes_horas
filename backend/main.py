@@ -2164,7 +2164,14 @@ async def receive_whatsapp_webhook(request: Request):
                     "title": "Reporte General"
                 }
             })
-            button_prompt = "🔢 Escribe el número del coordinador, o selecciona una opción:"
+            from backend.cache import get_all_coordinators
+            all_coors = get_all_coordinators()
+            active_coors_sorted = sorted([c for c in all_coors if c.get("active", 1)], key=lambda x: x["name"])
+            
+            button_prompt = "🔢 *Lista de Coordinadores:*\n"
+            for idx, c in enumerate(active_coors_sorted, 1):
+                button_prompt += f"*{idx}.* {c['name']}\n"
+            button_prompt += "\nEscribe el número del coordinador, o selecciona una opción:"
 
     elif query_result.get("is_coordinator") is True:
         res_report_type = query_result.get("report_type")
