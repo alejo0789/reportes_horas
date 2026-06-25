@@ -2012,8 +2012,12 @@ async def receive_whatsapp_webhook(request: Request):
             report_type = "products"
         elif button_id == "view_coordinators_summary" or "coordinador" in user_msg_lower:
             report_type = "coordinators"
+        elif user_msg_text.isdigit():
+            report_type = "administrator_coordinator_detail"
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=user_msg_text)
             
-        query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+        if query_result is None:
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type)
     elif coordinator:
         # Coordinator Session Routing
         report_type = "products" # Default to zone report
