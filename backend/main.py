@@ -865,7 +865,12 @@ def get_whatsapp_query(
         site_to_office_local[333033] = 333
         site_to_office_local[334034] = 334
         
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        target_dt_coor_list = datetime.now()
+        if date_filter == "yesterday":
+            from datetime import timedelta
+            target_dt_coor_list = target_dt_coor_list - timedelta(days=1)
+        today_str = target_dt_coor_list.strftime("%Y-%m-%d")
+        
         sales_list_local = []
         try:
             sales_resp_local = get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=False)
