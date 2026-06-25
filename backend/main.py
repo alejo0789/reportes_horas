@@ -1120,8 +1120,11 @@ def get_whatsapp_query(
     if is_administrator and report_type == "administrator_coordinator_detail":
         if selected_product and selected_product.isdigit():
             idx = int(selected_product) - 1
-            if 0 <= idx < len(coor_compliance_list):
-                selected_coord_name = coor_compliance_list[idx][0]
+            from backend.cache import get_all_coordinators
+            all_coors = get_all_coordinators()
+            active_coors_sorted = sorted([c for c in all_coors if c.get("active", 1)], key=lambda x: x["name"])
+            if 0 <= idx < len(active_coors_sorted):
+                selected_coord_name = active_coors_sorted[idx]["name"]
                 # Recursively call the function as if the administrator is that coordinator requesting "products"
                 return get_whatsapp_query(
                     phone=None,
@@ -2161,7 +2164,7 @@ async def receive_whatsapp_webhook(request: Request):
                     "title": "Reporte General"
                 }
             })
-            button_prompt = "📦 Seleccione una opción:"
+            button_prompt = "🔢 Escribe el número del coordinador, o selecciona una opción:"
 
     elif query_result.get("is_coordinator") is True:
         res_report_type = query_result.get("report_type")
