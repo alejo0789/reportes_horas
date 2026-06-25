@@ -1126,7 +1126,7 @@ def get_whatsapp_query(
             if 0 <= idx < len(active_coors_sorted):
                 selected_coord_name = active_coors_sorted[idx]["name"]
                 # Recursively call the function as if the administrator is that coordinator requesting "products"
-                return get_whatsapp_query(
+                result = get_whatsapp_query(
                     phone=None,
                     report_type="products",
                     selected_product=None,
@@ -1134,6 +1134,10 @@ def get_whatsapp_query(
                     override_coordinator_name=selected_coord_name,
                     date_filter=date_filter
                 )
+                result["is_administrator"] = True
+                result["is_coordinator"] = False
+                result["report_type"] = "administrator_coordinator_products_view"
+                return result
             else:
                 return {
                     "text": "❌ El número ingresado no corresponde a ningún coordinador de la lista.",
@@ -2172,6 +2176,15 @@ async def receive_whatsapp_webhook(request: Request):
             for idx, c in enumerate(active_coors_sorted, 1):
                 button_prompt += f"*{idx}.* {c['name']}\n"
             button_prompt += "\nEscribe el número del coordinador, o selecciona una opción:"
+        elif res_report_type == "administrator_coordinator_products_view":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_coordinators_summary",
+                    "title": "Ver Coordinadores"
+                }
+            })
+            button_prompt = "📦 Selecciona una opción:"
 
     elif query_result.get("is_coordinator") is True:
         res_report_type = query_result.get("report_type")
