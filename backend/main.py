@@ -692,7 +692,7 @@ def get_whatsapp_query(
     if not isinstance(date_filter, str):
         date_filter = "today"
 
-    # Track first message of the day and create a 5-minute "yesterday" session
+    # Track first message of the day and create a 2-message "yesterday" limit
     if phone and date_filter == "today":
         from datetime import datetime as dt_class
         now = dt_class.now()
@@ -703,11 +703,11 @@ def get_whatsapp_query(
             c = conn.cursor()
             c.execute("CREATE TABLE IF NOT EXISTS whatsapp_user_requests (phone TEXT PRIMARY KEY, last_date TEXT)")
             try:
-                c.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN last_session_time TEXT")
+                c.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN msg_count INTEGER DEFAULT 0")
             except:
                 pass
                 
-            c.execute("SELECT last_date, last_session_time FROM whatsapp_user_requests WHERE phone = ?", (phone,))
+            c.execute("SELECT last_date, msg_count FROM whatsapp_user_requests WHERE phone = ?", (phone,))
             row = c.fetchone()
             
             is_yesterday_session = False
@@ -715,18 +715,17 @@ def get_whatsapp_query(
                 # Primer mensaje del día
                 if today_str_real != "2026-06-24":
                     is_yesterday_session = True
-                c.execute("INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date, last_session_time) VALUES (?, ?, ?)", 
-                          (phone, today_str_real, now.isoformat()))
+                c.execute("INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date, msg_count) VALUES (?, ?, ?)", 
+                          (phone, today_str_real, 1))
                 conn.commit()
             else:
-                # Ya interactuó hoy, verificar si está dentro de la ventana de 5 minutos
-                if len(row) > 1 and row[1]:
-                    try:
-                        session_time = dt_class.fromisoformat(row[1])
-                        if (now - session_time).total_seconds() < 300: # 5 minutos
-                            is_yesterday_session = True
-                    except:
-                        pass
+                # Ya interactuó hoy, verificar cantidad de mensajes
+                msg_count = row[1] if len(row) > 1 and row[1] is not None else 1
+                if msg_count < 2:
+                    is_yesterday_session = True
+                
+                c.execute("UPDATE whatsapp_user_requests SET msg_count = ? WHERE phone = ?", (msg_count + 1, phone))
+                conn.commit()
                         
             if is_yesterday_session:
                 date_filter = "yesterday"
