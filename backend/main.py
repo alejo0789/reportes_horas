@@ -1301,7 +1301,7 @@ def get_whatsapp_query(
             try:
                 s_code_int = int(s_code)
                 off_code = site_to_office.get(s_code_int)
-                if off_code in assigned_offices:
+                if is_administrator or off_code in assigned_offices:
                     v_neta = float(sale.get("Venta_Neta") or 0.0)
                     prod_name = resolve_product_name(sale, products_by_code)
                     
@@ -1347,7 +1347,7 @@ def get_whatsapp_query(
                 if off_code is not None:
                     try:
                         off_code_int = int(off_code)
-                        if off_code_int in assigned_offices:
+                        if is_administrator or off_code_int in assigned_offices:
                             meta_val = float(rec.get("meta") or 0.0)
                             if prod_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}:
                                 meta_val = float(round(meta_val))
