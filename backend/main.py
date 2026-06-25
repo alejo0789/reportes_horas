@@ -1524,7 +1524,10 @@ def get_whatsapp_query(
         is_count_based = selected_product in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
         total_faltante_meta = max(0.0, total_goals - total_sales)
         
-        msg = f"📊 *REPORTE PRODUCTO / OFICINA*\n"
+        if date_filter == "yesterday":
+            msg = f"📊 *REPORTE PRODUCTO / OFICINA (AYER)*\n"
+        else:
+            msg = f"📊 *REPORTE PRODUCTO / OFICINA*\n"
         msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📦 *Producto:* *{selected_product}*\n"
@@ -1568,7 +1571,10 @@ def get_whatsapp_query(
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
     else: # report_type == "offices"
-        msg = f"📊 *REPORTE OFICINA GENERAL*\n"
+        if date_filter == "yesterday":
+            msg = f"📊 *REPORTE OFICINA GENERAL (AYER)*\n"
+        else:
+            msg = f"📊 *REPORTE OFICINA GENERAL*\n"
         msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {user_zone}\n"
