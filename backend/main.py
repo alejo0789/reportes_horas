@@ -6,6 +6,7 @@ from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend.db import db_manager
@@ -1615,6 +1616,7 @@ def aggregate_betplay(rows, amount_key, date_key):
     by_hour = {}        # hour(int) -> {monto, cantidad}
     by_day = {}         # 'YYYY-MM-DD' -> {monto, cantidad}
     by_zone = {}        # zona -> {monto, cantidad}
+    by_city = {}        # ciudad -> {monto, cantidad}
     by_type_sv = {}     # tipo SV -> {monto, cantidad}
     by_office = {}      # cod_oficina -> {oficina, monto, cantidad}
     by_site = {}        # cod_sitio -> {sitio, oficina, zona, cx, cy, monto, cantidad}
@@ -1648,6 +1650,10 @@ def aggregate_betplay(rows, amount_key, date_key):
         # Por zona
         zona = r.get("Zona") or "Sin Zona"
         bump(by_zone, zona, monto)
+
+        # Por ciudad
+        ciudad = r.get("Ciudad") or "Sin Ciudad"
+        bump(by_city, ciudad, monto, ciudad=ciudad)
 
         # Por tipo de sitio de venta
         tipo = r.get("Tipo SV") or "Sin Tipo"
@@ -1708,6 +1714,7 @@ def aggregate_betplay(rows, amount_key, date_key):
             {"fecha": d, **by_day[d]} for d in sorted(by_day.keys())
         ],
         "por_zona": as_sorted_list(by_zone, label_key="zona"),
+        "por_ciudad": as_sorted_list(by_city),
         "por_tipo_sv": as_sorted_list(by_type_sv, label_key="tipo"),
         "por_oficina": as_sorted_list(by_office),
         "por_sitio": as_sorted_list(by_site),
@@ -1716,16 +1723,10 @@ def aggregate_betplay(rows, amount_key, date_key):
     }
 
 
-@app.get("/api/betplay/resumen")
-def get_betplay_resumen(
-    tipo: str = Query("pagos", description="Tipo de transacción: 'pagos' o 'recargas'"),
-    desde: str = Query(..., description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
-    hasta: str = Query(..., description="Fecha fin (exclusiva) YYYY-MM-DD HH:MM:SS"),
-    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar caché"),
-):
+def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
     """
-    Returns pre-calculated aggregations of Betplay payments/recharges for the
-    given period, querying both CAUCAMED and FORTUMED. Cached in SQLite per key.
+    Núcleo reutilizable: devuelve (resultado_dict) con las agregaciones de Betplay
+    para el periodo. Usado por el endpoint /resumen y por el asistente IA.
     """
     tipo = (tipo or "").lower().strip()
     if tipo not in BETPLAY_CONFIG:
@@ -1782,14 +1783,216 @@ def get_betplay_resumen(
     resumen["detalle_total"] = len(rows)
     set_cached_sales(cache_key, resumen)
 
+    return {"source": "DATABASE", "tipo": tipo, "desde": desde, "hasta": hasta, "errors": errors, "data": resumen}
+
+
+@app.get("/api/betplay/resumen")
+def get_betplay_resumen(
+    tipo: str = Query("pagos", description="Tipo de transacción: 'pagos' o 'recargas'"),
+    desde: str = Query(..., description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
+    hasta: str = Query(..., description="Fecha fin (exclusiva) YYYY-MM-DD HH:MM:SS"),
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar caché"),
+):
+    """
+    Returns pre-calculated aggregations of Betplay payments/recharges for the
+    given period, querying both CAUCAMED and FORTUMED. Cached in SQLite per key.
+    """
+    return compute_betplay_resumen(tipo, desde, hasta, force_refresh)
+
+
+# ============================ ASISTENTE IA ============================
+
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://10.0.29.27:1234/v1")
+LLM_MODEL = os.getenv("LLM_MODEL", "local-model")
+
+
+@app.get("/api/assistant/health")
+def assistant_health():
+    """
+    Verifica si la API del modelo (LM Studio en la Mac) está accesible.
+    Hace un GET a {LLM_BASE_URL}/models con timeout corto.
+    """
+    import urllib.request
+    import urllib.error
+
+    url = LLM_BASE_URL.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer lm-studio"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        # LM Studio devuelve { "data": [ { "id": "..." }, ... ] }
+        models = [m.get("id") for m in payload.get("data", [])] if isinstance(payload, dict) else []
+        return {"online": True, "base_url": LLM_BASE_URL, "configured_model": LLM_MODEL, "models": models}
+    except Exception as e:
+        logger.warning(f"Assistant health check failed: {e}")
+        return {"online": False, "base_url": LLM_BASE_URL, "configured_model": LLM_MODEL, "error": str(e)}
+
+
+LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
+_llm_client = None
+
+
+def get_llm_client():
+    """Lazy singleton del cliente OpenAI apuntando a LM Studio."""
+    global _llm_client
+    if _llm_client is None:
+        from openai import OpenAI
+        _llm_client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+    return _llm_client
+
+
+def _compact_resumen_for_context(tipo, desde, hasta):
+    """
+    Construye una versión compacta del resumen agregado (sin filas crudas)
+    para inyectar como contexto al modelo. Recorta listas largas a top-N.
+    """
+    try:
+        result = compute_betplay_resumen(tipo, desde, hasta, force_refresh=False)
+    except Exception as e:
+        logger.error(f"No se pudo calcular resumen para contexto ({tipo}): {e}")
+        return {"tipo": tipo, "error": str(e)}
+
+    data = result.get("data", {}) or {}
     return {
-        "source": "DATABASE",
         "tipo": tipo,
-        "desde": desde,
-        "hasta": hasta,
-        "errors": errors,
-        "data": resumen,
+        "totales": data.get("totales", {}),
+        "por_hora": data.get("por_hora", []),
+        "por_zona": data.get("por_zona", []),
+        "por_ciudad": (data.get("por_ciudad", []) or [])[:20],
+        "por_tipo_sv": data.get("por_tipo_sv", []),
+        "por_oficina": (data.get("por_oficina", []) or [])[:10],
+        "top_sitios": (data.get("por_sitio", []) or [])[:10],
+        "top_usuarios": (data.get("por_usuario", []) or [])[:10],
+        "por_canal": data.get("por_canal", []),
     }
+
+
+def _betplay_historial_diario(dias=28):
+    """
+    Devuelve los totales por día de pagos y recargas de los últimos `dias` días
+    (para que el asistente pueda hacer proyecciones). Usa caché por rango.
+    """
+    today = date.today()
+    desde = f"{(today - timedelta(days=dias)).isoformat()} 00:00:00"
+    hasta = f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
+    series = {}
+    for tipo in ("pagos", "recargas"):
+        try:
+            result = compute_betplay_resumen(tipo, desde, hasta, force_refresh=False)
+            series[tipo] = (result.get("data", {}) or {}).get("por_dia", [])
+        except Exception as e:
+            logger.error(f"No se pudo calcular historial diario ({tipo}): {e}")
+            series[tipo] = []
+    return {"desde": desde, "hasta": hasta, "dias": dias, "por_dia": series}
+
+
+ASSISTANT_SYSTEM_PROMPT = """Eres un asistente de análisis de datos para el producto Betplay de una empresa de apuestas y servicios.
+Respondes y piensas/razonas SIEMPRE en español, de forma clara y concisa, orientado a la toma de decisiones.
+Puedes usar Markdown (negritas con **texto**, listas con guiones, etc.).
+
+Se te entrega un CONTEXTO con datos AGREGADOS del día (pagos y recargas): totales, ventas por hora, por zona,
+por CIUDAD, por tipo de sitio de venta, por oficina, top sitios y top usuarios (por número de identificación), y por canal.
+Además, se incluye "historial_diario_4_semanas" con los totales por día (monto y cantidad) de pagos y recargas de los últimos 28 días.
+- "monto" está en pesos colombianos (COP). "cantidad" es número de transacciones.
+- Hay datos por ZONA y por CIUDAD; úsalos según lo que pregunten.
+- Usa SOLO los datos del contexto para responder. Si te piden algo que no está en el contexto, dilo con honestidad.
+- No inventes cifras. Cuando des números, sé preciso con los del contexto.
+- Aún NO ejecutas consultas SQL.
+
+PROYECCIONES:
+Si te piden un estimado/proyección de ventas del día, PUEDES hacerlo usando "historial_diario_4_semanas"
+(por ejemplo, promediando los mismos días de la semana o la tendencia reciente). SIEMPRE que proyectes:
+- Explica brevemente el método usado.
+- Añade una nota clara: "Esta es una proyección estimada y subjetiva, no un valor garantizado."
+- Ten en cuenta que el día actual puede estar incompleto (parcial hasta la hora actual).
+
+GRÁFICOS Y TABLAS:
+Cuando una visualización ayude a responder, puedes incluirla usando bloques de código cercados con un lenguaje especial.
+El texto explicativo va FUERA de los bloques (antes o después). Usa JSON válido dentro del bloque.
+
+Para un gráfico, usa un bloque ```chart con este formato exacto:
+```chart
+{"chart_type": "bar", "title": "Monto por zona", "x": ["Norte","Sur"], "series": [{"label": "Monto", "data": [3800000, 2100000]}]}
+```
+- chart_type puede ser: "bar", "horizontalBar", "line", "doughnut" o "pie".
+- "x" son las etiquetas/categorías; cada serie tiene "label" y "data" (números alineados con "x").
+
+Para una tabla, usa un bloque ```table con este formato exacto:
+```table
+{"columns": ["Sitio","Transacciones"], "rows": [["Puesto A", 15], ["Puesto B", 9]]}
+```
+
+Reglas:
+- Genera un gráfico o tabla SOLO si aporta valor; no abuses.
+- El JSON debe ser válido y completo (no lo cortes). Una sola visualización por bloque.
+- Acompaña la visualización con una breve explicación en texto, pero NO repitas los mismos datos dos veces:
+  si usas un bloque ```table o ```chart, NO vuelvas a escribir esos datos como tabla Markdown ni los enumeres todos en texto.
+- No generes em-dashes
+- No responder con emojis 
+"""
+
+
+class AssistantChatRequest(BaseModel):
+    pregunta: str
+    historial: Optional[List[dict]] = None  # [{role, content}, ...]
+    desde: Optional[str] = None
+    hasta: Optional[str] = None
+
+
+@app.post("/api/assistant/chat")
+def assistant_chat(req: AssistantChatRequest):
+    """
+    Chat del asistente con streaming. Inyecta como contexto el resumen agregado
+    de pagos y recargas del periodo (por defecto, el día actual) y transmite la
+    respuesta del modelo token a token (text/plain).
+    """
+    # Rango por defecto: día actual [hoy 00:00, mañana 00:00)
+    today = date.today()
+    desde = req.desde or f"{today.isoformat()} 00:00:00"
+    hasta = req.hasta or f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
+
+    contexto = {
+        "periodo": {"desde": desde, "hasta": hasta},
+        "pagos": _compact_resumen_for_context("pagos", desde, hasta),
+        "recargas": _compact_resumen_for_context("recargas", desde, hasta),
+        "historial_diario_4_semanas": _betplay_historial_diario(28),
+    }
+
+    messages = [
+        {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
+        {"role": "system", "content": "CONTEXTO (datos agregados del periodo):\n" + json.dumps(contexto, ensure_ascii=False)},
+    ]
+    if req.historial:
+        for m in req.historial[-8:]:  # limitar historial
+            role = m.get("role")
+            content = m.get("content")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": req.pregunta})
+
+    def token_stream():
+        try:
+            client = get_llm_client()
+            stream = client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                temperature=0.4,
+                stream=True,
+            )
+            for chunk in stream:
+                try:
+                    delta = chunk.choices[0].delta.content
+                except (AttributeError, IndexError):
+                    delta = None
+                if delta:
+                    yield delta
+        except Exception as e:
+            logger.error(f"Assistant chat streaming failed: {e}")
+            yield f"\n\n[Error al contactar el modelo: {e}]"
+
+    return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")
+
+# ============================ ASISTENTE IA ============================
 
 @app.post("/api/upload/metas")
 async def upload_metas(files: List[UploadFile] = File(...)):

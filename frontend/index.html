@@ -16,7 +16,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-    <link rel="stylesheet" href="styles.css?v=1.5">
+    <link rel="stylesheet" href="styles.css?v=1.9">
 </head>
 <body>
     <div class="glow-bg"></div>
@@ -53,6 +53,9 @@
             </button>
             <button type="button" class="tab-btn" data-view="view-betplay">
                 <i class="fa-solid fa-dice"></i> Betplay
+            </button>
+            <button type="button" class="tab-btn" data-view="view-asistente">
+                <i class="fa-solid fa-robot"></i> Asistente IA
             </button>
         </nav>
 
@@ -598,6 +601,80 @@
             </div><!-- /#betplay-content -->
 
         </div><!-- /#view-betplay -->
+
+        <!-- ===================== VISTA: ASISTENTE IA ===================== -->
+        <div class="tab-view" id="view-asistente" hidden>
+
+            <!-- CABECERA: TITULO + ESTADO DE CONEXION -->
+            <section class="glass-panel asistente-header">
+                <div class="asistente-title">
+                    <i class="fa-solid fa-robot"></i>
+                    <div>
+                        <h3 class="section-title" style="margin:0;">Asistente IA — Betplay</h3>
+                        <p class="section-desc" style="margin:0;">Pregunta sobre pagos y recargas; genero análisis, tablas y gráficos.</p>
+                    </div>
+                </div>
+                <div class="asistente-conn" id="asistente-conn">
+                    <span class="status-indicator" id="asistente-conn-indicator"></span>
+                    <span class="status-text" id="asistente-conn-text">Verificando conexión con el modelo...</span>
+                </div>
+            </section>
+
+            <!-- KPIs GENERALES: PAGOS Y RECARGAS (DIA ACTUAL) -->
+            <section class="glass-panel asistente-kpis">
+                <div class="asistente-kpis-head">
+                    <h4 class="asistente-kpis-title"><i class="fa-solid fa-gauge-high"></i> Resumen del día</h4>
+                    <span class="asistente-kpis-date" id="asistente-kpis-date"></span>
+                </div>
+
+                <!-- FILA PAGOS -->
+                <div class="asistente-kpi-row">
+                    <span class="asistente-kpi-rowlabel"><i class="fa-solid fa-money-bill-wave"></i> Pagos</span>
+                    <div class="asistente-kpi-cells">
+                        <div class="asistente-kpi"><span class="ak-label">Monto Total</span><span class="ak-value" id="ak-pagos-monto">—</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Transacciones</span><span class="ak-value" id="ak-pagos-cantidad">—</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Usuarios Únicos</span><span class="ak-value" id="ak-pagos-usuarios">—</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Sitios de Venta</span><span class="ak-value" id="ak-pagos-sitios">—</span></div>
+                    </div>
+                </div>
+
+                <!-- FILA RECARGAS -->
+                <div class="asistente-kpi-row">
+                    <span class="asistente-kpi-rowlabel recargas"><i class="fa-solid fa-mobile-screen-button"></i> Recargas</span>
+                    <div class="asistente-kpi-cells">
+                        <div class="asistente-kpi"><span class="ak-label">Monto Total</span><span class="ak-value" id="ak-recargas-monto">—</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Transacciones</span><span class="ak-value" id="ak-recargas-cantidad">—</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Usuarios Únicos</span><span class="ak-value" id="ak-recargas-usuarios">—</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Sitios de Venta</span><span class="ak-value" id="ak-recargas-sitios">—</span></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- AREA DE CHAT -->
+            <section class="glass-panel asistente-chat">
+                <div class="asistente-messages" id="asistente-messages">
+                    <!-- Mensaje de bienvenida -->
+                    <div class="chat-msg assistant">
+                        <div class="chat-avatar"><i class="fa-solid fa-robot"></i></div>
+                        <div class="chat-bubble">
+                            ¡Hola! Soy tu asistente de datos de Betplay. Pregúntame cosas como
+                            <em>"¿qué zona vendió más hoy?"</em> o <em>"compárame pagos vs recargas"</em>.
+                            Por ahora respondo en texto sobre los datos del día; los gráficos llegarán en el siguiente paso.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- CAJA DE ENTRADA -->
+                <div class="asistente-inputbar">
+                    <textarea id="asistente-input" rows="1" placeholder="Escribe tu pregunta sobre Betplay..."></textarea>
+                    <button type="button" class="action-btn-primary" id="asistente-send">
+                        <i class="fa-solid fa-paper-plane"></i> Enviar
+                    </button>
+                </div>
+                <p class="asistente-input-hint">El asistente responde con base en los datos agregados del día actual.</p>
+            </section>
+
+        </div><!-- /#view-asistente -->
     </div>
 
     <!-- MODAL DE GESTIÓN DE PROMOTORES WHATSAPP -->
@@ -854,6 +931,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=1.7"></script>
+    <script src="app.js?v=2.1"></script>
 </body>
 </html>

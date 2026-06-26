@@ -48,6 +48,12 @@ const State = {
             sitios: null,
             usuarios: null
         }
+    },
+
+    // Asistente IA state
+    assistant: {
+        history: [],     // [{role:'user'|'assistant', content:'...'}]
+        busy: false      // si hay una respuesta en curso
     }
 };
 
@@ -257,6 +263,7 @@ const elements = {
 document.addEventListener('DOMContentLoaded', async () => {
     setupTabs();
     setupBetplayControls();
+    setupAssistantChat();
     setupUploadHandlers();
     setupFilterListeners();
     setupRefreshHandlers();
@@ -294,8 +301,421 @@ function setupTabs() {
             if (targetId === 'view-betplay' && State.betplay.map) {
                 setTimeout(() => State.betplay.map.invalidateSize(), 200);
             }
+
+            // Al abrir el Asistente: verificar conexión y cargar KPIs del día.
+            if (targetId === 'view-asistente') {
+                checkAssistantHealth();
+                loadAssistantKpis();
+            }
         });
     });
+}
+
+// --- ASISTENTE IA: VERIFICACIÓN DE CONEXIÓN ---
+async function checkAssistantHealth() {
+    const indicator = document.getElementById('asistente-conn-indicator');
+    const text = document.getElementById('asistente-conn-text');
+    if (!indicator || !text) return;
+
+    indicator.className = 'status-indicator';
+    text.textContent = 'Verificando conexión con el modelo...';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/health?t=${new Date().getTime()}`);
+        const json = await res.json();
+        if (json.online) {
+            indicator.classList.add('online');
+            text.textContent = `Modelo conectado (${json.configured_model || 'local'})`;
+        } else {
+            indicator.classList.add('offline');
+            text.textContent = 'Sin conexión con el modelo (Mac inaccesible)';
+        }
+    } catch (err) {
+        indicator.classList.add('offline');
+        text.textContent = 'Error verificando la conexión con el modelo';
+    }
+}
+
+// --- ASISTENTE IA: KPIs PAGOS + RECARGAS (DÍA ACTUAL) ---
+async function loadAssistantKpis() {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const addDay = (s) => { const d = new Date(`${s}T00:00:00`); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; };
+    const desde = `${todayStr} 00:00:00`;
+    const hasta = `${addDay(todayStr)} 00:00:00`;
+
+    const dateEl = document.getElementById('asistente-kpis-date');
+    if (dateEl) dateEl.textContent = todayStr;
+
+    const fill = (tipo, totales) => {
+        document.getElementById(`ak-${tipo}-monto`).textContent = formatCurrency(totales.monto || 0);
+        document.getElementById(`ak-${tipo}-cantidad`).textContent = (totales.cantidad || 0).toLocaleString('es-CO');
+        document.getElementById(`ak-${tipo}-usuarios`).textContent = (totales.usuarios_unicos || 0).toLocaleString('es-CO');
+        document.getElementById(`ak-${tipo}-sitios`).textContent = (totales.sitios_unicos || 0).toLocaleString('es-CO');
+    };
+
+    const fetchTipo = async (tipo) => {
+        try {
+            const url = `${API_BASE}/api/betplay/resumen?tipo=${tipo}&desde=${encodeURIComponent(desde)}`
+                + `&hasta=${encodeURIComponent(hasta)}&force_refresh=true&t=${new Date().getTime()}`;
+            const res = await fetch(url);
+            const json = await res.json();
+            fill(tipo, (json.data && json.data.totales) ? json.data.totales : {});
+        } catch (err) {
+            console.error(`[Asistente] Error cargando KPIs de ${tipo}:`, err);
+        }
+    };
+
+    await Promise.all([fetchTipo('pagos'), fetchTipo('recargas')]);
+}
+
+// --- ASISTENTE IA: CHAT CON STREAMING ---
+function setupAssistantChat() {
+    const input = document.getElementById('asistente-input');
+    const sendBtn = document.getElementById('asistente-send');
+    if (!input || !sendBtn) return;
+
+    sendBtn.addEventListener('click', () => sendAssistantMessage());
+    // Enter envía; Shift+Enter hace salto de línea.
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendAssistantMessage();
+        }
+    });
+}
+
+// Construye el rango "día actual" para el contexto del asistente.
+function assistantTodayRange() {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const d = new Date(`${todayStr}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    const tomorrow = d.toISOString().split('T')[0];
+    return { desde: `${todayStr} 00:00:00`, hasta: `${tomorrow} 00:00:00` };
+}
+
+// Agrega una burbuja de chat de usuario (texto plano).
+function appendChatBubble(role, text) {
+    const container = document.getElementById('asistente-messages');
+    const msg = document.createElement('div');
+    msg.className = `chat-msg ${role}`;
+    const icon = role === 'user' ? 'fa-user' : 'fa-robot';
+    msg.innerHTML = `
+        <div class="chat-avatar"><i class="fa-solid ${icon}"></i></div>
+        <div class="chat-bubble"></div>
+    `;
+    const bubble = msg.querySelector('.chat-bubble');
+    bubble.textContent = text;
+    container.appendChild(msg);
+    container.scrollTop = container.scrollHeight;
+    return bubble;
+}
+
+// Crea un mensaje del asistente con avatar + columna de contenido (texto + islas).
+// Devuelve la columna de contenido, que se re-renderiza con renderAssistantMessage().
+function appendAssistantMessage() {
+    const container = document.getElementById('asistente-messages');
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg assistant';
+    msg.innerHTML = `
+        <div class="chat-avatar"><i class="fa-solid fa-robot"></i></div>
+        <div class="chat-content"></div>
+    `;
+    container.appendChild(msg);
+    container.scrollTop = container.scrollHeight;
+    return msg.querySelector('.chat-content');
+}
+
+// --- MARKDOWN MÍNIMO (seguro) ---
+function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function mdInline(s) {
+    return escapeHtml(s)
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+        .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+}
+function mdToHtml(text) {
+    const lines = String(text).split('\n');
+    const isSep = (l) => /^\s*\|?[\s:|-]*-[-\s:|]*\|?\s*$/.test(l) && l.includes('-');
+    const parseRow = (l) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+
+    let html = '';
+    let inList = false;
+    let i = 0;
+    const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+
+    while (i < lines.length) {
+        const line = lines[i].replace(/\s+$/, '');
+
+        // ¿Tabla markdown? (admite líneas en blanco intercaladas entre filas)
+        if (line.includes('|')) {
+            const tableLines = [];
+            let j = i;
+            while (j < lines.length) {
+                const l = lines[j];
+                if (l.trim() === '') {
+                    let k = j + 1;
+                    while (k < lines.length && lines[k].trim() === '') k++;
+                    if (k < lines.length && lines[k].includes('|')) { j = k; continue; }
+                    break;
+                }
+                if (l.includes('|')) { tableLines.push(l); j++; } else break;
+            }
+            const sepIdx = tableLines.findIndex(isSep);
+            if (tableLines.length >= 2 && sepIdx >= 0) {
+                closeList();
+                const header = parseRow(tableLines[Math.max(0, sepIdx - 1)]);
+                const rows = tableLines.slice(sepIdx + 1).map(parseRow);
+                html += `<table class="data-table"><thead><tr>${header.map(h => `<th>${mdInline(h)}</th>`).join('')}</tr></thead><tbody>`
+                    + rows.map(r => `<tr>${r.map(c => `<td>${mdInline(c)}</td>`).join('')}</tr>`).join('')
+                    + `</tbody></table>`;
+                i = j;
+                continue;
+            }
+        }
+
+        const li = line.match(/^\s*[-*]\s+(.*)$/);
+        if (li) {
+            if (!inList) { html += '<ul>'; inList = true; }
+            html += `<li>${mdInline(li[1])}</li>`;
+            i++;
+            continue;
+        }
+        closeList();
+        if (line.trim() !== '') html += `<p>${mdInline(line)}</p>`;
+        i++;
+    }
+    closeList();
+    return html;
+}
+
+// --- PARSER DE SEGMENTOS (texto + bloques cercados ```chart / ```table) ---
+function parseAssistantSegments(raw) {
+    const segs = [];
+    const re = /```([a-zA-Z]*)[ \t]*\n?([\s\S]*?)```/g;
+    let lastIndex = 0;
+    let m;
+    while ((m = re.exec(raw)) !== null) {
+        if (m.index > lastIndex) segs.push({ type: 'text', content: raw.slice(lastIndex, m.index) });
+        const lang = (m[1] || '').toLowerCase();
+        const kind = (lang === 'chart' || lang === 'table') ? lang : 'code';
+        segs.push({ type: kind, content: m[2], lang });
+        lastIndex = re.lastIndex;
+    }
+    const tail = raw.slice(lastIndex);
+    const openIdx = tail.indexOf('```');
+    if (openIdx !== -1) {
+        const before = tail.slice(0, openIdx);
+        if (before.trim()) segs.push({ type: 'text', content: before });
+        const after = tail.slice(openIdx + 3);
+        const lm = after.match(/^([a-zA-Z]*)/);
+        segs.push({ type: 'pending', lang: (lm ? lm[1] : '').toLowerCase() });
+    } else if (tail.trim()) {
+        segs.push({ type: 'text', content: tail });
+    }
+    return segs;
+}
+
+// Re-renderiza el contenido del asistente. Durante el stream (isFinal=false) los
+// bloques de visualización se muestran como placeholder; al finalizar se renderizan.
+function renderAssistantMessage(contentEl, raw, isFinal) {
+    const container = document.getElementById('asistente-messages');
+    // ¿El usuario está pegado al fondo? Solo entonces auto-desplazamos.
+    const stick = container
+        ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 80
+        : true;
+
+    const segments = parseAssistantSegments(raw);
+    contentEl.innerHTML = '';
+
+    for (const seg of segments) {
+        if (seg.type === 'text' || seg.type === 'code') {
+            if (!seg.content.trim()) continue;
+            const bubble = document.createElement('div');
+            bubble.className = 'chat-bubble';
+            bubble.innerHTML = mdToHtml(seg.content);
+            contentEl.appendChild(bubble);
+        } else if (seg.type === 'pending') {
+            contentEl.appendChild(buildIslandPlaceholder(seg.lang));
+        } else if (seg.type === 'chart' || seg.type === 'table') {
+            if (!isFinal) {
+                contentEl.appendChild(buildIslandPlaceholder(seg.type));
+                continue;
+            }
+            const island = (seg.type === 'chart')
+                ? buildChartIsland(seg.content)
+                : buildTableIsland(seg.content);
+            contentEl.appendChild(island);
+        }
+    }
+
+    if (container && stick) container.scrollTop = container.scrollHeight;
+}
+
+function buildIslandPlaceholder(kind) {
+    const el = document.createElement('div');
+    el.className = 'chat-island';
+    const label = kind === 'table' ? 'tabla' : 'gráfico';
+    el.innerHTML = `
+        <div class="chat-island-header"><i class="fa-solid fa-spinner fa-spin"></i> Generando ${label}…</div>
+        <div class="chat-island-placeholder"><i class="fa-solid fa-chart-pie"></i><span>Preparando visualización…</span></div>
+    `;
+    return el;
+}
+
+let _islandChartCounter = 0;
+function buildChartIsland(jsonStr) {
+    const el = document.createElement('div');
+    el.className = 'chat-island';
+    let spec;
+    try {
+        spec = JSON.parse(jsonStr);
+    } catch (e) {
+        el.innerHTML = `<div class="chat-island-header"><i class="fa-solid fa-triangle-exclamation"></i> Gráfico no válido</div>
+            <div class="chat-island-placeholder"><span>El modelo devolvió un gráfico con formato incorrecto.</span></div>`;
+        return el;
+    }
+
+    const typeMap = { bar: 'bar', horizontalbar: 'bar', line: 'line', doughnut: 'doughnut', pie: 'pie' };
+    const rawType = String(spec.chart_type || 'bar').toLowerCase();
+    const chartType = typeMap[rawType] || 'bar';
+    const horizontal = rawType === 'horizontalbar';
+    const isPieLike = chartType === 'doughnut' || chartType === 'pie';
+
+    const labels = spec.x || [];
+    const series = spec.series || [];
+    const datasets = series.map((s, i) => {
+        const color = BETPLAY_PALETTE[i % BETPLAY_PALETTE.length];
+        return {
+            label: s.label || `Serie ${i + 1}`,
+            data: s.data || [],
+            backgroundColor: isPieLike ? BETPLAY_PALETTE : (chartType === 'line' ? 'rgba(99,102,241,0.2)' : color + '99'),
+            borderColor: isPieLike ? 'rgba(11,13,25,0.8)' : color,
+            borderWidth: isPieLike ? 2 : 1.5,
+            borderRadius: chartType === 'bar' ? 4 : 0,
+            fill: chartType === 'line'
+        };
+    });
+
+    const canvasId = `island-chart-${++_islandChartCounter}`;
+    el.innerHTML = `
+        <div class="chat-island-header"><i class="fa-solid fa-chart-column"></i> ${escapeHtml(spec.title || 'Gráfico')}</div>
+        <div class="chat-island-body"><canvas id="${canvasId}"></canvas></div>
+    `;
+
+    // Instanciar Chart.js tras insertar el canvas en el DOM
+    setTimeout(() => {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        new Chart(canvas.getContext('2d'), {
+            type: chartType,
+            data: { labels, datasets },
+            options: {
+                indexAxis: horizontal ? 'y' : 'x',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: isPieLike || datasets.length > 1, labels: { color: '#94a3b8', font: { size: 11 } } }
+                },
+                scales: isPieLike ? {} : {
+                    x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                    y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+                }
+            }
+        });
+    }, 30);
+
+    return el;
+}
+
+function buildTableIsland(jsonStr) {
+    const el = document.createElement('div');
+    el.className = 'chat-island';
+    let spec;
+    try {
+        spec = JSON.parse(jsonStr);
+    } catch (e) {
+        el.innerHTML = `<div class="chat-island-header"><i class="fa-solid fa-triangle-exclamation"></i> Tabla no válida</div>
+            <div class="chat-island-placeholder"><span>El modelo devolvió una tabla con formato incorrecto.</span></div>`;
+        return el;
+    }
+    const columns = spec.columns || [];
+    const rows = spec.rows || [];
+    const thead = `<tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr>`;
+    const tbody = rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('');
+    el.innerHTML = `
+        <div class="chat-island-header"><i class="fa-solid fa-table-list"></i> ${escapeHtml(spec.title || 'Tabla')}</div>
+        <div class="chat-island-body table-responsive">
+            <table class="data-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table>
+        </div>
+    `;
+    return el;
+}
+
+async function sendAssistantMessage() {
+    const input = document.getElementById('asistente-input');
+    const sendBtn = document.getElementById('asistente-send');
+    const container = document.getElementById('asistente-messages');
+    if (!input || State.assistant.busy) return;
+
+    const pregunta = input.value.trim();
+    if (!pregunta) return;
+
+    // Pinta la pregunta del usuario
+    appendChatBubble('user', pregunta);
+    State.assistant.history.push({ role: 'user', content: pregunta });
+    input.value = '';
+
+    // Contenedor del mensaje del asistente (se re-renderiza con el stream)
+    const contentEl = appendAssistantMessage();
+    contentEl.innerHTML = '<div class="chat-bubble"><em>Pensando…</em></div>';
+
+    State.assistant.busy = true;
+    input.disabled = true;
+    sendBtn.disabled = true;
+
+    const range = assistantTodayRange();
+    let acumulado = '';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                pregunta,
+                historial: State.assistant.history.slice(-8),
+                desde: range.desde,
+                hasta: range.hasta
+            })
+        });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            acumulado += decoder.decode(value, { stream: true });
+            renderAssistantMessage(contentEl, acumulado, false);
+        }
+        // Render final (instancia gráficos/tablas)
+        if (!acumulado.trim()) {
+            contentEl.innerHTML = '<div class="chat-bubble">(sin respuesta del modelo)</div>';
+        } else {
+            renderAssistantMessage(contentEl, acumulado, true);
+        }
+        State.assistant.history.push({ role: 'assistant', content: acumulado });
+    } catch (err) {
+        console.error('[Asistente] Error en el chat:', err);
+        contentEl.innerHTML = '<div class="chat-bubble">No se pudo obtener respuesta del modelo. Verifica la conexión con la Mac.</div>';
+    } finally {
+        State.assistant.busy = false;
+        input.disabled = false;
+        sendBtn.disabled = false;
+        input.focus();
+    }
 }
 
 // --- BETPLAY: TIPO Y RANGO DE FECHAS ---
