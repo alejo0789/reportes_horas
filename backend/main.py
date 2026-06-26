@@ -1251,7 +1251,8 @@ def get_whatsapp_query(
         return {
             "text": msg,
             "report_type": "prompt_promoter",
-            "is_coordinator": True
+            "is_coordinator": True,
+            "promoter_list": promoter_compliance_list
         }
 
     # Early return for coordinator looking at a specific promoter's offices
@@ -2283,7 +2284,14 @@ async def receive_whatsapp_webhook(request: Request):
                     "title": "Reporte de Zona"
                 }
             })
-            button_prompt = "📦 Seleccione una opción:"
+            promoter_list = query_result.get("promoter_list", [])
+            if promoter_list:
+                button_prompt = "🔢 *Lista de Promotores:*\n"
+                for i, p in enumerate(promoter_list, 1):
+                    button_prompt += f"*{i}.* {p[0]}\n"
+                button_prompt += "\nEscribe el número del promotor, o selecciona una opción:"
+            else:
+                button_prompt = "📦 Seleccione una opción:"
         elif res_report_type == "coordinator_promoter_offices_view":
             buttons.append({
                 "type": "reply",
