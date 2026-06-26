@@ -30,6 +30,31 @@ const State = {
         product: null,
         ranking: null,
         lagging: null
+    },
+
+    // Betplay module state
+    betplay: {
+        loaded: false,        // whether the tab has auto-loaded at least once
+        metric: 'monto',      // 'monto' | 'cantidad'
+        mapMode: 'points',    // 'points' | 'heat'
+        resumen: null,        // last aggregated response (data object)
+        map: null,            // Leaflet map instance
+        markerLayer: null,    // Leaflet layer group for points
+        heatLayer: null,      // Leaflet heat layer
+        charts: {             // Chart.js instances for betplay
+            time: null,
+            zona: null,
+            tipo: null,
+            sitios: null,
+            usuarios: null
+        }
+    },
+
+    // Asistente IA state
+    assistant: {
+        history: [],     // [{role:'user'|'assistant', content:'...'}]
+        busy: false,     // si hay una respuesta en curso
+        model: null      // id del modelo seleccionado
     }
 };
 
@@ -237,6 +262,9 @@ const elements = {
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', async () => {
+    setupTabs();
+    setupBetplayControls();
+    setupAssistantChat();
     setupUploadHandlers();
     setupFilterListeners();
     setupRefreshHandlers();
@@ -251,6 +279,1031 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadInitialCatalogues();
     await loadUploadedState();
 });
+
+// --- TAB NAVIGATION ---
+function setupTabs() {
+    const tabButtons = document.querySelectorAll('.tab-bar .tab-btn');
+    const views = document.querySelectorAll('.tab-view');
+    if (!tabButtons.length) return;
+
+    tabButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const targetId = btn.dataset.view;
+            // Toggle active button
+            tabButtons.forEach(b => b.classList.toggle('active', b === btn));
+            // Toggle visible view
+            views.forEach(v => { v.hidden = (v.id !== targetId); });
+
+            // Al abrir Betplay por primera vez, consultar automáticamente el día actual.
+            if (targetId === 'view-betplay' && !State.betplay.loaded) {
+                fetchBetplay();
+            }
+            // Leaflet necesita recalcular tamaño cuando su contenedor pasa de oculto a visible.
+            if (targetId === 'view-betplay' && State.betplay.map) {
+                setTimeout(() => State.betplay.map.invalidateSize(), 200);
+            }
+
+            // Al abrir el Asistente: verificar conexión, modelos y KPIs del día.
+            if (targetId === 'view-asistente') {
+                checkAssistantHealth();
+                loadAssistantModels();
+                loadAssistantKpis();
+            }
+        });
+    });
+}
+
+// --- ASISTENTE IA: VERIFICACIÓN DE CONEXIÓN ---
+async function checkAssistantHealth() {
+    const indicator = document.getElementById('asistente-conn-indicator');
+    const text = document.getElementById('asistente-conn-text');
+    if (!indicator || !text) return;
+
+    indicator.className = 'status-indicator';
+    text.textContent = 'Verificando conexión con el modelo...';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/health?t=${new Date().getTime()}`);
+        const json = await res.json();
+        if (json.online) {
+            indicator.classList.add('online');
+            text.textContent = `Modelo conectado (${json.configured_model || 'local'})`;
+        } else {
+            indicator.classList.add('offline');
+            text.textContent = 'Sin conexión con el modelo (Mac inaccesible)';
+        }
+    } catch (err) {
+        indicator.classList.add('offline');
+        text.textContent = 'Error verificando la conexión con el modelo';
+    }
+}
+
+// --- ASISTENTE IA: SELECTOR DE MODELO (NIVEL DE INTELIGENCIA) ---
+let _assistantModelsLoaded = false;
+async function loadAssistantModels() {
+    const select = document.getElementById('asistente-model-select');
+    if (!select) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/models?t=${new Date().getTime()}`);
+        const json = await res.json();
+        const models = json.models || [];
+        // Modelo activo: el que esté cargado, o el guardado, o el default.
+        const loaded = models.find(m => m.loaded);
+        const current = State.assistant.model
+            || (loaded && loaded.id)
+            || json.default
+            || (models[0] && models[0].id);
+        State.assistant.model = current;
+
+        select.innerHTML = models
+            .map(m => `<option value="${m.id}"${m.id === current ? ' selected' : ''}>${m.label}</option>`)
+            .join('');
+
+        if (!_assistantModelsLoaded) {
+            select.addEventListener('change', () => selectAssistantModel(select.value));
+            _assistantModelsLoaded = true;
+        }
+    } catch (err) {
+        console.error('[Asistente] Error cargando modelos:', err);
+        select.innerHTML = '<option>Modelos no disponibles</option>';
+    }
+}
+
+// Cambia el modelo activo: pide a LM Studio descargar el actual y cargar el nuevo.
+async function selectAssistantModel(modelId) {
+    const select = document.getElementById('asistente-model-select');
+    const status = document.getElementById('asistente-model-status');
+    if (State.assistant.busy) return;
+
+    const previous = State.assistant.model;
+    State.assistant.model = modelId;
+    if (select) select.disabled = true;
+    if (status) {
+        status.hidden = false;
+        status.className = 'asistente-model-status loading';
+        status.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cargando modelo…';
+    }
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/model/select`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: modelId })
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error || 'Error desconocido');
+        if (status) {
+            status.className = 'asistente-model-status ok';
+            const secs = json.load_time_seconds != null ? ` (${json.load_time_seconds.toFixed(1)} s)` : '';
+            status.innerHTML = json.already_loaded
+                ? '<i class="fa-solid fa-check"></i> Modelo activo'
+                : `<i class="fa-solid fa-check"></i> Modelo cargado${secs}`;
+            setTimeout(() => { if (status) status.hidden = true; }, 3000);
+        }
+        checkAssistantHealth();
+    } catch (err) {
+        console.error('[Asistente] Error cambiando de modelo:', err);
+        State.assistant.model = previous;
+        if (select) select.value = previous;
+        if (status) {
+            status.className = 'asistente-model-status error';
+            status.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> No se pudo cambiar';
+        }
+    } finally {
+        if (select) select.disabled = false;
+    }
+}
+
+// --- ASISTENTE IA: KPIs PAGOS + RECARGAS (DÍA ACTUAL) ---
+async function loadAssistantKpis() {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const addDay = (s) => { const d = new Date(`${s}T00:00:00`); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; };
+    const desde = `${todayStr} 00:00:00`;
+    const hasta = `${addDay(todayStr)} 00:00:00`;
+
+    const dateEl = document.getElementById('asistente-kpis-date');
+    if (dateEl) dateEl.textContent = todayStr;
+
+    const fill = (tipo, totales) => {
+        document.getElementById(`ak-${tipo}-monto`).textContent = formatCurrency(totales.monto || 0);
+        document.getElementById(`ak-${tipo}-cantidad`).textContent = (totales.cantidad || 0).toLocaleString('es-CO');
+        document.getElementById(`ak-${tipo}-usuarios`).textContent = (totales.usuarios_unicos || 0).toLocaleString('es-CO');
+        document.getElementById(`ak-${tipo}-sitios`).textContent = (totales.sitios_unicos || 0).toLocaleString('es-CO');
+    };
+
+    const fetchTipo = async (tipo) => {
+        try {
+            const url = `${API_BASE}/api/betplay/resumen?tipo=${tipo}&desde=${encodeURIComponent(desde)}`
+                + `&hasta=${encodeURIComponent(hasta)}&force_refresh=true&t=${new Date().getTime()}`;
+            const res = await fetch(url);
+            const json = await res.json();
+            fill(tipo, (json.data && json.data.totales) ? json.data.totales : {});
+        } catch (err) {
+            console.error(`[Asistente] Error cargando KPIs de ${tipo}:`, err);
+        }
+    };
+
+    await Promise.all([fetchTipo('pagos'), fetchTipo('recargas')]);
+}
+
+// --- ASISTENTE IA: CHAT CON STREAMING ---
+function setupAssistantChat() {
+    const input = document.getElementById('asistente-input');
+    const sendBtn = document.getElementById('asistente-send');
+    if (!input || !sendBtn) return;
+
+    sendBtn.addEventListener('click', () => sendAssistantMessage());
+    // Enter envía; Shift+Enter hace salto de línea.
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendAssistantMessage();
+        }
+    });
+}
+
+// Construye el rango "día actual" para el contexto del asistente.
+function assistantTodayRange() {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const d = new Date(`${todayStr}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    const tomorrow = d.toISOString().split('T')[0];
+    return { desde: `${todayStr} 00:00:00`, hasta: `${tomorrow} 00:00:00` };
+}
+
+// Agrega una burbuja de chat de usuario (texto plano).
+function appendChatBubble(role, text) {
+    const container = document.getElementById('asistente-messages');
+    const msg = document.createElement('div');
+    msg.className = `chat-msg ${role}`;
+    const icon = role === 'user' ? 'fa-user' : 'fa-robot';
+    msg.innerHTML = `
+        <div class="chat-avatar"><i class="fa-solid ${icon}"></i></div>
+        <div class="chat-bubble"></div>
+    `;
+    const bubble = msg.querySelector('.chat-bubble');
+    bubble.textContent = text;
+    container.appendChild(msg);
+    container.scrollTop = container.scrollHeight;
+    return bubble;
+}
+
+// Crea un mensaje del asistente con avatar + columna de contenido (texto + islas).
+// Devuelve la columna de contenido, que se re-renderiza con renderAssistantMessage().
+function appendAssistantMessage() {
+    const container = document.getElementById('asistente-messages');
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg assistant';
+    msg.innerHTML = `
+        <div class="chat-avatar"><i class="fa-solid fa-robot"></i></div>
+        <div class="chat-col">
+            <div class="chat-content"></div>
+            <div class="chat-timer" hidden><i class="fa-regular fa-clock"></i> <span class="chat-timer-val"></span></div>
+        </div>
+    `;
+    container.appendChild(msg);
+    container.scrollTop = container.scrollHeight;
+    return {
+        content: msg.querySelector('.chat-content'),
+        timer: msg.querySelector('.chat-timer'),
+        timerVal: msg.querySelector('.chat-timer-val'),
+    };
+}
+
+// Cronómetro de respuesta: muestra el tiempo transcurrido en vivo y lo congela
+// al terminar. Devuelve una función stop(label) para fijar el valor final.
+function startResponseTimer(timerEl, valEl) {
+    const t0 = performance.now();
+    timerEl.hidden = false;
+    timerEl.classList.add('running');
+    const fmt = (ms) => `${(ms / 1000).toFixed(1)} s`;
+    valEl.textContent = fmt(0);
+    const id = setInterval(() => { valEl.textContent = fmt(performance.now() - t0); }, 100);
+    return (prefix) => {
+        clearInterval(id);
+        timerEl.classList.remove('running');
+        valEl.textContent = `${prefix || 'Respondió en'} ${fmt(performance.now() - t0)}`;
+    };
+}
+
+// --- MARKDOWN MÍNIMO (seguro) ---
+function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function mdInline(s) {
+    return escapeHtml(s)
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+        .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+}
+function mdToHtml(text) {
+    const lines = String(text).split('\n');
+    const isSep = (l) => /^\s*\|?[\s:|-]*-[-\s:|]*\|?\s*$/.test(l) && l.includes('-');
+    const parseRow = (l) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+
+    let html = '';
+    let inList = false;
+    let i = 0;
+    const closeList = () => { if (inList) { html += '</ul>'; inList = false; } };
+
+    while (i < lines.length) {
+        const line = lines[i].replace(/\s+$/, '');
+
+        // ¿Tabla markdown? (admite líneas en blanco intercaladas entre filas)
+        if (line.includes('|')) {
+            const tableLines = [];
+            let j = i;
+            while (j < lines.length) {
+                const l = lines[j];
+                if (l.trim() === '') {
+                    let k = j + 1;
+                    while (k < lines.length && lines[k].trim() === '') k++;
+                    if (k < lines.length && lines[k].includes('|')) { j = k; continue; }
+                    break;
+                }
+                if (l.includes('|')) { tableLines.push(l); j++; } else break;
+            }
+            const sepIdx = tableLines.findIndex(isSep);
+            if (tableLines.length >= 2 && sepIdx >= 0) {
+                closeList();
+                const header = parseRow(tableLines[Math.max(0, sepIdx - 1)]);
+                const rows = tableLines.slice(sepIdx + 1).map(parseRow);
+                html += `<table class="data-table"><thead><tr>${header.map(h => `<th>${mdInline(h)}</th>`).join('')}</tr></thead><tbody>`
+                    + rows.map(r => `<tr>${r.map(c => `<td>${mdInline(c)}</td>`).join('')}</tr>`).join('')
+                    + `</tbody></table>`;
+                i = j;
+                continue;
+            }
+        }
+
+        const li = line.match(/^\s*[-*]\s+(.*)$/);
+        if (li) {
+            if (!inList) { html += '<ul>'; inList = true; }
+            html += `<li>${mdInline(li[1])}</li>`;
+            i++;
+            continue;
+        }
+        closeList();
+        if (line.trim() !== '') html += `<p>${mdInline(line)}</p>`;
+        i++;
+    }
+    closeList();
+    return html;
+}
+
+// --- PARSER DE SEGMENTOS (texto + bloques cercados ```chart / ```table) ---
+function parseAssistantSegments(raw) {
+    const segs = [];
+    const re = /```([a-zA-Z]*)[ \t]*\n?([\s\S]*?)```/g;
+    let lastIndex = 0;
+    let m;
+    while ((m = re.exec(raw)) !== null) {
+        if (m.index > lastIndex) segs.push({ type: 'text', content: raw.slice(lastIndex, m.index) });
+        const lang = (m[1] || '').toLowerCase();
+        const kind = (lang === 'chart' || lang === 'table') ? lang : 'code';
+        segs.push({ type: kind, content: m[2], lang });
+        lastIndex = re.lastIndex;
+    }
+    const tail = raw.slice(lastIndex);
+    const openIdx = tail.indexOf('```');
+    if (openIdx !== -1) {
+        const before = tail.slice(0, openIdx);
+        if (before.trim()) segs.push({ type: 'text', content: before });
+        const after = tail.slice(openIdx + 3);
+        const lm = after.match(/^([a-zA-Z]*)/);
+        segs.push({ type: 'pending', lang: (lm ? lm[1] : '').toLowerCase() });
+    } else if (tail.trim()) {
+        segs.push({ type: 'text', content: tail });
+    }
+    return segs;
+}
+
+// Separa el razonamiento (entre <|channel>thought y <channel|>) de la respuesta.
+// Devuelve { reasoning, answer, thinking } donde thinking=true si el bloque de
+// razonamiento aún no se ha cerrado (sigue llegando por el stream).
+const REASON_START = '<|channel>thought';
+const REASON_END = '<channel|>';
+function splitReasoning(raw) {
+    const start = raw.indexOf(REASON_START);
+    if (start === -1) return { reasoning: '', answer: raw, thinking: false };
+    const afterStart = start + REASON_START.length;
+    const end = raw.indexOf(REASON_END, afterStart);
+    const before = raw.slice(0, start);
+    if (end === -1) {
+        // Razonamiento en curso: todo lo posterior al tag es pensamiento.
+        return { reasoning: raw.slice(afterStart), answer: before, thinking: true };
+    }
+    const reasoning = raw.slice(afterStart, end);
+    const answer = before + raw.slice(end + REASON_END.length);
+    return { reasoning: reasoning.trim(), answer, thinking: false };
+}
+
+// Re-renderiza el contenido del asistente. Durante el stream (isFinal=false) los
+// bloques de visualización se muestran como placeholder; al finalizar se renderizan.
+function renderAssistantMessage(contentEl, raw, isFinal) {
+    const container = document.getElementById('asistente-messages');
+    // ¿El usuario está pegado al fondo? Solo entonces auto-desplazamos.
+    const stick = container
+        ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 80
+        : true;
+
+    const { reasoning, answer, thinking } = splitReasoning(raw);
+    contentEl.innerHTML = '';
+
+    // Panel de razonamiento (plegable). Se mantiene abierto mientras "piensa".
+    if (reasoning.trim() || thinking) {
+        const det = document.createElement('details');
+        det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
+        if (thinking) det.open = true;
+        const label = thinking ? 'Razonando…' : 'Razonamiento';
+        const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
+        det.innerHTML = `
+            <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> ${label}</summary>
+            <div class="chat-reasoning-body"></div>
+        `;
+        det.querySelector('.chat-reasoning-body').textContent = reasoning.trim();
+        contentEl.appendChild(det);
+    }
+
+    const segments = parseAssistantSegments(answer);
+
+    for (const seg of segments) {
+        if (seg.type === 'text' || seg.type === 'code') {
+            if (!seg.content.trim()) continue;
+            const bubble = document.createElement('div');
+            bubble.className = 'chat-bubble';
+            bubble.innerHTML = mdToHtml(seg.content);
+            contentEl.appendChild(bubble);
+        } else if (seg.type === 'pending') {
+            contentEl.appendChild(buildIslandPlaceholder(seg.lang));
+        } else if (seg.type === 'chart' || seg.type === 'table') {
+            if (!isFinal) {
+                contentEl.appendChild(buildIslandPlaceholder(seg.type));
+                continue;
+            }
+            const island = (seg.type === 'chart')
+                ? buildChartIsland(seg.content)
+                : buildTableIsland(seg.content);
+            contentEl.appendChild(island);
+        }
+    }
+
+    if (container && stick) container.scrollTop = container.scrollHeight;
+}
+
+function buildIslandPlaceholder(kind) {
+    const el = document.createElement('div');
+    el.className = 'chat-island';
+    const label = kind === 'table' ? 'tabla' : 'gráfico';
+    el.innerHTML = `
+        <div class="chat-island-header"><i class="fa-solid fa-spinner fa-spin"></i> Generando ${label}…</div>
+        <div class="chat-island-placeholder"><i class="fa-solid fa-chart-pie"></i><span>Preparando visualización…</span></div>
+    `;
+    return el;
+}
+
+let _islandChartCounter = 0;
+function buildChartIsland(jsonStr) {
+    const el = document.createElement('div');
+    el.className = 'chat-island';
+    let spec;
+    try {
+        spec = JSON.parse(jsonStr);
+    } catch (e) {
+        el.innerHTML = `<div class="chat-island-header"><i class="fa-solid fa-triangle-exclamation"></i> Gráfico no válido</div>
+            <div class="chat-island-placeholder"><span>El modelo devolvió un gráfico con formato incorrecto.</span></div>`;
+        return el;
+    }
+
+    const typeMap = { bar: 'bar', horizontalbar: 'bar', line: 'line', doughnut: 'doughnut', pie: 'pie' };
+    const rawType = String(spec.chart_type || 'bar').toLowerCase();
+    const chartType = typeMap[rawType] || 'bar';
+    const horizontal = rawType === 'horizontalbar';
+    const isPieLike = chartType === 'doughnut' || chartType === 'pie';
+
+    const labels = spec.x || [];
+    const series = spec.series || [];
+    const datasets = series.map((s, i) => {
+        const color = BETPLAY_PALETTE[i % BETPLAY_PALETTE.length];
+        return {
+            label: s.label || `Serie ${i + 1}`,
+            data: s.data || [],
+            backgroundColor: isPieLike ? BETPLAY_PALETTE : (chartType === 'line' ? 'rgba(99,102,241,0.2)' : color + '99'),
+            borderColor: isPieLike ? 'rgba(11,13,25,0.8)' : color,
+            borderWidth: isPieLike ? 2 : 1.5,
+            borderRadius: chartType === 'bar' ? 4 : 0,
+            fill: chartType === 'line'
+        };
+    });
+
+    const canvasId = `island-chart-${++_islandChartCounter}`;
+    el.innerHTML = `
+        <div class="chat-island-header"><i class="fa-solid fa-chart-column"></i> ${escapeHtml(spec.title || 'Gráfico')}</div>
+        <div class="chat-island-body"><canvas id="${canvasId}"></canvas></div>
+    `;
+
+    // Instanciar Chart.js tras insertar el canvas en el DOM
+    setTimeout(() => {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        new Chart(canvas.getContext('2d'), {
+            type: chartType,
+            data: { labels, datasets },
+            options: {
+                indexAxis: horizontal ? 'y' : 'x',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: isPieLike || datasets.length > 1, labels: { color: '#94a3b8', font: { size: 11 } } }
+                },
+                scales: isPieLike ? {} : {
+                    x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                    y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+                }
+            }
+        });
+    }, 30);
+
+    return el;
+}
+
+function buildTableIsland(jsonStr) {
+    const el = document.createElement('div');
+    el.className = 'chat-island';
+    let spec;
+    try {
+        spec = JSON.parse(jsonStr);
+    } catch (e) {
+        el.innerHTML = `<div class="chat-island-header"><i class="fa-solid fa-triangle-exclamation"></i> Tabla no válida</div>
+            <div class="chat-island-placeholder"><span>El modelo devolvió una tabla con formato incorrecto.</span></div>`;
+        return el;
+    }
+    const columns = spec.columns || [];
+    const rows = spec.rows || [];
+    const thead = `<tr>${columns.map(c => `<th>${escapeHtml(c)}</th>`).join('')}</tr>`;
+    const tbody = rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('');
+    el.innerHTML = `
+        <div class="chat-island-header"><i class="fa-solid fa-table-list"></i> ${escapeHtml(spec.title || 'Tabla')}</div>
+        <div class="chat-island-body table-responsive">
+            <table class="data-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table>
+        </div>
+    `;
+    return el;
+}
+
+async function sendAssistantMessage() {
+    const input = document.getElementById('asistente-input');
+    const sendBtn = document.getElementById('asistente-send');
+    const container = document.getElementById('asistente-messages');
+    if (!input || State.assistant.busy) return;
+
+    const pregunta = input.value.trim();
+    if (!pregunta) return;
+
+    // Pinta la pregunta del usuario
+    appendChatBubble('user', pregunta);
+    State.assistant.history.push({ role: 'user', content: pregunta });
+    input.value = '';
+
+    // Contenedor del mensaje del asistente (se re-renderiza con el stream)
+    const { content: contentEl, timer: timerEl, timerVal } = appendAssistantMessage();
+    contentEl.innerHTML = '<div class="chat-bubble"><em>Pensando…</em></div>';
+    const stopTimer = startResponseTimer(timerEl, timerVal);
+
+    State.assistant.busy = true;
+    input.disabled = true;
+    sendBtn.disabled = true;
+
+    const range = assistantTodayRange();
+    let acumulado = '';
+
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                pregunta,
+                historial: State.assistant.history.slice(-8),
+                desde: range.desde,
+                hasta: range.hasta,
+                model: State.assistant.model
+            })
+        });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            acumulado += decoder.decode(value, { stream: true });
+            renderAssistantMessage(contentEl, acumulado, false);
+        }
+        // Render final (instancia gráficos/tablas)
+        if (!acumulado.trim()) {
+            contentEl.innerHTML = '<div class="chat-bubble">(sin respuesta del modelo)</div>';
+        } else {
+            renderAssistantMessage(contentEl, acumulado, true);
+        }
+        // Guardamos solo la respuesta (sin el razonamiento) para no reenviarlo.
+        State.assistant.history.push({ role: 'assistant', content: splitReasoning(acumulado).answer.trim() });
+        stopTimer('Respondió en');
+    } catch (err) {
+        console.error('[Asistente] Error en el chat:', err);
+        contentEl.innerHTML = '<div class="chat-bubble">No se pudo obtener respuesta del modelo. Verifica la conexión con la Mac.</div>';
+        stopTimer('Falló tras');
+    } finally {
+        State.assistant.busy = false;
+        input.disabled = false;
+        sendBtn.disabled = false;
+        input.focus();
+    }
+}
+
+// --- BETPLAY: TIPO Y RANGO DE FECHAS ---
+function setupBetplayControls() {
+    const modeSelect = document.getElementById('betplay-date-mode');
+    if (!modeSelect) return;
+
+    const singleField = document.getElementById('betplay-single-field');
+    const fromField = document.getElementById('betplay-range-from-field');
+    const toField = document.getElementById('betplay-range-to-field');
+    const singleInput = document.getElementById('betplay-date-single');
+    const fromInput = document.getElementById('betplay-date-from');
+    const toInput = document.getElementById('betplay-date-to');
+    const applyBtn = document.getElementById('btn-betplay-apply');
+
+    // Default all date inputs to today
+    const todayStr = new Date().toISOString().split('T')[0];
+    [singleInput, fromInput, toInput].forEach(i => { if (i && !i.value) i.value = todayStr; });
+
+    // Show/hide date fields according to selected mode
+    const refreshFields = () => {
+        const mode = modeSelect.value;
+        singleField.hidden = (mode !== 'single');
+        fromField.hidden = (mode !== 'range');
+        toField.hidden = (mode !== 'range');
+    };
+    modeSelect.addEventListener('change', refreshFields);
+    refreshFields();
+
+    // Botón "Consultar" (necesario para fecha puntual / rango).
+    if (applyBtn) {
+        applyBtn.addEventListener('click', () => fetchBetplay());
+    }
+
+    // Cambiar el tipo (Pagos/Recargas) vuelve a consultar.
+    const typeSelect = document.getElementById('betplay-type');
+    if (typeSelect) {
+        typeSelect.addEventListener('change', () => fetchBetplay());
+    }
+
+    // Toggle de métrica Monto / Cantidad (no requiere volver a consultar).
+    const metricToggle = document.getElementById('betplay-metric-toggle');
+    if (metricToggle) {
+        metricToggle.querySelectorAll('.metric-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                State.betplay.metric = btn.dataset.metric;
+                metricToggle.querySelectorAll('.metric-btn').forEach(b => b.classList.toggle('active', b === btn));
+                if (State.betplay.resumen) renderBetplay(State.betplay.resumen);
+            });
+        });
+    }
+
+    // Toggle de mapa Puntos / Calor.
+    const mapToggle = document.getElementById('betplay-map-toggle');
+    if (mapToggle) {
+        mapToggle.querySelectorAll('.metric-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                State.betplay.mapMode = btn.dataset.map;
+                mapToggle.querySelectorAll('.metric-btn').forEach(b => b.classList.toggle('active', b === btn));
+                if (State.betplay.resumen) renderBetplayMap(State.betplay.resumen.por_sitio || []);
+            });
+        });
+    }
+}
+
+// --- BETPLAY: CONSULTA A LA API ---
+async function fetchBetplay() {
+    const range = getBetplayDateRange();
+    updateBetplaySelectionSummary(range);
+
+    const loadingEl = document.getElementById('betplay-loading');
+    const emptyEl = document.getElementById('betplay-empty');
+    const contentEl = document.getElementById('betplay-content');
+
+    loadingEl.hidden = false;
+    emptyEl.hidden = true;
+    contentEl.hidden = true;
+
+    try {
+        // El día actual cambia durante el día → siempre consultar fresco.
+        // Las fechas pasadas son inmutables → usar caché.
+        const forceRefresh = range.mode === 'today';
+        const url = `${API_BASE}/api/betplay/resumen?tipo=${encodeURIComponent(range.type)}`
+            + `&desde=${encodeURIComponent(range.desde)}&hasta=${encodeURIComponent(range.hasta)}`
+            + (forceRefresh ? '&force_refresh=true' : '')
+            + `&t=${new Date().getTime()}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+
+        State.betplay.loaded = true;
+        State.betplay.resumen = json.data;
+
+        loadingEl.hidden = true;
+        const totalCantidad = json.data && json.data.totales ? json.data.totales.cantidad : 0;
+        if (!totalCantidad) {
+            emptyEl.hidden = false;
+            contentEl.hidden = true;
+            return;
+        }
+        contentEl.hidden = false;
+        renderBetplay(json.data);
+    } catch (err) {
+        console.error('[Betplay] Error consultando resumen:', err);
+        loadingEl.hidden = true;
+        emptyEl.hidden = false;
+        document.querySelector('#betplay-empty p').textContent =
+            'Error al consultar los datos de Betplay. Revisa la conexión e inténtalo de nuevo.';
+    }
+}
+
+// Resuelve el rango [desde, hasta) en formato 'YYYY-MM-DD HH:MM:SS' según el modo elegido.
+function getBetplayDateRange() {
+    const mode = document.getElementById('betplay-date-mode').value;
+    const type = document.getElementById('betplay-type').value;
+    const addDay = (dateStr) => {
+        const d = new Date(`${dateStr}T00:00:00`);
+        d.setDate(d.getDate() + 1);
+        return d.toISOString().split('T')[0];
+    };
+
+    let startDay, endDayExclusive;
+    if (mode === 'today') {
+        startDay = new Date().toISOString().split('T')[0];
+        endDayExclusive = addDay(startDay);
+    } else if (mode === 'single') {
+        startDay = document.getElementById('betplay-date-single').value;
+        endDayExclusive = addDay(startDay);
+    } else { // range
+        startDay = document.getElementById('betplay-date-from').value;
+        const lastDay = document.getElementById('betplay-date-to').value;
+        endDayExclusive = addDay(lastDay);
+    }
+
+    return {
+        type,
+        mode,
+        desde: `${startDay} 00:00:00`,
+        hasta: `${endDayExclusive} 00:00:00`
+    };
+}
+
+function updateBetplaySelectionSummary(range) {
+    const el = document.getElementById('betplay-selection-text');
+    if (!el) return;
+    const tipo = range.type === 'pagos' ? 'Pagos' : 'Recargas';
+    let periodo;
+    if (range.mode === 'today') periodo = 'día actual';
+    else if (range.mode === 'single') periodo = `fecha ${range.desde.split(' ')[0]}`;
+    else periodo = `del ${range.desde.split(' ')[0]} al ${document.getElementById('betplay-date-to').value}`;
+    el.textContent = `Mostrando: ${tipo} — ${periodo}`;
+}
+
+// --- BETPLAY: RENDER ---
+const BETPLAY_PALETTE = [
+    '#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ef4444',
+    '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#3b82f6'
+];
+
+// Devuelve el valor de la métrica activa (monto o cantidad) de un grupo agregado.
+function bpMetricValue(item) {
+    return State.betplay.metric === 'cantidad' ? (item.cantidad || 0) : (item.monto || 0);
+}
+
+// Formatea un valor según la métrica activa.
+function bpFormatMetric(val) {
+    return State.betplay.metric === 'cantidad'
+        ? Math.round(val).toLocaleString('es-CO')
+        : formatCurrency(val);
+}
+
+function renderBetplay(data) {
+    renderBetplayKPIs(data.totales || {});
+    renderBetplayTimeChart(data);
+    renderBetplayDonut('zona', 'bp-chart-zona', data.por_zona || [], 'zona');
+    renderBetplayDonut('tipo', 'bp-chart-tipo', data.por_tipo_sv || [], 'tipo');
+    renderBetplayBar('sitios', 'bp-chart-sitios', (data.por_sitio || []).slice(0, 10), 'sitio');
+    renderBetplayBar('usuarios', 'bp-chart-usuarios', (data.por_usuario || []).slice(0, 10), 'identificacion');
+    renderBetplayMap(data.por_sitio || []);
+    renderBetplayRaw(data.detalle || [], data.detalle_total || 0);
+    renderBetplayTable(data.por_sitio || []);
+}
+
+function renderBetplayKPIs(totales) {
+    document.getElementById('bp-kpi-monto').textContent = formatCurrency(totales.monto || 0);
+    document.getElementById('bp-kpi-ticket').textContent = `Ticket prom. ${formatCurrency(totales.ticket_promedio || 0)}`;
+    document.getElementById('bp-kpi-cantidad').textContent = (totales.cantidad || 0).toLocaleString('es-CO');
+    document.getElementById('bp-kpi-usuarios').textContent = (totales.usuarios_unicos || 0).toLocaleString('es-CO');
+    document.getElementById('bp-kpi-sitios').textContent = (totales.sitios_unicos || 0).toLocaleString('es-CO');
+}
+
+// Gráfico de barras temporal: por hora (1 día) o por día (rango con varios días).
+function renderBetplayTimeChart(data) {
+    const porDia = data.por_dia || [];
+    const useDaily = porDia.length > 1;
+    const titleEl = document.getElementById('bp-time-title');
+    let labels, values;
+
+    if (useDaily) {
+        if (titleEl) titleEl.textContent = 'Comportamiento por Día';
+        labels = porDia.map(d => d.fecha);
+        values = porDia.map(bpMetricValue);
+    } else {
+        if (titleEl) titleEl.textContent = 'Comportamiento por Hora';
+        const porHora = data.por_hora || [];
+        const map = {};
+        porHora.forEach(h => { map[h.hora] = bpMetricValue(h); });
+        labels = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+        values = Array.from({ length: 24 }, (_, h) => map[h] || 0);
+    }
+
+    const metricLabel = State.betplay.metric === 'cantidad' ? 'Transacciones' : 'Monto';
+    drawBetplayChart('time', 'bp-chart-time', {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                label: metricLabel,
+                data: values,
+                backgroundColor: 'rgba(99, 102, 241, 0.6)',
+                borderColor: '#6366f1',
+                borderWidth: 1,
+                borderRadius: 4
+            }]
+        },
+        options: betplayChartOptions(false)
+    });
+}
+
+function renderBetplayDonut(key, canvasId, items, labelField) {
+    const top = items.slice(0, 8);
+    const labels = top.map(i => i[labelField] || 'N/D');
+    const values = top.map(bpMetricValue);
+    drawBetplayChart(key, canvasId, {
+        type: 'doughnut',
+        data: {
+            labels,
+            datasets: [{
+                data: values,
+                backgroundColor: BETPLAY_PALETTE,
+                borderColor: 'rgba(11, 13, 25, 0.8)',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { color: '#94a3b8', font: { size: 11 } } },
+                tooltip: { callbacks: { label: ctx => `${ctx.label}: ${bpFormatMetric(ctx.parsed)}` } }
+            }
+        }
+    });
+}
+
+function renderBetplayBar(key, canvasId, items, labelField) {
+    const labels = items.map(i => String(i[labelField] ?? 'N/D'));
+    const values = items.map(bpMetricValue);
+    drawBetplayChart(key, canvasId, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                label: State.betplay.metric === 'cantidad' ? 'Transacciones' : 'Monto',
+                data: values,
+                backgroundColor: 'rgba(6, 182, 212, 0.6)',
+                borderColor: '#06b6d4',
+                borderWidth: 1,
+                borderRadius: 4
+            }]
+        },
+        options: betplayChartOptions(true)
+    });
+}
+
+// Opciones comunes para gráficos de barras. horizontal=true → barras horizontales.
+function betplayChartOptions(horizontal) {
+    return {
+        indexAxis: horizontal ? 'y' : 'x',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: ctx => bpFormatMetric(horizontal ? ctx.parsed.x : ctx.parsed.y) } }
+        },
+        scales: {
+            x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+            y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+        }
+    };
+}
+
+// Crea/reemplaza una instancia de Chart.js guardada en State.betplay.charts[key].
+function drawBetplayChart(key, canvasId, config) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    if (State.betplay.charts[key]) {
+        State.betplay.charts[key].destroy();
+    }
+    State.betplay.charts[key] = new Chart(canvas.getContext('2d'), config);
+}
+
+// Mapa Leaflet: puntos o mapa de calor según State.betplay.mapMode.
+function renderBetplayMap(sites) {
+    const mapEl = document.getElementById('bp-map');
+    if (!mapEl || typeof L === 'undefined') return;
+
+    // Sitios con coordenadas válidas
+    const points = sites
+        .map(s => ({ lat: parseFloat(s.cy), lng: parseFloat(s.cx), monto: s.monto || 0, cantidad: s.cantidad || 0, sitio: s.sitio, oficina: s.oficina, zona: s.zona }))
+        .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.lat !== 0 && p.lng !== 0);
+
+    // Inicializar el mapa una sola vez
+    if (!State.betplay.map) {
+        State.betplay.map = L.map(mapEl, { scrollWheelZoom: false }).setView([4.6, -74.08], 6);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap', maxZoom: 19
+        }).addTo(State.betplay.map);
+    }
+    const map = State.betplay.map;
+
+    // Limpiar capas previas
+    if (State.betplay.markerLayer) { map.removeLayer(State.betplay.markerLayer); State.betplay.markerLayer = null; }
+    if (State.betplay.heatLayer) { map.removeLayer(State.betplay.heatLayer); State.betplay.heatLayer = null; }
+
+    if (!points.length) return;
+
+    if (State.betplay.mapMode === 'heat' && typeof L.heatLayer === 'function') {
+        const maxVal = Math.max(...points.map(p => bpMetricValue(p))) || 1;
+        const heatData = points.map(p => [p.lat, p.lng, bpMetricValue(p) / maxVal]);
+        State.betplay.heatLayer = L.heatLayer(heatData, { radius: 25, blur: 18, maxZoom: 12 }).addTo(map);
+    } else {
+        const maxVal = Math.max(...points.map(p => bpMetricValue(p))) || 1;
+        const layer = L.layerGroup();
+        points.forEach(p => {
+            const radius = 6 + 18 * (bpMetricValue(p) / maxVal);
+            L.circleMarker([p.lat, p.lng], {
+                radius, color: '#6366f1', fillColor: '#6366f1', fillOpacity: 0.5, weight: 1
+            }).bindPopup(
+                `<strong>${p.sitio || 'Sitio'}</strong><br>${p.oficina || ''} — ${p.zona || ''}<br>`
+                + `Monto: ${formatCurrency(p.monto)}<br>Transacciones: ${p.cantidad.toLocaleString('es-CO')}`
+            ).addTo(layer);
+        });
+        layer.addTo(map);
+        State.betplay.markerLayer = layer;
+    }
+
+    // Ajustar el encuadre a los puntos
+    const bounds = L.latLngBounds(points.map(p => [p.lat, p.lng]));
+    if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 13 });
+    setTimeout(() => map.invalidateSize(), 100);
+}
+
+// Tabla de filas crudas de la consulta base, con columnas dinámicas.
+function renderBetplayRaw(detalle, total) {
+    const thead = document.getElementById('bp-raw-thead');
+    const body = document.getElementById('bp-raw-body');
+    const countEl = document.getElementById('bp-raw-count');
+    const searchEl = document.getElementById('bp-raw-search');
+    if (!thead || !body) return;
+
+    State.betplay._rawRows = detalle;
+
+    // Columnas = claves de la primera fila (guardadas en estado por si cambia el tipo)
+    const columns = detalle.length ? Object.keys(detalle[0]) : [];
+    State.betplay._rawColumns = columns;
+    thead.innerHTML = columns.length
+        ? `<tr>${columns.map(c => `<th>${c}</th>`).join('')}</tr>`
+        : '';
+
+    const fmtCell = (val) => {
+        if (val === null || val === undefined) return '';
+        return String(val);
+    };
+
+    const draw = (filterText) => {
+        const cols = State.betplay._rawColumns || [];
+        const ft = (filterText || '').toLowerCase().trim();
+        const rows = (State.betplay._rawRows || []).filter(r =>
+            !ft || cols.some(c => String(r[c] ?? '').toLowerCase().includes(ft))
+        );
+
+        if (countEl) {
+            countEl.textContent = total > detalle.length
+                ? `${rows.length} de ${total} (limitado a ${detalle.length})`
+                : `${rows.length} filas`;
+        }
+
+        if (!cols.length || !rows.length) {
+            body.innerHTML = `<tr><td class="empty-table" colspan="${cols.length || 1}">Sin resultados.</td></tr>`;
+            return;
+        }
+        body.innerHTML = rows.map(r =>
+            `<tr>${cols.map(c => `<td>${fmtCell(r[c])}</td>`).join('')}</tr>`
+        ).join('');
+    };
+
+    draw('');
+    if (searchEl && !searchEl.dataset.bound) {
+        searchEl.dataset.bound = '1';
+        searchEl.addEventListener('input', () => draw(searchEl.value));
+    }
+}
+
+function renderBetplayTable(sites) {
+    const body = document.getElementById('bp-table-body');
+    const countEl = document.getElementById('bp-table-count');
+    const searchEl = document.getElementById('bp-table-search');
+    if (!body) return;
+
+    // Guardar los sitios actuales para que la búsqueda use siempre el último dataset.
+    State.betplay._tableSites = sites;
+
+    const draw = (filterText) => {
+        const ft = (filterText || '').toLowerCase().trim();
+        const current = State.betplay._tableSites || [];
+        const rows = current.filter(s => !ft
+            || String(s.sitio || '').toLowerCase().includes(ft)
+            || String(s.oficina || '').toLowerCase().includes(ft)
+            || String(s.zona || '').toLowerCase().includes(ft)
+            || String(s.cod_sitio || '').toLowerCase().includes(ft));
+
+        if (countEl) countEl.textContent = `${rows.length} sitios`;
+
+        if (!rows.length) {
+            body.innerHTML = '<tr><td class="empty-table" colspan="6">Sin resultados.</td></tr>';
+            return;
+        }
+        body.innerHTML = rows.map(s => `
+            <tr>
+                <td>${s.cod_sitio ?? ''}</td>
+                <td>${s.sitio || 'N/D'}</td>
+                <td>${s.oficina || 'N/D'}</td>
+                <td>${s.zona || 'N/D'}</td>
+                <td style="text-align: right;">${formatCurrency(s.monto || 0)}</td>
+                <td style="text-align: right;">${(s.cantidad || 0).toLocaleString('es-CO')}</td>
+            </tr>
+        `).join('');
+    };
+
+    draw('');
+    if (searchEl && !searchEl.dataset.bound) {
+        searchEl.dataset.bound = '1';
+        searchEl.addEventListener('input', () => draw(searchEl.value));
+    }
+}
 
 // Helper setup for expand/collapse all buttons
 function setupTreeControls() {
