@@ -30,3 +30,9 @@ META CIAL MAYO/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local project documentation
+DOCUMENTACION_PROYECTO.md
+
+# Forecasting module (desarrollo aparte, en evaluación)
+forecasting_betplay/
