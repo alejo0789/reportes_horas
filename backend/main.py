@@ -986,7 +986,7 @@ def get_whatsapp_query(
 
     # Calculate individual promoter metrics in coordinator's zone
     promoter_compliance_list = []
-    if is_coordinator and report_type in {"products", "offices", "prompt_promoter"}:
+    if is_coordinator and report_type in {"products", "offices", "prompt_promoter", "coordinator_promoter_detail"}:
         promoter_to_offices = {}
         promoter_zones = {}
         for item in distribution_store:
@@ -1225,6 +1225,7 @@ def get_whatsapp_query(
                     msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
                     
             msg += f"──────────────────\n"
+            msg += f"📲 Para ver el detalle por oficina, responde con el número del promotor (Ej: *1*)\n"
             msg += f"💪 ¡Vamos por la meta! 🚀"
         else:
             if date_filter == "yesterday":
@@ -1244,6 +1245,7 @@ def get_whatsapp_query(
                 msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
                 
             msg += f"──────────────────\n"
+            msg += f"📲 Para ver el detalle por oficina, responde con el número del promotor (Ej: *1*)\n"
             msg += f"💪 ¡Vamos por la meta! 🚀"
 
         return {
@@ -1251,6 +1253,37 @@ def get_whatsapp_query(
             "report_type": "prompt_promoter",
             "is_coordinator": True
         }
+
+    # Early return for coordinator looking at a specific promoter's offices
+    if is_coordinator and report_type == "coordinator_promoter_detail":
+        if selected_product and selected_product.isdigit():
+            idx = int(selected_product) - 1
+            if 0 <= idx < len(promoter_compliance_list):
+                selected_promoter_name = promoter_compliance_list[idx][0]
+                # Recursively call the function as if the coordinator is that promoter requesting "offices"
+                result = get_whatsapp_query(
+                    phone=None,
+                    report_type="offices",
+                    selected_product=None,
+                    override_promoter_name=selected_promoter_name,
+                    override_coordinator_name=None,
+                    date_filter=date_filter
+                )
+                result["is_coordinator"] = True
+                result["report_type"] = "coordinator_promoter_offices_view"
+                return result
+            else:
+                return {
+                    "text": "❌ El número ingresado no corresponde a ningún promotor de la lista.",
+                    "report_type": "coordinator_promoter_detail",
+                    "is_coordinator": True
+                }
+        else:
+            return {
+                "text": "❌ Formato inválido. Por favor, responde únicamente con el número del promotor.",
+                "report_type": "coordinator_promoter_detail",
+                "is_coordinator": True
+            }
 
     # Early return for product list prompt
     if report_type == "prompt_product":
