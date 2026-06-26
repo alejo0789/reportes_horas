@@ -2115,8 +2115,12 @@ async def receive_whatsapp_webhook(request: Request):
             report_type = "products"
         elif button_id == "view_promoter_summary" or "promotor" in user_msg_lower:
             report_type = "prompt_promoter"
+        elif user_msg_text.isdigit():
+            report_type = "coordinator_promoter_detail"
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=user_msg_text)
             
-        query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+        if query_result is None:
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type)
     else:
         # Promoter Session Routing
         if (session_data and isinstance(session_data, dict) and 
@@ -2277,6 +2281,15 @@ async def receive_whatsapp_webhook(request: Request):
                 "reply": {
                     "id": "view_zone_report",
                     "title": "Reporte de Zona"
+                }
+            })
+            button_prompt = "📦 Seleccione una opción:"
+        elif res_report_type == "coordinator_promoter_offices_view":
+            buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": "view_promoter_summary",
+                    "title": "Ver Promotores"
                 }
             })
             button_prompt = "📦 Seleccione una opción:"
