@@ -1877,8 +1877,27 @@ def get_betplay_resumen(
 
 # ============================ ASISTENTE IA ============================
 
+# Configuración del modelo (LM Studio en Mac local, API compatible con OpenAI).
+# Los valores por defecto están "quemados" para que producción funcione aunque
+# no exista el archivo .env; pueden sobreescribirse vía variables de entorno.
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://10.0.29.27:1234/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "local-model")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemma-4-e4b-it-qat")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
+LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "2"))
+LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "50"))
+
+# Host base de LM Studio (sin /v1), para la REST API nativa de control de modelos
+# (POST /api/v1/models/load y /unload, GET /api/v0/models).
+LLM_HOST = LLM_BASE_URL.rsplit("/v1", 1)[0].rstrip("/")
+
+# Catálogo de modelos seleccionables por el usuario, con nombres amigables
+# (nivel de "inteligencia"). El id DEBE coincidir (minúsculas) con LM Studio.
+ASSISTANT_MODELS = [
+    {"id": "gemma-4-e2b-it-qat", "label": "Inteligencia Baja"},
+    {"id": "gemma-4-e4b-it-qat", "label": "Inteligencia Media"},
+    {"id": "gemma-4-12b-it-qat", "label": "Inteligencia Alta"},
+]
+_ASSISTANT_MODEL_IDS = {m["id"] for m in ASSISTANT_MODELS}
 
 
 @app.get("/api/assistant/health")
@@ -1903,7 +1922,6 @@ def assistant_health():
         return {"online": False, "base_url": LLM_BASE_URL, "configured_model": LLM_MODEL, "error": str(e)}
 
 
-LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
 _llm_client = None
 
 
@@ -1914,6 +1932,119 @@ def get_llm_client():
         from openai import OpenAI
         _llm_client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
     return _llm_client
+
+
+# ---- Control nativo de modelos en LM Studio (load/unload) ----
+
+def _lmstudio_request(method, path, body=None, timeout=10):
+    """Hace una petición HTTP a la REST API nativa de LM Studio."""
+    import urllib.request
+    url = LLM_HOST + path
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8")
+    return json.loads(raw) if raw.strip() else {}
+
+
+def _lmstudio_loaded_llms():
+    """Devuelve la lista de ids de modelos LLM actualmente cargados (state=loaded)."""
+    payload = _lmstudio_request("GET", "/api/v0/models", timeout=5)
+    out = []
+    for m in (payload.get("data", []) if isinstance(payload, dict) else []):
+        if m.get("type") in ("llm", "vlm") and m.get("state") == "loaded":
+            out.append(m.get("id"))
+    return out
+
+
+def _current_catalog_model():
+    """
+    Devuelve el id del modelo del catálogo que esté actualmente cargado en
+    LM Studio, o None si ninguno del catálogo está cargado. Útil para arrancar
+    usando lo que ya está cargado sin forzar un swap.
+    """
+    try:
+        for mid in _lmstudio_loaded_llms():
+            if mid in _ASSISTANT_MODEL_IDS:
+                return mid
+    except Exception as e:
+        logger.warning(f"No se pudo determinar el modelo cargado: {e}")
+    return None
+
+
+def ensure_model_loaded(target):
+    """
+    Garantiza que `target` sea el modelo cargado en LM Studio, descargando
+    cualquier otro LLM cargado (eject) y cargando el solicitado si hace falta.
+    Devuelve dict con el resultado. Best-effort: si LM Studio no soporta algún
+    paso, se reporta el error pero no se lanza excepción.
+    """
+    result = {"model": target, "swapped": False, "unloaded": [], "load_time_seconds": None}
+    try:
+        loaded = _lmstudio_loaded_llms()
+    except Exception as e:
+        result["error"] = f"No se pudo consultar modelos cargados: {e}"
+        return result
+
+    if target in loaded:
+        result["already_loaded"] = True
+        return result
+
+    # Eject de los demás LLM cargados.
+    for mid in loaded:
+        if mid == target:
+            continue
+        try:
+            _lmstudio_request("POST", "/api/v1/models/unload", {"instance_id": mid}, timeout=30)
+            result["unloaded"].append(mid)
+        except Exception as e:
+            logger.warning(f"No se pudo descargar el modelo {mid}: {e}")
+
+    # Carga del modelo solicitado (puede tardar para modelos grandes).
+    try:
+        loaded_info = _lmstudio_request("POST", "/api/v1/models/load", {"model": target}, timeout=180)
+        result["swapped"] = True
+        result["load_time_seconds"] = loaded_info.get("load_time_seconds")
+    except Exception as e:
+        result["error"] = f"No se pudo cargar el modelo {target}: {e}"
+    return result
+
+
+@app.get("/api/assistant/models")
+def assistant_models():
+    """
+    Catálogo de modelos seleccionables (nombres amigables) y su estado de carga
+    en LM Studio, más el modelo configurado por defecto.
+    """
+    try:
+        loaded = set(_lmstudio_loaded_llms())
+    except Exception as e:
+        logger.warning(f"No se pudo consultar estado de modelos: {e}")
+        loaded = set()
+    models = [
+        {"id": m["id"], "label": m["label"], "loaded": m["id"] in loaded}
+        for m in ASSISTANT_MODELS
+    ]
+    return {"models": models, "default": LLM_MODEL}
+
+
+class AssistantModelSelectRequest(BaseModel):
+    model: str
+
+
+@app.post("/api/assistant/model/select")
+def assistant_model_select(req: AssistantModelSelectRequest):
+    """
+    Cambia el modelo activo en LM Studio: descarga el actual y carga el pedido.
+    """
+    if req.model not in _ASSISTANT_MODEL_IDS:
+        return {"ok": False, "error": f"Modelo no permitido: {req.model}"}
+    res = ensure_model_loaded(req.model)
+    res["ok"] = "error" not in res
+    return res
 
 
 def _compact_resumen_for_context(tipo, desde, hasta):
@@ -2012,6 +2143,7 @@ class AssistantChatRequest(BaseModel):
     historial: Optional[List[dict]] = None  # [{role, content}, ...]
     desde: Optional[str] = None
     hasta: Optional[str] = None
+    model: Optional[str] = None  # id del modelo elegido (catálogo amigable)
 
 
 @app.post("/api/assistant/chat")
@@ -2045,24 +2177,60 @@ def assistant_chat(req: AssistantChatRequest):
                 messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": req.pregunta})
 
+    # Resolución del modelo:
+    # - Si el usuario eligió uno del catálogo, se usa y se asegura su carga
+    #   (haciendo eject del anterior si hace falta).
+    # - Si NO hay selección explícita, se usa el modelo del catálogo que ya esté
+    #   cargado (comodidad: no descargar/cargar al arrancar). Solo si no hay
+    #   ninguno cargado se recurre al configurado por defecto.
+    if req.model in _ASSISTANT_MODEL_IDS:
+        model_id = req.model
+        ensure_model_loaded(model_id)
+    else:
+        loaded = _current_catalog_model()
+        model_id = loaded or LLM_MODEL
+        # Solo forzamos carga si no hay nada del catálogo cargado.
+        if loaded is None:
+            ensure_model_loaded(model_id)
+
     def token_stream():
+        # El razonamiento llega en un campo aparte (reasoning_content en LM Studio
+        # 0.4.x). Lo envolvemos token a token en las etiquetas que el frontend ya
+        # sabe parsear, para mostrarlo en vivo como bloque colapsable separado de
+        # la respuesta (se preserva el streaming completo, sin bufferizar).
+        in_reasoning = False
         try:
             client = get_llm_client()
             stream = client.chat.completions.create(
-                model=LLM_MODEL,
+                model=model_id,
                 messages=messages,
                 temperature=0.4,
                 stream=True,
             )
             for chunk in stream:
                 try:
-                    delta = chunk.choices[0].delta.content
+                    delta = chunk.choices[0].delta
                 except (AttributeError, IndexError):
-                    delta = None
-                if delta:
-                    yield delta
+                    continue
+                # reasoning_content (0.4.x) o reasoning (0.3.x), por robustez.
+                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                content = getattr(delta, "content", None)
+                if reasoning:
+                    if not in_reasoning:
+                        in_reasoning = True
+                        yield "<|channel>thought"
+                    yield reasoning
+                if content:
+                    if in_reasoning:
+                        in_reasoning = False
+                        yield "<channel|>"
+                    yield content
+            if in_reasoning:
+                yield "<channel|>"
         except Exception as e:
             logger.error(f"Assistant chat streaming failed: {e}")
+            if in_reasoning:
+                yield "<channel|>"
             yield f"\n\n[Error al contactar el modelo: {e}]"
 
     return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")

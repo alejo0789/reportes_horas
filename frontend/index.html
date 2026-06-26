@@ -614,9 +614,16 @@
                         <p class="section-desc" style="margin:0;">Pregunta sobre pagos y recargas; genero análisis, tablas y gráficos.</p>
                     </div>
                 </div>
-                <div class="asistente-conn" id="asistente-conn">
-                    <span class="status-indicator" id="asistente-conn-indicator"></span>
-                    <span class="status-text" id="asistente-conn-text">Verificando conexión con el modelo...</span>
+                <div class="asistente-header-right">
+                    <div class="asistente-model">
+                        <label for="asistente-model-select"><i class="fa-solid fa-brain"></i> Inteligencia</label>
+                        <select id="asistente-model-select" class="asistente-model-select"></select>
+                        <span class="asistente-model-status" id="asistente-model-status" hidden></span>
+                    </div>
+                    <div class="asistente-conn" id="asistente-conn">
+                        <span class="status-indicator" id="asistente-conn-indicator"></span>
+                        <span class="status-text" id="asistente-conn-text">Verificando conexión con el modelo...</span>
+                    </div>
                 </div>
             </section>
 

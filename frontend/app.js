@@ -53,7 +53,8 @@ const State = {
     // Asistente IA state
     assistant: {
         history: [],     // [{role:'user'|'assistant', content:'...'}]
-        busy: false      // si hay una respuesta en curso
+        busy: false,     // si hay una respuesta en curso
+        model: null      // id del modelo seleccionado
     }
 };
 
@@ -302,9 +303,10 @@ function setupTabs() {
                 setTimeout(() => State.betplay.map.invalidateSize(), 200);
             }
 
-            // Al abrir el Asistente: verificar conexión y cargar KPIs del día.
+            // Al abrir el Asistente: verificar conexión, modelos y KPIs del día.
             if (targetId === 'view-asistente') {
                 checkAssistantHealth();
+                loadAssistantModels();
                 loadAssistantKpis();
             }
         });
@@ -333,6 +335,81 @@ async function checkAssistantHealth() {
     } catch (err) {
         indicator.classList.add('offline');
         text.textContent = 'Error verificando la conexión con el modelo';
+    }
+}
+
+// --- ASISTENTE IA: SELECTOR DE MODELO (NIVEL DE INTELIGENCIA) ---
+let _assistantModelsLoaded = false;
+async function loadAssistantModels() {
+    const select = document.getElementById('asistente-model-select');
+    if (!select) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/models?t=${new Date().getTime()}`);
+        const json = await res.json();
+        const models = json.models || [];
+        // Modelo activo: el que esté cargado, o el guardado, o el default.
+        const loaded = models.find(m => m.loaded);
+        const current = State.assistant.model
+            || (loaded && loaded.id)
+            || json.default
+            || (models[0] && models[0].id);
+        State.assistant.model = current;
+
+        select.innerHTML = models
+            .map(m => `<option value="${m.id}"${m.id === current ? ' selected' : ''}>${m.label}</option>`)
+            .join('');
+
+        if (!_assistantModelsLoaded) {
+            select.addEventListener('change', () => selectAssistantModel(select.value));
+            _assistantModelsLoaded = true;
+        }
+    } catch (err) {
+        console.error('[Asistente] Error cargando modelos:', err);
+        select.innerHTML = '<option>Modelos no disponibles</option>';
+    }
+}
+
+// Cambia el modelo activo: pide a LM Studio descargar el actual y cargar el nuevo.
+async function selectAssistantModel(modelId) {
+    const select = document.getElementById('asistente-model-select');
+    const status = document.getElementById('asistente-model-status');
+    if (State.assistant.busy) return;
+
+    const previous = State.assistant.model;
+    State.assistant.model = modelId;
+    if (select) select.disabled = true;
+    if (status) {
+        status.hidden = false;
+        status.className = 'asistente-model-status loading';
+        status.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cargando modelo…';
+    }
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/model/select`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: modelId })
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error || 'Error desconocido');
+        if (status) {
+            status.className = 'asistente-model-status ok';
+            const secs = json.load_time_seconds != null ? ` (${json.load_time_seconds.toFixed(1)} s)` : '';
+            status.innerHTML = json.already_loaded
+                ? '<i class="fa-solid fa-check"></i> Modelo activo'
+                : `<i class="fa-solid fa-check"></i> Modelo cargado${secs}`;
+            setTimeout(() => { if (status) status.hidden = true; }, 3000);
+        }
+        checkAssistantHealth();
+    } catch (err) {
+        console.error('[Asistente] Error cambiando de modelo:', err);
+        State.assistant.model = previous;
+        if (select) select.value = previous;
+        if (status) {
+            status.className = 'asistente-model-status error';
+            status.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> No se pudo cambiar';
+        }
+    } finally {
+        if (select) select.disabled = false;
     }
 }
 
@@ -418,11 +495,34 @@ function appendAssistantMessage() {
     msg.className = 'chat-msg assistant';
     msg.innerHTML = `
         <div class="chat-avatar"><i class="fa-solid fa-robot"></i></div>
-        <div class="chat-content"></div>
+        <div class="chat-col">
+            <div class="chat-content"></div>
+            <div class="chat-timer" hidden><i class="fa-regular fa-clock"></i> <span class="chat-timer-val"></span></div>
+        </div>
     `;
     container.appendChild(msg);
     container.scrollTop = container.scrollHeight;
-    return msg.querySelector('.chat-content');
+    return {
+        content: msg.querySelector('.chat-content'),
+        timer: msg.querySelector('.chat-timer'),
+        timerVal: msg.querySelector('.chat-timer-val'),
+    };
+}
+
+// Cronómetro de respuesta: muestra el tiempo transcurrido en vivo y lo congela
+// al terminar. Devuelve una función stop(label) para fijar el valor final.
+function startResponseTimer(timerEl, valEl) {
+    const t0 = performance.now();
+    timerEl.hidden = false;
+    timerEl.classList.add('running');
+    const fmt = (ms) => `${(ms / 1000).toFixed(1)} s`;
+    valEl.textContent = fmt(0);
+    const id = setInterval(() => { valEl.textContent = fmt(performance.now() - t0); }, 100);
+    return (prefix) => {
+        clearInterval(id);
+        timerEl.classList.remove('running');
+        valEl.textContent = `${prefix || 'Respondió en'} ${fmt(performance.now() - t0)}`;
+    };
 }
 
 // --- MARKDOWN MÍNIMO (seguro) ---
@@ -518,6 +618,26 @@ function parseAssistantSegments(raw) {
     return segs;
 }
 
+// Separa el razonamiento (entre <|channel>thought y <channel|>) de la respuesta.
+// Devuelve { reasoning, answer, thinking } donde thinking=true si el bloque de
+// razonamiento aún no se ha cerrado (sigue llegando por el stream).
+const REASON_START = '<|channel>thought';
+const REASON_END = '<channel|>';
+function splitReasoning(raw) {
+    const start = raw.indexOf(REASON_START);
+    if (start === -1) return { reasoning: '', answer: raw, thinking: false };
+    const afterStart = start + REASON_START.length;
+    const end = raw.indexOf(REASON_END, afterStart);
+    const before = raw.slice(0, start);
+    if (end === -1) {
+        // Razonamiento en curso: todo lo posterior al tag es pensamiento.
+        return { reasoning: raw.slice(afterStart), answer: before, thinking: true };
+    }
+    const reasoning = raw.slice(afterStart, end);
+    const answer = before + raw.slice(end + REASON_END.length);
+    return { reasoning: reasoning.trim(), answer, thinking: false };
+}
+
 // Re-renderiza el contenido del asistente. Durante el stream (isFinal=false) los
 // bloques de visualización se muestran como placeholder; al finalizar se renderizan.
 function renderAssistantMessage(contentEl, raw, isFinal) {
@@ -527,8 +647,25 @@ function renderAssistantMessage(contentEl, raw, isFinal) {
         ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 80
         : true;
 
-    const segments = parseAssistantSegments(raw);
+    const { reasoning, answer, thinking } = splitReasoning(raw);
     contentEl.innerHTML = '';
+
+    // Panel de razonamiento (plegable). Se mantiene abierto mientras "piensa".
+    if (reasoning.trim() || thinking) {
+        const det = document.createElement('details');
+        det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
+        if (thinking) det.open = true;
+        const label = thinking ? 'Razonando…' : 'Razonamiento';
+        const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
+        det.innerHTML = `
+            <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> ${label}</summary>
+            <div class="chat-reasoning-body"></div>
+        `;
+        det.querySelector('.chat-reasoning-body').textContent = reasoning.trim();
+        contentEl.appendChild(det);
+    }
+
+    const segments = parseAssistantSegments(answer);
 
     for (const seg of segments) {
         if (seg.type === 'text' || seg.type === 'code') {
@@ -669,8 +806,9 @@ async function sendAssistantMessage() {
     input.value = '';
 
     // Contenedor del mensaje del asistente (se re-renderiza con el stream)
-    const contentEl = appendAssistantMessage();
+    const { content: contentEl, timer: timerEl, timerVal } = appendAssistantMessage();
     contentEl.innerHTML = '<div class="chat-bubble"><em>Pensando…</em></div>';
+    const stopTimer = startResponseTimer(timerEl, timerVal);
 
     State.assistant.busy = true;
     input.disabled = true;
@@ -687,7 +825,8 @@ async function sendAssistantMessage() {
                 pregunta,
                 historial: State.assistant.history.slice(-8),
                 desde: range.desde,
-                hasta: range.hasta
+                hasta: range.hasta,
+                model: State.assistant.model
             })
         });
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -706,10 +845,13 @@ async function sendAssistantMessage() {
         } else {
             renderAssistantMessage(contentEl, acumulado, true);
         }
-        State.assistant.history.push({ role: 'assistant', content: acumulado });
+        // Guardamos solo la respuesta (sin el razonamiento) para no reenviarlo.
+        State.assistant.history.push({ role: 'assistant', content: splitReasoning(acumulado).answer.trim() });
+        stopTimer('Respondió en');
     } catch (err) {
         console.error('[Asistente] Error en el chat:', err);
         contentEl.innerHTML = '<div class="chat-bubble">No se pudo obtener respuesta del modelo. Verifica la conexión con la Mac.</div>';
+        stopTimer('Falló tras');
     } finally {
         State.assistant.busy = false;
         input.disabled = false;
