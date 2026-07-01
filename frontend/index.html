@@ -16,19 +16,32 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-    <link rel="stylesheet" href="styles.css?v=1.9">
+    <link rel="stylesheet" href="styles.css?v=2.6">
 </head>
 <body>
+    <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
+         Se define una sola vez; lo usan .lg-refract (tabs, botones, toggles). -->
+    <svg class="lg-svg" aria-hidden="true" width="0" height="0" style="position:absolute;">
+        <filter id="lensRefraction" x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.002 0.002"
+                numOctaves="1" seed="14" stitchTiles="stitch" result="noise" />
+            <feGaussianBlur in="noise" stdDeviation="6" result="soft" />
+            <feDisplacementMap in="SourceGraphic" in2="soft"
+                scale="40" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+    </svg>
+
     <div class="glow-bg"></div>
     
-    <div class="container">
-        <!-- HEADER -->
-        <header class="glass-panel main-header">
+    <!-- HEADER (full-width, pegado arriba) -->
+    <header class="main-header">
             <div class="header-logo">
-                <i class="fa-solid fa-chart-line-up logo-icon"></i>
-                <div>
-                    <h1>DASHBOARD VENTAS POR HORA</h1>
-                    <p class="subtitle">Análisis Transaccional y Control de Metas Diarias</p>
+                <img src="assets/logos/acertemos.png" alt="Acertemos" class="brand-logo">
+                <span class="brand-divider"></span>
+                <img src="assets/logos/sured.png" alt="SU RED" class="brand-logo">
+                <div class="header-title">
+                    <h1>Dashboard de Operaciones</h1>
+                    <p class="subtitle">Análisis transaccional y control de metas</p>
                 </div>
             </div>
             <div class="header-actions">
@@ -44,18 +57,21 @@
                     </div>
                 </div>
             </div>
-        </header>
+    </header>
 
+    <div class="container">
         <!-- TAB NAVIGATION -->
         <nav class="tab-bar" id="tab-bar">
+            <!-- Indicador de vidrio que se desliza entre pestañas -->
+            <span class="tab-indicator lg-refract" id="tab-indicator" aria-hidden="true"></span>
             <button type="button" class="tab-btn active" data-view="view-ventas">
-                <i class="fa-solid fa-chart-line"></i> Ventas por Hora
+                <i class="fa-solid fa-chart-line"></i> <span>Ventas por Hora</span>
             </button>
             <button type="button" class="tab-btn" data-view="view-betplay">
-                <i class="fa-solid fa-dice"></i> Betplay
+                <img src="assets/logos/betplay.jpg" alt="Betplay" class="tab-logo">
             </button>
             <button type="button" class="tab-btn" data-view="view-asistente">
-                <i class="fa-solid fa-robot"></i> Asistente IA
+                <i class="fa-solid fa-robot"></i> <span>Asistente IA</span>
             </button>
         </nav>
 
@@ -63,8 +79,8 @@
         <div class="tab-view" id="view-ventas">
 
         <!-- TOP KPI CARDS -->
-        <section class="kpi-grid">
-            <div class="glass-panel kpi-card">
+        <section class="kpi-strip">
+            <div class="kpi-card">
                 <div class="kpi-icon icon-sales"><i class="fa-solid fa-wallet"></i></div>
                 <div class="kpi-content">
                     <span class="kpi-title">Venta Neta del Día</span>
@@ -72,7 +88,7 @@
                     <span class="kpi-trend trend-neutral" id="kpi-sales-sub">Cargando...</span>
                 </div>
             </div>
-            <div class="glass-panel kpi-card">
+            <div class="kpi-card">
                 <div class="kpi-icon icon-goal"><i class="fa-solid fa-bullseye-arrow"></i></div>
                 <div class="kpi-content">
                     <span class="kpi-title">Meta Total Acumulada</span>
@@ -80,7 +96,7 @@
                     <span class="kpi-trend trend-neutral" id="kpi-goal-sub">Cargando...</span>
                 </div>
             </div>
-            <div class="glass-panel kpi-card">
+            <div class="kpi-card">
                 <div class="kpi-icon icon-compliance"><i class="fa-solid fa-percent"></i></div>
                 <div class="kpi-content">
                     <span class="kpi-title">% Cumplimiento</span>
@@ -90,7 +106,7 @@
                     </div>
                 </div>
             </div>
-            <div class="glass-panel kpi-card">
+            <div class="kpi-card">
                 <div class="kpi-icon icon-sites"><i class="fa-solid fa-shop"></i></div>
                 <div class="kpi-content">
                     <span class="kpi-title">Sitios de Venta</span>
@@ -115,7 +131,7 @@
                         <button class="action-btn-primary" id="btn-manage-coordinators" style="width: 100%; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);">
                             <i class="fa-solid fa-user-shield"></i> Gestionar Coordinadores
                         </button>
-                        <button class="action-btn-primary" id="btn-manage-administrators" style="width: 100%; background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);">
+                        <button class="action-btn-primary" id="btn-manage-administrators" style="width: 100%; background: linear-gradient(135deg, #0a2e73 0%, #06205a 100%);">
                             <i class="fa-solid fa-user-gear"></i> Gestionar Administradores
                         </button>
                     </div>
@@ -255,7 +271,7 @@
                 <h3 class="section-title">
                     <i class="fa-solid fa-table-list"></i> 
                     Detalle de Ventas y Metas por Sitio
-                    <span id="table-results-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.04);"></span>
+                    <span id="table-results-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
                 </h3>
                 <div class="table-search">
                     <i class="fa-solid fa-magnifying-glass"></i>
@@ -329,7 +345,7 @@
                 </div>
                 <!-- RESUMEN PRODUCTOS POR PROMOTOR -->
                 <div class="promoter-products-section" id="promoter-products-section" style="margin-top: 20px; margin-bottom: 24px;">
-                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #ffffff;"><i class="fa-solid fa-tags"></i> Resumen Productos</h5>
+                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: var(--text-primary);"><i class="fa-solid fa-tags"></i> Resumen Productos</h5>
                     <div class="promoter-offices-grid" id="promoter-products-grid">
                         <!-- Tarjetas de producto se cargan dinámicamente -->
                     </div>
@@ -337,7 +353,7 @@
 
                 <!-- RESUMEN OFICINAS POR PROMOTOR -->
                 <div class="promoter-offices-section" id="promoter-offices-section" style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 20px;">
-                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #ffffff;"><i class="fa-solid fa-building"></i> Resumen Oficinas</h5>
+                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: var(--text-primary);"><i class="fa-solid fa-building"></i> Resumen Oficinas</h5>
                     <div class="promoter-offices-grid" id="promoter-offices-grid">
                         <!-- Tarjetas de oficina se cargan dinámicamente -->
                     </div>
@@ -458,8 +474,8 @@
             <div id="betplay-content" hidden>
 
                 <!-- KPI CARDS -->
-                <section class="kpi-grid">
-                    <div class="glass-panel kpi-card">
+                <section class="kpi-strip">
+                    <div class="kpi-card">
                         <div class="kpi-icon icon-sales"><i class="fa-solid fa-wallet"></i></div>
                         <div class="kpi-content">
                             <span class="kpi-title">Monto Total</span>
@@ -467,7 +483,7 @@
                             <span class="kpi-trend trend-neutral" id="bp-kpi-ticket">Ticket prom. $0</span>
                         </div>
                     </div>
-                    <div class="glass-panel kpi-card">
+                    <div class="kpi-card">
                         <div class="kpi-icon icon-goal"><i class="fa-solid fa-receipt"></i></div>
                         <div class="kpi-content">
                             <span class="kpi-title">Transacciones</span>
@@ -475,7 +491,7 @@
                             <span class="kpi-trend trend-neutral">Total del periodo</span>
                         </div>
                     </div>
-                    <div class="glass-panel kpi-card">
+                    <div class="kpi-card">
                         <div class="kpi-icon icon-compliance"><i class="fa-solid fa-users"></i></div>
                         <div class="kpi-content">
                             <span class="kpi-title">Usuarios Únicos</span>
@@ -483,7 +499,7 @@
                             <span class="kpi-trend trend-neutral">Por identificación</span>
                         </div>
                     </div>
-                    <div class="glass-panel kpi-card">
+                    <div class="kpi-card">
                         <div class="kpi-icon icon-sites"><i class="fa-solid fa-shop"></i></div>
                         <div class="kpi-content">
                             <span class="kpi-title">Sitios de Venta</span>
@@ -551,7 +567,7 @@
                 <section class="glass-panel table-panel">
                     <div class="table-header">
                         <h3 class="section-title"><i class="fa-solid fa-database"></i> Datos Crudos (consulta base)
-                            <span id="bp-raw-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.04);"></span>
+                            <span id="bp-raw-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
                         </h3>
                         <div class="table-search">
                             <i class="fa-solid fa-magnifying-glass"></i>
@@ -572,7 +588,7 @@
                 <section class="glass-panel table-panel">
                     <div class="table-header">
                         <h3 class="section-title"><i class="fa-solid fa-table-list"></i> Detalle por Sitio de Venta
-                            <span id="bp-table-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.04);"></span>
+                            <span id="bp-table-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
                         </h3>
                         <div class="table-search">
                             <i class="fa-solid fa-magnifying-glass"></i>
@@ -733,7 +749,7 @@
                     <h4>Promotores Registrados</h4>
                     <div class="search-box-container">
                         <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                        <input type="text" id="search-promoters" placeholder="Buscar por nombre o celular..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                        <input type="text" id="search-promoters" placeholder="Buscar por nombre o celular..." style="background: rgba(255, 255, 255, 0.7); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 12px 10px 32px; color: var(--text-primary); font-size: 14px; width: 280px;">
                     </div>
                 </div>
 
@@ -817,7 +833,7 @@
                     <h4>Coordinadores Registrados</h4>
                     <div class="search-box-container">
                         <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                        <input type="text" id="search-coordinators" placeholder="Buscar por nombre, cédula o zona..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                        <input type="text" id="search-coordinators" placeholder="Buscar por nombre, cédula o zona..." style="background: rgba(255, 255, 255, 0.7); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 12px 10px 32px; color: var(--text-primary); font-size: 14px; width: 280px;">
                     </div>
                 </div>
 
@@ -885,7 +901,7 @@
                     <h4>Administradores Registrados</h4>
                     <div class="search-box-container">
                         <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                        <input type="text" id="search-administrators" placeholder="Buscar por nombre o cédula..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                        <input type="text" id="search-administrators" placeholder="Buscar por nombre o cédula..." style="background: rgba(255, 255, 255, 0.7); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 12px 10px 32px; color: var(--text-primary); font-size: 14px; width: 280px;">
                     </div>
                 </div>
 
@@ -938,6 +954,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=2.1"></script>
+    <script src="app.js?v=2.3"></script>
 </body>
 </html>

@@ -282,15 +282,34 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // --- TAB NAVIGATION ---
 function setupTabs() {
+    const tabBar = document.getElementById('tab-bar');
     const tabButtons = document.querySelectorAll('.tab-bar .tab-btn');
     const views = document.querySelectorAll('.tab-view');
+    const indicator = document.getElementById('tab-indicator');
     if (!tabButtons.length) return;
+
+    // Desliza el indicador de vidrio bajo el tab activo.
+    function moveIndicator(btn) {
+        if (!indicator || !btn) return;
+        // offsetLeft/Width relativos al .tab-bar (contenedor posicionado).
+        indicator.style.width = `${btn.offsetWidth}px`;
+        indicator.style.transform = `translateX(${btn.offsetLeft - tabBar.clientLeft}px)`;
+    }
+
+    // Posición inicial (esperar layout para medir).
+    const initialActive = document.querySelector('.tab-bar .tab-btn.active') || tabButtons[0];
+    requestAnimationFrame(() => moveIndicator(initialActive));
+    // Reposicionar si cambia el tamaño (iframe/responsive).
+    window.addEventListener('resize', () => {
+        moveIndicator(document.querySelector('.tab-bar .tab-btn.active'));
+    });
 
     tabButtons.forEach(btn => {
         btn.addEventListener('click', () => {
             const targetId = btn.dataset.view;
             // Toggle active button
             tabButtons.forEach(b => b.classList.toggle('active', b === btn));
+            moveIndicator(btn);
             // Toggle visible view
             views.forEach(v => { v.hidden = (v.id !== targetId); });
 
@@ -2822,7 +2841,7 @@ function renderTable(prejoinedData) {
                     <span class="office-chevron ${!isCollapsed ? 'expanded' : ''}">
                         <i class="fa-solid fa-chevron-right"></i>
                     </span>
-                    <span style="color:#ffffff; font-weight: 600;">${office.oficina}</span>
+                    <span style="color:var(--text-primary); font-weight: 600;">${office.oficina}</span>
                     <span class="office-sites-count">${officeSitesCount} sitios</span>
                 </div>
             </td>
@@ -2865,7 +2884,7 @@ function renderTable(prejoinedData) {
                 <td>
                     <div class="indent-site-container">
                         <span class="tree-branch-icon">└─</span>
-                        <span style="color:#ffffff; font-weight: 500;">${site.sitio_venta}</span>
+                        <span style="color:var(--text-primary); font-weight: 500;">${site.sitio_venta}</span>
                         <span style="font-size: 10px; color: var(--text-muted); font-family: monospace;">(${site.cod_sitio})</span>
                     </div>
                 </td>
@@ -3122,7 +3141,7 @@ function renderCoordinatorsList() {
     
     elements.coordinatorsListBody.innerHTML = filtered.map(c => `
         <tr data-id="${c.id}">
-            <td style="font-weight: 600; color: #ffffff;">${c.name}</td>
+            <td style="font-weight: 600; color: var(--text-primary);">${c.name}</td>
             <td>${c.cedula}</td>
             <td>${c.role}</td>
             <td><span class="badge" style="background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 6px;">${c.zone}</span></td>
@@ -3357,7 +3376,7 @@ function renderAdministratorsList() {
     
     elements.administratorsListBody.innerHTML = filtered.map(a => `
         <tr data-id="${a.id}">
-            <td style="font-weight: 600; color: #ffffff;">${a.name}</td>
+            <td style="font-weight: 600; color: var(--text-primary);">${a.name}</td>
             <td>${a.cedula}</td>
             <td>${a.phone}</td>
             <td style="text-align: center;">
@@ -3570,7 +3589,7 @@ function renderPromotersList() {
     
     elements.promotersListBody.innerHTML = filtered.map(p => `
         <tr data-id="${p.id}">
-            <td style="font-weight: 600; color: #ffffff;">${p.name}</td>
+            <td style="font-weight: 600; color: var(--text-primary);">${p.name}</td>
             <td>${p.phone}</td>
             <td><span class="badge" style="background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 6px;">${p.zone}</span></td>
             <td style="text-align: center;">
