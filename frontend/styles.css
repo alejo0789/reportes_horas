@@ -1949,13 +1949,25 @@ input:checked + .slider:before {
     padding-bottom: 4px;
 }
 
+/* Espaciado vertical estandarizado entre componentes de cada vista */
+.tab-view {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
 .tab-view[hidden] {
     display: none;
+}
+/* El contenido de Betplay también fluye con el mismo gap uniforme */
+#betplay-content {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
 }
 
 /* ===================== BETPLAY CONTROLS ===================== */
 .betplay-controls {
-    margin-bottom: 24px;
+    margin-bottom: 0;   /* el gap de la vista maneja la separación */
 }
 
 .betplay-controls-row {
@@ -2040,7 +2052,7 @@ input:checked + .slider:before {
     flex-wrap: wrap;
     align-items: center;
     gap: 10px;
-    margin-bottom: 24px;
+    margin-bottom: 0;
 }
 .bp-filters-label {
     font-weight: 700;
@@ -2259,7 +2271,7 @@ input:checked + .slider:before {
     position: relative;
     isolation: isolate;
     overflow: hidden;
-    margin-bottom: 20px;
+    margin-bottom: 0;
     padding: 14px 18px;
 }
 
