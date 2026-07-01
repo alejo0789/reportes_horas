@@ -936,7 +936,7 @@ function setupBetplayControls() {
             btn.addEventListener('click', () => {
                 State.betplay.metric = btn.dataset.metric;
                 metricToggle.querySelectorAll('.metric-btn').forEach(b => b.classList.toggle('active', b === btn));
-                if (State.betplay.resumen) renderBetplay(State.betplay.resumen);
+                if (State.betplay.resumen) renderBetplay(getBetplayRenderData());
             });
         });
     }
@@ -948,10 +948,80 @@ function setupBetplayControls() {
             btn.addEventListener('click', () => {
                 State.betplay.mapMode = btn.dataset.map;
                 mapToggle.querySelectorAll('.metric-btn').forEach(b => b.classList.toggle('active', b === btn));
-                if (State.betplay.resumen) renderBetplayMap(State.betplay.resumen.por_sitio || []);
+                if (State.betplay.resumen) renderBetplayMap(getBetplayRenderData().por_sitio || []);
             });
         });
     }
+
+    // Filtros generales del dashboard (se aplican en el navegador).
+    ['bp-filter-municipio', 'bp-filter-tipo', 'bp-filter-zona'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', applyBetplayFilters);
+    });
+    ['bp-filter-sitio', 'bp-filter-cliente'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', applyBetplayFilters);
+    });
+    const clearBtn = document.getElementById('bp-filter-clear');
+    if (clearBtn) clearBtn.addEventListener('click', () => {
+        ['bp-filter-municipio', 'bp-filter-tipo', 'bp-filter-zona', 'bp-filter-sitio', 'bp-filter-cliente']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        applyBetplayFilters();
+    });
+
+    // Exportar tabla "Detalle por Sitio de Venta" a Excel.
+    const exportBtn = document.getElementById('bp-table-export');
+    if (exportBtn) exportBtn.addEventListener('click', exportBetplayTable);
+
+    // Maximizar / restaurar el mapa a pantalla completa.
+    const maxBtn = document.getElementById('bp-map-maximize');
+    const closeBtn = document.getElementById('bp-map-close');
+    if (maxBtn) maxBtn.addEventListener('click', () => toggleBetplayMapFullscreen());
+    if (closeBtn) closeBtn.addEventListener('click', () => toggleBetplayMapFullscreen(false));
+    // ESC también cierra.
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const w = document.getElementById('bp-map-wrapper');
+            if (w && w.classList.contains('bp-map-fullscreen')) toggleBetplayMapFullscreen(false);
+        }
+    });
+}
+
+// Alterna el mapa a pantalla completa. El panel del mapa es .glass-panel
+// (backdrop-filter) → rompe position:fixed, por eso movemos el mapa al <body>
+// (portal) al maximizar y lo devolvemos a su lugar al restaurar.
+// force: true = maximizar, false = restaurar, undefined = alternar.
+function toggleBetplayMapFullscreen(force) {
+    const wrapper = document.getElementById('bp-map-wrapper');
+    const maxBtn = document.getElementById('bp-map-maximize');
+    if (!wrapper) return;
+    const isFull = wrapper.classList.contains('bp-map-fullscreen');
+    const goFull = force === undefined ? !isFull : force;
+    if (goFull === isFull) return;
+
+    if (goFull) {
+        State.betplay._mapPlaceholder = document.createComment('bp-map-portal');
+        wrapper.parentNode.insertBefore(State.betplay._mapPlaceholder, wrapper);
+        document.body.appendChild(wrapper);
+        wrapper.classList.add('bp-map-fullscreen');
+        if (maxBtn) maxBtn.innerHTML = '<i class="fa-solid fa-compress"></i> Restaurar';
+    } else {
+        wrapper.classList.add('bp-map-closing');
+        wrapper.classList.remove('bp-map-fullscreen');
+        const ph = State.betplay._mapPlaceholder;
+        const finish = () => {
+            wrapper.classList.remove('bp-map-closing');
+            if (ph && ph.parentNode) {
+                ph.parentNode.insertBefore(wrapper, ph);
+                ph.parentNode.removeChild(ph);
+            }
+            State.betplay._mapPlaceholder = null;
+            if (State.betplay.map) State.betplay.map.invalidateSize();
+        };
+        setTimeout(finish, 380);
+        if (maxBtn) maxBtn.innerHTML = '<i class="fa-solid fa-expand"></i> Maximizar';
+    }
+    if (State.betplay.map) setTimeout(() => State.betplay.map.invalidateSize(), 420);
 }
 
 // --- BETPLAY: CONSULTA A LA API ---
@@ -981,6 +1051,8 @@ async function fetchBetplay() {
 
         State.betplay.loaded = true;
         State.betplay.resumen = json.data;
+        State.betplay.type = range.type;
+        State.betplay.filters = { municipio: '', tipo: '', zona: '', sitio: '', cliente: '' };
 
         loadingEl.hidden = true;
         const totalCantidad = json.data && json.data.totales ? json.data.totales.cantidad : 0;
@@ -990,7 +1062,8 @@ async function fetchBetplay() {
             return;
         }
         contentEl.hidden = false;
-        renderBetplay(json.data);
+        populateBetplayFilters(json.data);
+        renderBetplay(getBetplayRenderData());
     } catch (err) {
         console.error('[Betplay] Error consultando resumen:', err);
         loadingEl.hidden = true;
@@ -1075,13 +1148,213 @@ function bpFormatMetric(val) {
         : formatCurrency(val);
 }
 
+// Nombres de columna crudas por tipo (para agregar en el navegador).
+const BP_KEYS = {
+    pagos:    { amount: 'VALOR_PAGO',  date: 'FEC_PAGO',  client: 'IDENTIFICACION' },
+    recargas: { amount: 'VLR_RECARGA', date: 'FEC_VENTA', client: 'NUM_CELULAR' }
+};
+
+// Re-agrega las filas crudas del detalle (misma forma que el backend) para
+// soportar el filtrado del dashboard en el navegador.
+function aggregateBetplayClient(rows, type) {
+    const k = BP_KEYS[type] || BP_KEYS.pagos;
+    const byHour = {}, byDay = {}, byZone = {}, byCity = {}, byType = {}, bySite = {}, byUser = {};
+    const siteClients = {};
+    let totalMonto = 0, totalCant = 0;
+    const usuarios = new Set(), clientes = new Set(), sitios = new Set();
+
+    const bump = (d, key, monto, labels) => {
+        if (key === null || key === undefined) key = '(sin)';
+        if (!d[key]) d[key] = { monto: 0, cantidad: 0, ...(labels || {}) };
+        d[key].monto += monto;
+        d[key].cantidad += 1;
+    };
+
+    rows.forEach(r => {
+        const monto = parseFloat(r[k.amount]) || 0;
+        totalMonto += monto; totalCant += 1;
+
+        const dt = new Date(r[k.date]);
+        if (!isNaN(dt.getTime())) {
+            bump(byHour, dt.getHours(), monto);
+            bump(byDay, dt.toISOString().slice(0, 10), monto);
+        }
+        const zona = r['Zona'] || 'Sin Zona'; bump(byZone, zona, monto, { zona });
+        const ciudad = r['Ciudad'] || 'Sin Ciudad'; bump(byCity, ciudad, monto, { ciudad });
+        const tipo = r['Tipo SV'] || 'Sin Tipo'; bump(byType, tipo, monto, { tipo });
+
+        const cod = r['Cod. Sitio'];
+        bump(bySite, cod, monto, {
+            cod_sitio: cod, sitio: r['Sitio de venta'] || 'Sin Sitio',
+            oficina: r['Oficina'] || 'Sin Oficina', zona, ciudad, tipo_sv: tipo,
+            cx: r['CX'], cy: r['CY']
+        });
+        if (cod !== null && cod !== undefined) sitios.add(cod);
+
+        const ident = r['NUM_IDENTIFICACION'];
+        if (ident !== null && ident !== undefined && String(ident).trim() !== '') {
+            bump(byUser, ident, monto, { identificacion: ident });
+            usuarios.add(ident);
+        }
+        const cli = r[k.client];
+        if (cli !== null && cli !== undefined && String(cli).trim() !== '') {
+            clientes.add(cli);
+            if (cod !== null && cod !== undefined) {
+                (siteClients[cod] = siteClients[cod] || new Set()).add(cli);
+            }
+        }
+    });
+
+    Object.keys(bySite).forEach(cod => {
+        const e = bySite[cod];
+        e.clientes = siteClients[cod] ? siteClients[cod].size : 0;
+        e.ticket_promedio = e.cantidad ? Math.round(e.monto / e.cantidad * 100) / 100 : 0;
+    });
+
+    const toList = (d, labelKey) => {
+        const items = Object.keys(d).map(kk => {
+            const e = { ...d[kk] };
+            if (labelKey && e[labelKey] === undefined) e[labelKey] = kk;
+            return e;
+        });
+        items.sort((a, b) => (b.monto || 0) - (a.monto || 0));
+        return items;
+    };
+
+    return {
+        totales: {
+            monto: Math.round(totalMonto * 100) / 100,
+            cantidad: totalCant,
+            usuarios_unicos: usuarios.size,
+            clientes_unicos: clientes.size,
+            sitios_unicos: sitios.size,
+            ticket_promedio: totalCant ? Math.round(totalMonto / totalCant * 100) / 100 : 0,
+        },
+        por_hora: Object.keys(byHour).map(h => ({ hora: Number(h), ...byHour[h] })).sort((a, b) => a.hora - b.hora),
+        por_dia: Object.keys(byDay).sort().map(dd => ({ fecha: dd, ...byDay[dd] })),
+        por_zona: toList(byZone, 'zona'),
+        por_ciudad: toList(byCity, 'ciudad'),
+        por_tipo_sv: toList(byType, 'tipo'),
+        por_sitio: toList(bySite, 'cod_sitio'),
+        por_usuario: toList(byUser, 'identificacion'),
+        detalle: rows,
+        detalle_total: rows.length,
+    };
+}
+
+// Devuelve la data a renderizar: la del servidor si no hay filtros, o una
+// re-agregación de las filas del detalle filtradas.
+function getBetplayRenderData() {
+    const base = State.betplay.resumen;
+    if (!base) return base;
+    const f = State.betplay.filters || {};
+    const active = f.municipio || f.tipo || f.zona || f.sitio || f.cliente;
+    const infoEl = document.getElementById('bp-filters-info');
+    if (!active) { if (infoEl) infoEl.textContent = ''; return base; }
+
+    const k = BP_KEYS[State.betplay.type] || BP_KEYS.pagos;
+    const rows = (base.detalle || []).filter(r => {
+        if (f.municipio && (r['Ciudad'] || 'Sin Ciudad') !== f.municipio) return false;
+        if (f.tipo && (r['Tipo SV'] || 'Sin Tipo') !== f.tipo) return false;
+        if (f.zona && (r['Zona'] || 'Sin Zona') !== f.zona) return false;
+        if (f.sitio) {
+            const s = (String(r['Sitio de venta'] || '') + ' ' + String(r['Cod. Sitio'] || '')).toLowerCase();
+            if (!s.includes(f.sitio.toLowerCase())) return false;
+        }
+        if (f.cliente) {
+            const c = String(r[k.client] ?? '').toLowerCase();
+            if (!c.includes(f.cliente.toLowerCase())) return false;
+        }
+        return true;
+    });
+
+    if (infoEl) {
+        const capped = (base.detalle_total || 0) > (base.detalle || []).length;
+        infoEl.textContent = `Filtrado: ${rows.length.toLocaleString('es-CO')} transacciones`
+            + (capped ? ` (sobre muestra de ${(base.detalle || []).length.toLocaleString('es-CO')})` : '');
+    }
+    return aggregateBetplayClient(rows, State.betplay.type);
+}
+
+// Llena los selects de filtro con los valores disponibles del periodo.
+function populateBetplayFilters(data) {
+    const uniq = (arr) => Array.from(new Set(arr.filter(x => x !== null && x !== undefined && x !== '')))
+        .sort((a, b) => String(a).localeCompare(String(b), 'es'));
+    const fill = (id, items, ph) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const cur = el.value;
+        el.innerHTML = `<option value="">${ph}</option>`
+            + items.map(v => `<option value="${String(v).replace(/"/g, '&quot;')}">${v}</option>`).join('');
+        el.value = cur;
+    };
+    fill('bp-filter-municipio', uniq((data.por_ciudad || []).map(c => c.ciudad)), 'Todos los municipios');
+    fill('bp-filter-tipo', uniq((data.por_tipo_sv || []).map(t => t.tipo)), 'Todos los tipos de SV');
+    fill('bp-filter-zona', uniq((data.por_zona || []).map(z => z.zona)), 'Todas las zonas');
+}
+
+// Lee los filtros y re-renderiza el dashboard.
+function applyBetplayFilters() {
+    if (!State.betplay.resumen) return;
+    const val = (id) => { const e = document.getElementById(id); return e ? e.value.trim() : ''; };
+    State.betplay.filters = {
+        municipio: val('bp-filter-municipio'),
+        tipo: val('bp-filter-tipo'),
+        zona: val('bp-filter-zona'),
+        sitio: val('bp-filter-sitio'),
+        cliente: val('bp-filter-cliente'),
+    };
+    renderBetplay(getBetplayRenderData());
+}
+
+// Exporta la tabla "Detalle por Sitio de Venta" (respetando filtros) a Excel.
+function exportBetplayTable() {
+    if (typeof XLSX === 'undefined') { alert('No se pudo cargar el exportador de Excel.'); return; }
+    const data = getBetplayRenderData();
+    const sites = (data && data.por_sitio) || [];
+    if (!sites.length) { alert('No hay datos para exportar.'); return; }
+    const rows = sites.map(s => ({
+        'Cod. Sitio': s.cod_sitio ?? '',
+        'Sitio de Venta': s.sitio || '',
+        'Oficina': s.oficina || '',
+        'Zona': s.zona || '',
+        'Municipio': s.ciudad || '',
+        'Monto': s.monto || 0,
+        'Transacciones': s.cantidad || 0,
+        'Prom. Transacción': s.ticket_promedio || 0,
+        'Clientes': s.clientes || 0,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Detalle por Sitio');
+    const tipo = State.betplay.type || 'betplay';
+    const fecha = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `betplay_${tipo}_detalle_sitios_${fecha}.xlsx`);
+}
+
 function renderBetplay(data) {
     renderBetplayKPIs(data.totales || {});
     renderBetplayTimeChart(data);
     renderBetplayDonut('zona', 'bp-chart-zona', data.por_zona || [], 'zona');
     renderBetplayDonut('tipo', 'bp-chart-tipo', data.por_tipo_sv || [], 'tipo');
+    renderBetplayBar('municipio', 'bp-chart-municipio', (data.por_ciudad || []).slice(0, 10), 'ciudad');
+    renderBetplayDonut('municipioDonut', 'bp-chart-municipio-donut', (data.por_ciudad || []).slice(0, 8), 'ciudad');
     renderBetplayBar('sitios', 'bp-chart-sitios', (data.por_sitio || []).slice(0, 10), 'sitio');
     renderBetplayBar('usuarios', 'bp-chart-usuarios', (data.por_usuario || []).slice(0, 10), 'identificacion');
+
+    // Solo recargas: Top 10 sitios con MENOS recargas (menor métrica, entre los que vendieron).
+    const menosRow = document.getElementById('bp-menos-row');
+    if (menosRow) {
+        const isRecargas = State.betplay.type === 'recargas';
+        menosRow.hidden = !isRecargas;
+        if (isRecargas) {
+            const menos = (data.por_sitio || [])
+                .filter(s => bpMetricValue(s) > 0)
+                .sort((a, b) => bpMetricValue(a) - bpMetricValue(b))
+                .slice(0, 10);
+            renderBetplayBar('menos', 'bp-chart-menos', menos, 'sitio');
+        }
+    }
     renderBetplayMap(data.por_sitio || []);
     renderBetplayRaw(data.detalle || [], data.detalle_total || 0);
     renderBetplayTable(data.por_sitio || []);
@@ -1093,6 +1366,40 @@ function renderBetplayKPIs(totales) {
     document.getElementById('bp-kpi-cantidad').textContent = (totales.cantidad || 0).toLocaleString('es-CO');
     document.getElementById('bp-kpi-usuarios').textContent = (totales.usuarios_unicos || 0).toLocaleString('es-CO');
     document.getElementById('bp-kpi-sitios').textContent = (totales.sitios_unicos || 0).toLocaleString('es-CO');
+    const cliEl = document.getElementById('bp-kpi-clientes');
+    if (cliEl) cliEl.textContent = (totales.clientes_unicos || 0).toLocaleString('es-CO');
+    const cliSub = document.getElementById('bp-kpi-clientes-sub');
+    if (cliSub) cliSub.textContent = State.betplay.type === 'recargas' ? 'Por N° celular' : 'Por identificación';
+}
+
+// Callbacks reutilizables para tortas: muestran porcentaje en tooltip.
+function donutPercentTooltip(formatter) {
+    return {
+        label: (ctx) => {
+            const val = ctx.parsed;
+            const total = ctx.dataset.data.reduce((a, b) => a + (b || 0), 0) || 1;
+            const pct = (val / total * 100).toFixed(1);
+            const shown = formatter ? formatter(val) : val.toLocaleString('es-CO');
+            return `${ctx.label}: ${shown} (${pct}%)`;
+        }
+    };
+}
+
+// Plugin de labels de leyenda con porcentaje para donuts.
+function donutLegendLabels(chart) {
+    const data = chart.data;
+    const values = data.datasets[0].data;
+    const total = values.reduce((a, b) => a + (b || 0), 0) || 1;
+    return data.labels.map((label, i) => {
+        const pct = (values[i] / total * 100).toFixed(1);
+        return {
+            text: `${label} (${pct}%)`,
+            fillStyle: data.datasets[0].backgroundColor[i],
+            strokeStyle: '#ffffff',
+            lineWidth: 1,
+            index: i
+        };
+    });
 }
 
 // Gráfico de barras temporal: por hora (1 día) o por día (rango con varios días).
@@ -1152,8 +1459,15 @@ function renderBetplayDonut(key, canvasId, items, labelField) {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: { position: 'right', labels: { color: '#52627a', font: { size: 11 } } },
-                tooltip: { callbacks: { label: ctx => `${ctx.label}: ${bpFormatMetric(ctx.parsed)}` } }
+                legend: {
+                    position: 'right',
+                    labels: {
+                        color: '#52627a',
+                        font: { size: 11 },
+                        generateLabels: donutLegendLabels
+                    }
+                },
+                tooltip: { callbacks: donutPercentTooltip(bpFormatMetric) }
             }
         }
     });
@@ -1213,7 +1527,7 @@ function renderBetplayMap(sites) {
 
     // Sitios con coordenadas válidas
     const points = sites
-        .map(s => ({ lat: parseFloat(s.cy), lng: parseFloat(s.cx), monto: s.monto || 0, cantidad: s.cantidad || 0, sitio: s.sitio, oficina: s.oficina, zona: s.zona }))
+        .map(s => ({ lat: parseFloat(s.cy), lng: parseFloat(s.cx), monto: s.monto || 0, cantidad: s.cantidad || 0, sitio: s.sitio, oficina: s.oficina, zona: s.zona, ciudad: s.ciudad, tipo_sv: s.tipo_sv, clientes: s.clientes || 0 }))
         .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.lat !== 0 && p.lng !== 0);
 
     // Inicializar el mapa una sola vez
@@ -1244,7 +1558,11 @@ function renderBetplayMap(sites) {
                 radius, color: '#1257d1', fillColor: '#1257d1', fillOpacity: 0.5, weight: 1
             }).bindPopup(
                 `<strong>${p.sitio || 'Sitio'}</strong><br>${p.oficina || ''} — ${p.zona || ''}<br>`
-                + `Monto: ${formatCurrency(p.monto)}<br>Transacciones: ${p.cantidad.toLocaleString('es-CO')}`
+                + `${p.ciudad ? 'Municipio: ' + p.ciudad + '<br>' : ''}`
+                + `${p.tipo_sv ? 'Tipo SV: ' + p.tipo_sv + '<br>' : ''}`
+                + `Monto: ${formatCurrency(p.monto)}<br>Transacciones: ${p.cantidad.toLocaleString('es-CO')}<br>`
+                + `Clientes: ${p.clientes.toLocaleString('es-CO')}<br>`
+                + `<span style="color:#64748b;">Lat: ${p.lat.toFixed(5)} · Long: ${p.lng.toFixed(5)}</span>`
             ).addTo(layer);
         });
         layer.addTo(map);
@@ -1324,12 +1642,13 @@ function renderBetplayTable(sites) {
             || String(s.sitio || '').toLowerCase().includes(ft)
             || String(s.oficina || '').toLowerCase().includes(ft)
             || String(s.zona || '').toLowerCase().includes(ft)
+            || String(s.ciudad || '').toLowerCase().includes(ft)
             || String(s.cod_sitio || '').toLowerCase().includes(ft));
 
         if (countEl) countEl.textContent = `${rows.length} sitios`;
 
         if (!rows.length) {
-            body.innerHTML = '<tr><td class="empty-table" colspan="6">Sin resultados.</td></tr>';
+            body.innerHTML = '<tr><td class="empty-table" colspan="9">Sin resultados.</td></tr>';
             return;
         }
         body.innerHTML = rows.map(s => `
@@ -1338,8 +1657,11 @@ function renderBetplayTable(sites) {
                 <td>${s.sitio || 'N/D'}</td>
                 <td>${s.oficina || 'N/D'}</td>
                 <td>${s.zona || 'N/D'}</td>
+                <td>${s.ciudad || 'N/D'}</td>
                 <td style="text-align: right;">${formatCurrency(s.monto || 0)}</td>
                 <td style="text-align: right;">${(s.cantidad || 0).toLocaleString('es-CO')}</td>
+                <td style="text-align: right;">${formatCurrency(s.ticket_promedio || 0)}</td>
+                <td style="text-align: right;">${(s.clientes || 0).toLocaleString('es-CO')}</td>
             </tr>
         `).join('');
     };

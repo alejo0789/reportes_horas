@@ -12,11 +12,13 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- SheetJS (exportar tablas a Excel) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <!-- Leaflet (mapa geográfico + heatmap) -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-    <link rel="stylesheet" href="styles.css?v=3.0">
+    <link rel="stylesheet" href="styles.css?v=3.4">
 </head>
 <body>
     <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
@@ -485,6 +487,24 @@
             <!-- CONTENIDO (KPIs + GRAFICOS + MAPA + TABLA) -->
             <div id="betplay-content" hidden>
 
+                <!-- FILTROS GENERALES (aplican a todo el dashboard) -->
+                <section class="glass-panel betplay-filters" id="bp-filters">
+                    <span class="bp-filters-label"><i class="fa-solid fa-filter"></i> Filtros</span>
+                    <select id="bp-filter-municipio" class="filter-select-sm"><option value="">Todos los municipios</option></select>
+                    <select id="bp-filter-tipo" class="filter-select-sm"><option value="">Todos los tipos de SV</option></select>
+                    <select id="bp-filter-zona" class="filter-select-sm"><option value="">Todas las zonas</option></select>
+                    <div class="input-with-icon">
+                        <i class="fa-solid fa-magnifying-glass input-icon"></i>
+                        <input type="text" id="bp-filter-sitio" placeholder="Sitio de venta...">
+                    </div>
+                    <div class="input-with-icon">
+                        <i class="fa-solid fa-magnifying-glass input-icon"></i>
+                        <input type="text" id="bp-filter-cliente" placeholder="Cliente (cédula/celular)...">
+                    </div>
+                    <button type="button" class="btn-table-action" id="bp-filter-clear"><i class="fa-solid fa-eraser"></i> Limpiar</button>
+                    <span class="bp-filters-info" id="bp-filters-info"></span>
+                </section>
+
                 <!-- KPI CARDS -->
                 <section class="kpi-strip">
                     <div class="kpi-card">
@@ -504,11 +524,19 @@
                         </div>
                     </div>
                     <div class="kpi-card">
-                        <div class="kpi-icon icon-compliance"><i class="fa-solid fa-users"></i></div>
+                        <div class="kpi-icon icon-compliance"><i class="fa-solid fa-user-tie"></i></div>
                         <div class="kpi-content">
                             <span class="kpi-title">Usuarios Únicos</span>
                             <h2 class="kpi-value" id="bp-kpi-usuarios">0</h2>
-                            <span class="kpi-trend trend-neutral">Por identificación</span>
+                            <span class="kpi-trend trend-neutral">Vendedores</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-icon icon-goal"><i class="fa-solid fa-users"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-title">Clientes Únicos</span>
+                            <h2 class="kpi-value" id="bp-kpi-clientes">0</h2>
+                            <span class="kpi-trend trend-neutral" id="bp-kpi-clientes-sub">Clientes finales</span>
                         </div>
                     </div>
                     <div class="kpi-card">
@@ -547,6 +575,22 @@
                     </div>
                 </div>
 
+                <!-- FILA: TOP MUNICIPIOS -->
+                <div class="secondary-charts-grid">
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-city"></i> Top 10 Municipios</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-municipio"></canvas>
+                        </div>
+                    </div>
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-chart-pie"></i> Distribución por Municipio</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-municipio-donut"></canvas>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- TERCERA FILA: TOP SITIOS + TOP USUARIOS -->
                 <div class="secondary-charts-grid">
                     <div class="glass-panel chart-panel">
@@ -563,51 +607,55 @@
                     </div>
                 </div>
 
+                <!-- SOLO RECARGAS: TOP 10 SITIOS CON MENOS RECARGAS -->
+                <div class="secondary-charts-grid" id="bp-menos-row" hidden>
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-arrow-trend-down"></i> Top 10 Sitios con Menos Recargas</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-menos"></canvas>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- MAPA GEOGRAFICO -->
                 <div class="glass-panel chart-panel">
                     <div class="chart-header">
                         <h3 class="section-title"><i class="fa-solid fa-map-location-dot"></i> Mapa de Ventas por Sitio</h3>
-                        <div class="betplay-map-toggle" id="betplay-map-toggle">
-                            <button type="button" class="metric-btn active" data-map="points">Puntos</button>
-                            <button type="button" class="metric-btn" data-map="heat">Mapa de calor</button>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <div class="betplay-map-toggle" id="betplay-map-toggle">
+                                <button type="button" class="metric-btn active" data-map="points">Puntos</button>
+                                <button type="button" class="metric-btn" data-map="heat">Mapa de calor</button>
+                            </div>
+                            <button type="button" class="btn-table-action" id="bp-map-maximize" title="Maximizar mapa">
+                                <i class="fa-solid fa-expand"></i> Maximizar
+                            </button>
                         </div>
                     </div>
-                    <div id="bp-map"></div>
+                    <div class="bp-map-wrapper" id="bp-map-wrapper">
+                        <button type="button" class="bp-map-close" id="bp-map-close" title="Cerrar pantalla completa">
+                            <i class="fa-solid fa-xmark"></i> Cerrar
+                        </button>
+                        <div id="bp-map"></div>
+                    </div>
                 </div>
 
-                <!-- TABLA DATOS CRUDOS (CONSULTA BASE SIN AGRUPAR) -->
-                <section class="glass-panel table-panel">
-                    <div class="table-header">
-                        <h3 class="section-title"><i class="fa-solid fa-database"></i> Datos Crudos (consulta base)
-                            <span id="bp-raw-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
-                        </h3>
-                        <div class="table-search">
-                            <i class="fa-solid fa-magnifying-glass"></i>
-                            <input type="text" id="bp-raw-search" placeholder="Buscar en cualquier columna...">
-                        </div>
-                    </div>
-                    <div class="table-responsive betplay-raw-scroll">
-                        <table class="data-table" id="bp-raw-table">
-                            <thead id="bp-raw-thead"></thead>
-                            <tbody id="bp-raw-body">
-                                <tr><td class="empty-table">Sin datos.</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </section>
-
-                <!-- TABLA DETALLE POR SITIO -->
+                <!-- TABLA DETALLE POR SITIO (primero, con scroll) -->
                 <section class="glass-panel table-panel">
                     <div class="table-header">
                         <h3 class="section-title"><i class="fa-solid fa-table-list"></i> Detalle por Sitio de Venta
                             <span id="bp-table-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
                         </h3>
-                        <div class="table-search">
-                            <i class="fa-solid fa-magnifying-glass"></i>
-                            <input type="text" id="bp-table-search" placeholder="Buscar sitio, oficina o zona...">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <div class="table-search">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                                <input type="text" id="bp-table-search" placeholder="Buscar sitio, oficina, zona o municipio...">
+                            </div>
+                            <button type="button" class="btn-table-action" id="bp-table-export" title="Exportar a Excel">
+                                <i class="fa-solid fa-file-excel"></i> Exportar
+                            </button>
                         </div>
                     </div>
-                    <div class="table-responsive">
+                    <div class="table-responsive betplay-detalle-scroll">
                         <table class="data-table" id="bp-table">
                             <thead>
                                 <tr>
@@ -615,16 +663,44 @@
                                     <th>Sitio de Venta</th>
                                     <th>Oficina</th>
                                     <th>Zona</th>
+                                    <th>Municipio</th>
                                     <th style="text-align: right;">Monto</th>
                                     <th style="text-align: right;">Transacciones</th>
+                                    <th style="text-align: right;">Prom. Transacción</th>
+                                    <th style="text-align: right;">Clientes</th>
                                 </tr>
                             </thead>
                             <tbody id="bp-table-body">
-                                <tr><td class="empty-table" colspan="6">Sin datos.</td></tr>
+                                <tr><td class="empty-table" colspan="9">Sin datos.</td></tr>
                             </tbody>
                         </table>
                     </div>
                 </section>
+
+                <!-- TABLA DATOS CRUDOS (colapsable, colapsada por defecto) -->
+                <details class="glass-panel table-panel bp-collapsible" id="bp-raw-details">
+                    <summary class="bp-collapsible-summary">
+                        <span class="section-title" style="border:none; padding:0;">
+                            <i class="fa-solid fa-database"></i> Datos Crudos (consulta base)
+                            <span id="bp-raw-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
+                        </span>
+                        <i class="fa-solid fa-chevron-down bp-collapsible-chevron"></i>
+                    </summary>
+                    <div class="bp-collapsible-body">
+                        <div class="table-search" style="margin: 8px 0 12px;">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="bp-raw-search" placeholder="Buscar en cualquier columna...">
+                        </div>
+                        <div class="table-responsive betplay-raw-scroll">
+                            <table class="data-table" id="bp-raw-table">
+                                <thead id="bp-raw-thead"></thead>
+                                <tbody id="bp-raw-body">
+                                    <tr><td class="empty-table">Sin datos.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </details>
 
             </div><!-- /#betplay-content -->
 
@@ -946,6 +1022,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=2.6"></script>
+    <script src="app.js?v=2.9"></script>
 </body>
 </html>

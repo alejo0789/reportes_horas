@@ -2034,7 +2034,110 @@ input:checked + .slider:before {
     box-shadow: 0 4px 12px rgba(18, 87, 209, 0.30);
 }
 
+/* FILTROS GENERALES BETPLAY */
+.betplay-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 24px;
+}
+.bp-filters-label {
+    font-weight: 700;
+    color: var(--brand-blue);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+}
+.betplay-filters .filter-select-sm {
+    width: auto;
+    min-width: 170px;
+}
+.betplay-filters .input-with-icon {
+    width: auto;
+    min-width: 190px;
+}
+.bp-filters-info {
+    font-size: 12px;
+    color: var(--brand-blue);
+    font-weight: 600;
+    margin-left: auto;
+}
+
 /* MAPA LEAFLET */
+.bp-map-wrapper {
+    position: relative;
+}
+.bp-map-wrapper.bp-map-fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    background: #ffffff;
+    padding: 12px;
+    box-shadow: 0 0 0 100vmax rgba(10, 46, 115, 0.35);
+    animation: bpMapIn 0.55s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.bp-map-wrapper.bp-map-fullscreen #bp-map {
+    height: 100%;
+    margin-top: 0;
+    border-radius: 14px;
+}
+
+/* Animación de salida */
+.bp-map-wrapper.bp-map-closing {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    background: #ffffff;
+    padding: 12px;
+    box-shadow: 0 0 0 100vmax rgba(10, 46, 115, 0);
+    animation: bpMapOut 0.4s cubic-bezier(0.4, 0, 0.6, 1) forwards;
+}
+.bp-map-wrapper.bp-map-closing #bp-map {
+    height: 100%;
+    margin-top: 0;
+    border-radius: 14px;
+}
+
+@keyframes bpMapIn {
+    from { opacity: 0; transform: scale(0.90); }
+    to   { opacity: 1; transform: scale(1); }
+}
+@keyframes bpMapOut {
+    from { opacity: 1; transform: scale(1); }
+    to   { opacity: 0; transform: scale(0.92); }
+}
+
+/* Botón flotante de cerrar (solo visible en pantalla completa) */
+.bp-map-close {
+    display: none;
+    position: absolute;
+    top: 22px;
+    right: 22px;
+    z-index: 3100;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 16px;
+    border: none;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--brand-blue) 0%, var(--brand-blue-deep) 100%);
+    color: #ffffff;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(10, 46, 115, 0.4);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.bp-map-close:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 22px rgba(10, 46, 115, 0.5);
+}
+.bp-map-wrapper.bp-map-fullscreen .bp-map-close,
+.bp-map-wrapper.bp-map-closing .bp-map-close {
+    display: inline-flex;
+}
 #bp-map {
     height: 460px;
     width: 100%;
@@ -2465,6 +2568,45 @@ input:checked + .slider:before {
     top: 0;
     z-index: 2;
     background: #dbe6f7;
+}
+
+/* TABLA DETALLE POR SITIO: scroll vertical con cabecera fija */
+.betplay-detalle-scroll {
+    max-height: 480px;
+    overflow: auto;
+}
+.betplay-detalle-scroll thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #dbe6f7;
+}
+
+/* PANEL COLAPSABLE (Datos Crudos) */
+.bp-collapsible > summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    user-select: none;
+}
+.bp-collapsible > summary::-webkit-details-marker { display: none; }
+.bp-collapsible-chevron {
+    color: var(--brand-blue);
+    transition: transform 0.25s ease;
+    flex-shrink: 0;
+}
+.bp-collapsible[open] .bp-collapsible-chevron {
+    transform: rotate(180deg);
+}
+.bp-collapsible-body {
+    animation: bpCollapseIn 0.25s ease;
+}
+@keyframes bpCollapseIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
 /* ESTADO DE CARGA */

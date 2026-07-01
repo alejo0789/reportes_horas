@@ -1644,11 +1644,15 @@ BETPLAY_CONFIG = {
         "query": PAGOS_BETPLAY_COMPLETO,
         "amount_key": "VALOR_PAGO",
         "date_key": "FEC_PAGO",
+        # Cédula del CLIENTE final (distinta del vendedor NUM_IDENTIFICACION).
+        "client_key": "IDENTIFICACION",
     },
     "recargas": {
         "query": RECARGAS_BETPLAY_COMPLETO,
         "amount_key": "VLR_RECARGA",
         "date_key": "FEC_VENTA",
+        # En recargas el identificador del cliente es el número de celular.
+        "client_key": "NUM_CELULAR",
     },
 }
 
@@ -1683,10 +1687,14 @@ def _day_of(date_str):
         return None
 
 
-def aggregate_betplay(rows, amount_key, date_key):
+def aggregate_betplay(rows, amount_key, date_key, client_key=None):
     """
     Builds pre-calculated aggregations over raw Betplay rows.
     Each group carries both 'monto' (sum of amount) and 'cantidad' (row count).
+
+    client_key: columna con la cédula/identificador del CLIENTE final
+    (IDENTIFICACION en pagos, NUM_CELULAR en recargas). Se usa para contar
+    clientes únicos (globales y por sitio), aparte de los usuarios/vendedores.
     """
     by_hour = {}        # hour(int) -> {monto, cantidad}
     by_day = {}         # 'YYYY-MM-DD' -> {monto, cantidad}
@@ -1694,13 +1702,15 @@ def aggregate_betplay(rows, amount_key, date_key):
     by_city = {}        # ciudad -> {monto, cantidad}
     by_type_sv = {}     # tipo SV -> {monto, cantidad}
     by_office = {}      # cod_oficina -> {oficina, monto, cantidad}
-    by_site = {}        # cod_sitio -> {sitio, oficina, zona, cx, cy, monto, cantidad}
+    by_site = {}        # cod_sitio -> {sitio, oficina, zona, ciudad, tipo_sv, cx, cy, monto, cantidad}
     by_user = {}        # identificacion -> {monto, cantidad}
     by_channel = {}     # canal -> {monto, cantidad}
+    site_clients = {}   # cod_sitio -> set(client ids)  (para contar clientes por sitio)
 
     total_monto = 0.0
     total_cantidad = 0
     usuarios = set()
+    clientes = set()
     sitios = set()
 
     def bump(d, key, monto, **labels):
@@ -1738,7 +1748,7 @@ def aggregate_betplay(rows, amount_key, date_key):
         cod_of = r.get("Cod. Oficina")
         bump(by_office, cod_of, monto, oficina=(r.get("Oficina") or "Sin Oficina"), cod_oficina=cod_of)
 
-        # Por sitio (incluye coordenadas para el mapa)
+        # Por sitio (incluye coordenadas para el mapa, municipio y tipo SV)
         cod_sitio = r.get("Cod. Sitio")
         bump(
             by_site, cod_sitio, monto,
@@ -1746,17 +1756,27 @@ def aggregate_betplay(rows, amount_key, date_key):
             sitio=(r.get("Sitio de venta") or "Sin Sitio"),
             oficina=(r.get("Oficina") or "Sin Oficina"),
             zona=zona,
+            ciudad=ciudad,
+            tipo_sv=tipo,
             cx=r.get("CX"),
             cy=r.get("CY"),
         )
         if cod_sitio is not None:
             sitios.add(cod_sitio)
 
-        # Por usuario (identificación)
+        # Por usuario/vendedor (número de identificación del usuario del sistema)
         ident = r.get("NUM_IDENTIFICACION")
         if ident is not None and str(ident).strip() != "":
             bump(by_user, ident, monto, identificacion=ident)
             usuarios.add(ident)
+
+        # Por CLIENTE final (IDENTIFICACION en pagos / NUM_CELULAR en recargas)
+        if client_key:
+            cli = r.get(client_key)
+            if cli is not None and str(cli).strip() != "":
+                clientes.add(cli)
+                if cod_sitio is not None:
+                    site_clients.setdefault(cod_sitio, set()).add(cli)
 
         # Por canal
         canal = r.get("IDE_CANAL")
@@ -1773,11 +1793,18 @@ def aggregate_betplay(rows, amount_key, date_key):
         items.sort(key=lambda x: x.get(sort_key, 0), reverse=reverse)
         return items
 
+    # Enriquecer cada sitio con clientes únicos y ticket promedio por transacción.
+    for cod_sitio, entry in by_site.items():
+        entry["clientes"] = len(site_clients.get(cod_sitio, ()))
+        cant = entry.get("cantidad", 0)
+        entry["ticket_promedio"] = round(entry.get("monto", 0) / cant, 2) if cant else 0
+
     return {
         "totales": {
             "monto": round(total_monto, 2),
             "cantidad": total_cantidad,
             "usuarios_unicos": len(usuarios),
+            "clientes_unicos": len(clientes),
             "sitios_unicos": len(sitios),
             "ticket_promedio": round(total_monto / total_cantidad, 2) if total_cantidad else 0,
         },
@@ -1851,9 +1878,11 @@ def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
         logger.warning(f"Betplay DB query failed. Serving stale cache. Errors: {errors}")
         return {"source": "LOCAL_CACHE_STALE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
 
-    # 4. Aggregate and cache (incluye filas crudas con tope para no inflar el payload)
-    DETALLE_LIMIT = 2000
-    resumen = aggregate_betplay(rows, cfg["amount_key"], cfg["date_key"])
+    # 4. Aggregate and cache (incluye filas crudas con tope para no inflar el payload).
+    # Tope amplio porque el filtrado del dashboard se hace en el navegador sobre
+    # estas filas; si se supera, los filtros operan sobre una muestra.
+    DETALLE_LIMIT = 20000
+    resumen = aggregate_betplay(rows, cfg["amount_key"], cfg["date_key"], client_key=cfg.get("client_key"))
     resumen["detalle"] = rows[:DETALLE_LIMIT]
     resumen["detalle_total"] = len(rows)
     set_cached_sales(cache_key, resumen)
