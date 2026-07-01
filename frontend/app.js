@@ -313,6 +313,10 @@ function setupTabs() {
             // Toggle visible view
             views.forEach(v => { v.hidden = (v.id !== targetId); });
 
+            // El toolbar del asistente (selector + estado) solo se ve en su vista.
+            const asistToolbar = document.getElementById('asistente-conn');
+            if (asistToolbar) asistToolbar.hidden = (targetId !== 'view-asistente');
+
             // Al abrir Betplay por primera vez, consultar automáticamente el día actual.
             if (targetId === 'view-betplay' && !State.betplay.loaded) {
                 fetchBetplay();
@@ -346,7 +350,15 @@ async function checkAssistantHealth() {
         const json = await res.json();
         if (json.online) {
             indicator.classList.add('online');
-            text.textContent = `Modelo conectado (${json.configured_model || 'local'})`;
+            // Mostrar el modelo realmente CARGADO (no el configurado por defecto).
+            let modelName = json.configured_model || 'local';
+            try {
+                const mres = await fetch(`${API_BASE}/api/assistant/models?t=${Date.now()}`);
+                const mjson = await mres.json();
+                const loaded = (mjson.models || []).find(m => m.loaded);
+                if (loaded) modelName = loaded.id || loaded.label;
+            } catch (_) { /* si falla, se queda el configurado */ }
+            text.textContent = `Modelo conectado (${modelName})`;
         } else {
             indicator.classList.add('offline');
             text.textContent = 'Sin conexión con el modelo (Mac inaccesible)';
@@ -747,8 +759,8 @@ function buildChartIsland(jsonStr) {
         return {
             label: s.label || `Serie ${i + 1}`,
             data: s.data || [],
-            backgroundColor: isPieLike ? BETPLAY_PALETTE : (chartType === 'line' ? 'rgba(99,102,241,0.2)' : color + '99'),
-            borderColor: isPieLike ? 'rgba(11,13,25,0.8)' : color,
+            backgroundColor: isPieLike ? BETPLAY_PALETTE : (chartType === 'line' ? 'rgba(18,87,209,0.2)' : color + '99'),
+            borderColor: isPieLike ? '#ffffff' : color,
             borderWidth: isPieLike ? 2 : 1.5,
             borderRadius: chartType === 'bar' ? 4 : 0,
             fill: chartType === 'line'
@@ -773,11 +785,11 @@ function buildChartIsland(jsonStr) {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: { display: isPieLike || datasets.length > 1, labels: { color: '#94a3b8', font: { size: 11 } } }
+                    legend: { display: isPieLike || datasets.length > 1, labels: { color: '#52627a', font: { size: 11 } } }
                 },
                 scales: isPieLike ? {} : {
-                    x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-                    y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+                    x: { ticks: { color: '#52627a', font: { size: 10 } }, grid: { color: 'rgba(15,37,64,0.08)' } },
+                    y: { ticks: { color: '#52627a', font: { size: 10 } }, grid: { color: 'rgba(15,37,64,0.08)' } }
                 }
             }
         });
@@ -1030,11 +1042,26 @@ function updateBetplaySelectionSummary(range) {
     el.textContent = `Mostrando: ${tipo} — ${periodo}`;
 }
 
-// --- BETPLAY: RENDER ---
-const BETPLAY_PALETTE = [
-    '#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ef4444',
-    '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#3b82f6'
+// --- PALETA CATEGÓRICA DE MARCA (tortas / barras multicolor) ---
+// Empieza por azul y amarillo de marca; el resto son colores bien
+// diferenciables para muchas categorías.
+const CHART_PALETTE = [
+    '#1257d1', // azul marca
+    '#ffc400', // amarillo marca
+    '#16a34a', // verde
+    '#f97316', // naranja
+    '#8b5cf6', // violeta
+    '#06b6d4', // cian
+    '#ec4899', // rosa
+    '#0a2e73', // azul profundo
+    '#14b8a6', // teal
+    '#eab308', // ocre
+    '#ef4444', // rojo
+    '#64748b'  // gris azulado
 ];
+
+// --- BETPLAY: RENDER ---
+const BETPLAY_PALETTE = CHART_PALETTE;
 
 // Devuelve el valor de la métrica activa (monto o cantidad) de un grupo agregado.
 function bpMetricValue(item) {
@@ -1096,8 +1123,8 @@ function renderBetplayTimeChart(data) {
             datasets: [{
                 label: metricLabel,
                 data: values,
-                backgroundColor: 'rgba(99, 102, 241, 0.6)',
-                borderColor: '#6366f1',
+                backgroundColor: 'rgba(18, 87, 209, 0.6)',
+                borderColor: '#1257d1',
                 borderWidth: 1,
                 borderRadius: 4
             }]
@@ -1117,7 +1144,7 @@ function renderBetplayDonut(key, canvasId, items, labelField) {
             datasets: [{
                 data: values,
                 backgroundColor: BETPLAY_PALETTE,
-                borderColor: 'rgba(11, 13, 25, 0.8)',
+                borderColor: '#ffffff',
                 borderWidth: 2
             }]
         },
@@ -1125,7 +1152,7 @@ function renderBetplayDonut(key, canvasId, items, labelField) {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: { position: 'right', labels: { color: '#94a3b8', font: { size: 11 } } },
+                legend: { position: 'right', labels: { color: '#52627a', font: { size: 11 } } },
                 tooltip: { callbacks: { label: ctx => `${ctx.label}: ${bpFormatMetric(ctx.parsed)}` } }
             }
         }
@@ -1142,8 +1169,8 @@ function renderBetplayBar(key, canvasId, items, labelField) {
             datasets: [{
                 label: State.betplay.metric === 'cantidad' ? 'Transacciones' : 'Monto',
                 data: values,
-                backgroundColor: 'rgba(6, 182, 212, 0.6)',
-                borderColor: '#06b6d4',
+                backgroundColor: 'rgba(255, 196, 0, 0.75)',
+                borderColor: '#e0a800',
                 borderWidth: 1,
                 borderRadius: 4
             }]
@@ -1163,8 +1190,8 @@ function betplayChartOptions(horizontal) {
             tooltip: { callbacks: { label: ctx => bpFormatMetric(horizontal ? ctx.parsed.x : ctx.parsed.y) } }
         },
         scales: {
-            x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-            y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+            x: { ticks: { color: '#52627a', font: { size: 10 } }, grid: { color: 'rgba(15,37,64,0.08)' } },
+            y: { ticks: { color: '#52627a', font: { size: 10 } }, grid: { color: 'rgba(15,37,64,0.08)' } }
         }
     };
 }
@@ -1214,7 +1241,7 @@ function renderBetplayMap(sites) {
         points.forEach(p => {
             const radius = 6 + 18 * (bpMetricValue(p) / maxVal);
             L.circleMarker([p.lat, p.lng], {
-                radius, color: '#6366f1', fillColor: '#6366f1', fillOpacity: 0.5, weight: 1
+                radius, color: '#1257d1', fillColor: '#1257d1', fillOpacity: 0.5, weight: 1
             }).bindPopup(
                 `<strong>${p.sitio || 'Sitio'}</strong><br>${p.oficina || ''} — ${p.zona || ''}<br>`
                 + `Monto: ${formatCurrency(p.monto)}<br>Transacciones: ${p.cantidad.toLocaleString('es-CO')}`
@@ -1566,7 +1593,7 @@ async function fetchAndRenderData(forceRefresh = false) {
     // Add spin animation to the refresh button
     elements.btnRefresh.classList.add('spinning');
     elements.updateTimestamp.textContent = "Actualizando...";
-    elements.updateTimestamp.style.color = '#94a3b8';
+    elements.updateTimestamp.style.color = '#52627a';
     
     try {
         const desde = `${State.selectedDate} 00:00:00`;
@@ -2186,8 +2213,8 @@ function renderHourlyChart(data) {
                 {
                     label: 'Venta Real ($)',
                     data: salesPerHour,
-                    backgroundColor: 'rgba(6, 182, 212, 0.65)',
-                    borderColor: '#06b6d4',
+                    backgroundColor: 'rgba(255, 196, 0, 0.75)',
+                    borderColor: '#e0a800',
                     borderWidth: 1,
                     borderRadius: 4,
                     order: 2
@@ -2196,9 +2223,9 @@ function renderHourlyChart(data) {
                     label: 'Meta Prorrateada ($)',
                     data: goalPerHour,
                     type: 'line',
-                    borderColor: '#6366f1',
+                    borderColor: '#1257d1',
                     borderWidth: 3,
-                    pointBackgroundColor: '#6366f1',
+                    pointBackgroundColor: '#1257d1',
                     pointHoverRadius: 6,
                     fill: false,
                     tension: 0.35,
@@ -2214,15 +2241,15 @@ function renderHourlyChart(data) {
             },
             scales: {
                 y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    grid: { color: 'rgba(15,37,64,0.08)' },
                     ticks: {
-                        color: '#94a3b8',
+                        color: '#52627a',
                         callback: value => '$' + value.toLocaleString()
                     }
                 },
                 x: {
                     grid: { display: false },
-                    ticks: { color: '#94a3b8' }
+                    ticks: { color: '#52627a' }
                 }
             }
         }
@@ -2250,21 +2277,14 @@ function renderProductChart(data) {
             type: 'doughnut',
             data: {
                 labels: ['Cargar metas/ventas'],
-                datasets: [{ data: [1], backgroundColor: ['rgba(255,255,255,0.05)'], borderWidth: 0 }]
+                datasets: [{ data: [1], backgroundColor: ['rgba(15,37,64,0.08)'], borderWidth: 0 }]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
         return;
     }
 
-    const colors = [
-        'rgba(99, 102, 241, 0.7)',  // Indigo
-        'rgba(6, 182, 212, 0.7)',   // Cyan
-        'rgba(16, 185, 129, 0.7)',  // Emerald
-        'rgba(245, 158, 11, 0.7)',  // Amber
-        'rgba(239, 68, 68, 0.7)',   // Red
-        'rgba(168, 85, 247, 0.7)'   // Purple
-    ];
+    const colors = CHART_PALETTE;
 
     State.charts.product = new Chart(ctx, {
         type: 'doughnut',
@@ -2274,7 +2294,7 @@ function renderProductChart(data) {
                 data: dataset,
                 backgroundColor: colors.slice(0, labels.length),
                 borderWidth: 1,
-                borderColor: 'rgba(255, 255, 255, 0.1)'
+                borderColor: '#ffffff'
             }]
         },
         options: {
@@ -2283,7 +2303,7 @@ function renderProductChart(data) {
             plugins: {
                 legend: {
                     position: 'bottom',
-                    labels: { color: '#94a3b8', boxWidth: 12, font: { family: 'Outfit', size: 11 } }
+                    labels: { color: '#52627a', boxWidth: 12, font: { family: 'Outfit', size: 11 } }
                 }
             },
             cutout: '65%'
@@ -2330,7 +2350,7 @@ function renderComplianceRanking(data) {
             type: 'bar',
             data: {
                 labels: ['Sin oficinas >= 95%'],
-                datasets: [{ data: [0], backgroundColor: ['rgba(255,255,255,0.05)'] }]
+                datasets: [{ data: [0], backgroundColor: ['rgba(15,37,64,0.08)'] }]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
@@ -2359,16 +2379,16 @@ function renderComplianceRanking(data) {
             },
             scales: {
                 x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    grid: { color: 'rgba(15,37,64,0.08)' },
                     ticks: {
-                        color: '#94a3b8',
+                        color: '#52627a',
                         callback: value => value + '%'
                     },
                     max: Math.max(100, ...dataset) // dynamic max scale
                 },
                 y: {
                     grid: { display: false },
-                    ticks: { color: '#94a3b8', font: { family: 'Outfit', size: 10 } }
+                    ticks: { color: '#52627a', font: { family: 'Outfit', size: 10 } }
                 }
             }
         }
@@ -2414,7 +2434,7 @@ function renderComplianceLagging(data) {
             type: 'bar',
             data: {
                 labels: ['Sin oficinas < 95%'],
-                datasets: [{ data: [0], backgroundColor: ['rgba(255,255,255,0.05)'] }]
+                datasets: [{ data: [0], backgroundColor: ['rgba(15,37,64,0.08)'] }]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
@@ -2443,16 +2463,16 @@ function renderComplianceLagging(data) {
             },
             scales: {
                 x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    grid: { color: 'rgba(15,37,64,0.08)' },
                     ticks: {
-                        color: '#94a3b8',
+                        color: '#52627a',
                         callback: value => value + '%'
                     },
                     max: 100 // keep it scaled up to 100% since they are lagging
                 },
                 y: {
                     grid: { display: false },
-                    ticks: { color: '#94a3b8', font: { family: 'Outfit', size: 10 } }
+                    ticks: { color: '#52627a', font: { family: 'Outfit', size: 10 } }
                 }
             }
         }
@@ -3144,7 +3164,7 @@ function renderCoordinatorsList() {
             <td style="font-weight: 600; color: var(--text-primary);">${c.name}</td>
             <td>${c.cedula}</td>
             <td>${c.role}</td>
-            <td><span class="badge" style="background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 6px;">${c.zone}</span></td>
+            <td><span class="badge" style="background: rgba(15,37,64,0.08); padding: 4px 8px; border-radius: 6px;">${c.zone}</span></td>
             <td>${c.phone}</td>
             <td style="text-align: center;">
                 <label class="switch">
@@ -3591,7 +3611,7 @@ function renderPromotersList() {
         <tr data-id="${p.id}">
             <td style="font-weight: 600; color: var(--text-primary);">${p.name}</td>
             <td>${p.phone}</td>
-            <td><span class="badge" style="background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 6px;">${p.zone}</span></td>
+            <td><span class="badge" style="background: rgba(15,37,64,0.08); padding: 4px 8px; border-radius: 6px;">${p.zone}</span></td>
             <td style="text-align: center;">
                 <label class="switch">
                     <input type="checkbox" class="toggle-active" ${p.active === 1 ? 'checked' : ''}>

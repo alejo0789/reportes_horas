@@ -16,7 +16,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-    <link rel="stylesheet" href="styles.css?v=2.6">
+    <link rel="stylesheet" href="styles.css?v=3.0">
 </head>
 <body>
     <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
@@ -60,20 +60,32 @@
     </header>
 
     <div class="container">
-        <!-- TAB NAVIGATION -->
-        <nav class="tab-bar" id="tab-bar">
-            <!-- Indicador de vidrio que se desliza entre pestañas -->
-            <span class="tab-indicator lg-refract" id="tab-indicator" aria-hidden="true"></span>
-            <button type="button" class="tab-btn active" data-view="view-ventas">
-                <i class="fa-solid fa-chart-line"></i> <span>Ventas por Hora</span>
-            </button>
-            <button type="button" class="tab-btn" data-view="view-betplay">
-                <img src="assets/logos/betplay.jpg" alt="Betplay" class="tab-logo">
-            </button>
-            <button type="button" class="tab-btn" data-view="view-asistente">
-                <i class="fa-solid fa-robot"></i> <span>Asistente IA</span>
-            </button>
-        </nav>
+        <!-- TAB NAVIGATION + TOOLBAR ASISTENTE (misma fila) -->
+        <div class="nav-row">
+            <nav class="tab-bar" id="tab-bar">
+                <!-- Indicador de vidrio que se desliza entre pestañas -->
+                <span class="tab-indicator lg-refract" id="tab-indicator" aria-hidden="true"></span>
+                <button type="button" class="tab-btn active" data-view="view-ventas">
+                    <i class="fa-solid fa-chart-line"></i> <span>Ventas por Hora</span>
+                </button>
+                <button type="button" class="tab-btn" data-view="view-betplay">
+                    <img src="assets/logos/betplay.jpg" alt="Betplay" class="tab-logo">
+                </button>
+                <button type="button" class="tab-btn" data-view="view-asistente">
+                    <i class="fa-solid fa-robot"></i> <span>Asistente IA</span>
+                </button>
+            </nav>
+
+            <!-- Barra de estado + selector de modelo (solo visible en Asistente) -->
+            <div class="asistente-toolbar" id="asistente-conn" hidden>
+                <span class="status-indicator" id="asistente-conn-indicator"></span>
+                <span class="status-text" id="asistente-conn-text">Verificando conexión...</span>
+                <span class="asistente-toolbar-divider"></span>
+                <i class="fa-solid fa-brain"></i>
+                <select id="asistente-model-select" class="asistente-model-select"></select>
+                <span class="asistente-model-status" id="asistente-model-status" hidden></span>
+            </div>
+        </div>
 
         <!-- ===================== VISTA: VENTAS POR HORA ===================== -->
         <div class="tab-view" id="view-ventas">
@@ -621,28 +633,6 @@
         <!-- ===================== VISTA: ASISTENTE IA ===================== -->
         <div class="tab-view" id="view-asistente" hidden>
 
-            <!-- CABECERA: TITULO + ESTADO DE CONEXION -->
-            <section class="glass-panel asistente-header">
-                <div class="asistente-title">
-                    <i class="fa-solid fa-robot"></i>
-                    <div>
-                        <h3 class="section-title" style="margin:0;">Asistente IA — Betplay</h3>
-                        <p class="section-desc" style="margin:0;">Pregunta sobre pagos y recargas; genero análisis, tablas y gráficos.</p>
-                    </div>
-                </div>
-                <div class="asistente-header-right">
-                    <div class="asistente-model">
-                        <label for="asistente-model-select"><i class="fa-solid fa-brain"></i> Inteligencia</label>
-                        <select id="asistente-model-select" class="asistente-model-select"></select>
-                        <span class="asistente-model-status" id="asistente-model-status" hidden></span>
-                    </div>
-                    <div class="asistente-conn" id="asistente-conn">
-                        <span class="status-indicator" id="asistente-conn-indicator"></span>
-                        <span class="status-text" id="asistente-conn-text">Verificando conexión con el modelo...</span>
-                    </div>
-                </div>
-            </section>
-
             <!-- KPIs GENERALES: PAGOS Y RECARGAS (DIA ACTUAL) -->
             <section class="glass-panel asistente-kpis">
                 <div class="asistente-kpis-head">
@@ -650,6 +640,7 @@
                     <span class="asistente-kpis-date" id="asistente-kpis-date"></span>
                 </div>
 
+                <div class="asistente-kpi-rows">
                 <!-- FILA PAGOS -->
                 <div class="asistente-kpi-row">
                     <span class="asistente-kpi-rowlabel"><i class="fa-solid fa-money-bill-wave"></i> Pagos</span>
@@ -671,6 +662,7 @@
                         <div class="asistente-kpi"><span class="ak-label">Sitios de Venta</span><span class="ak-value" id="ak-recargas-sitios">—</span></div>
                     </div>
                 </div>
+                </div><!-- /.asistente-kpi-rows -->
             </section>
 
             <!-- AREA DE CHAT -->
@@ -954,6 +946,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=2.3"></script>
+    <script src="app.js?v=2.6"></script>
 </body>
 </html>
