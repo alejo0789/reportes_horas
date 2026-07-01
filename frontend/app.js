@@ -1403,12 +1403,13 @@ function _pdfLoadImg(src) {
 }
 async function getPdfLogos() {
     if (_pdfLogos) return _pdfLogos;
-    const [a, s, b] = await Promise.all([
+    const [a, s, n, b] = await Promise.all([
         _pdfLoadImg('assets/logos/acertemos.png'),
         _pdfLoadImg('assets/logos/sured.png'),
+        _pdfLoadImg('assets/logos/negativo.png'),
         _pdfLoadImg('assets/logos/betplay.jpg'),
     ]);
-    _pdfLogos = { a, s, b };
+    _pdfLogos = { a, s, n, b };
     return _pdfLogos;
 }
 
@@ -1433,7 +1434,10 @@ async function drawBetplayPdfHeader(doc, pageW) {
     doc.setDrawColor(255, 255, 255); doc.setLineWidth(0.2);
     doc.line(x, cy, x, cy + logoH); x += 5;
     const sW = logos.s.width * logoH / logos.s.height;
-    doc.addImage(logos.s, 'PNG', x, cy, sW, logoH); x += sW + 6;
+    doc.addImage(logos.s, 'PNG', x, cy, sW, logoH); x += sW + 5;
+    doc.line(x, cy, x, cy + logoH); x += 5;
+    const nW = logos.n.width * logoH / logos.n.height;
+    doc.addImage(logos.n, 'PNG', x, cy, nW, logoH); x += nW + 6;
 
     // Logo Betplay como chip blanco redondeado
     const bH = logoH - 1;
