@@ -14,11 +14,16 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- SheetJS (exportar tablas a Excel) -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- html2canvas + jsPDF (exportar visuales a PDF) -->
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
     <!-- Leaflet (mapa geográfico + heatmap) -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-    <link rel="stylesheet" href="styles.css?v=3.4">
+    <!-- leaflet-image: renderiza el mapa a canvas para el PDF (sin offset) -->
+    <script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
+    <link rel="stylesheet" href="styles.css?v=3.8">
 </head>
 <body>
     <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
@@ -418,6 +423,7 @@
                         <select id="betplay-type" class="filter-select">
                             <option value="pagos">Pagos</option>
                             <option value="recargas">Recargas</option>
+                            <option value="ambos">Pagos y Recargas</option>
                         </select>
                     </div>
 
@@ -502,6 +508,7 @@
                         <input type="text" id="bp-filter-cliente" placeholder="Cliente (cédula/celular)...">
                     </div>
                     <button type="button" class="btn-table-action" id="bp-filter-clear"><i class="fa-solid fa-eraser"></i> Limpiar</button>
+                    <button type="button" class="action-btn-primary" id="bp-export-pdf" style="padding:8px 16px;"><i class="fa-solid fa-file-pdf"></i> Exportar PDF</button>
                     <span class="bp-filters-info" id="bp-filters-info"></span>
                 </section>
 
@@ -650,6 +657,9 @@
                                 <i class="fa-solid fa-magnifying-glass"></i>
                                 <input type="text" id="bp-table-search" placeholder="Buscar sitio, oficina, zona o municipio...">
                             </div>
+                            <button type="button" class="btn-table-action" id="bp-table-sort-reset" title="Restablecer el orden original">
+                                <i class="fa-solid fa-rotate-left"></i> Orden original
+                            </button>
                             <button type="button" class="btn-table-action" id="bp-table-export" title="Exportar a Excel">
                                 <i class="fa-solid fa-file-excel"></i> Exportar
                             </button>
@@ -659,15 +669,15 @@
                         <table class="data-table" id="bp-table">
                             <thead>
                                 <tr>
-                                    <th>Cod. Sitio</th>
-                                    <th>Sitio de Venta</th>
-                                    <th>Oficina</th>
-                                    <th>Zona</th>
-                                    <th>Municipio</th>
-                                    <th style="text-align: right;">Monto</th>
-                                    <th style="text-align: right;">Transacciones</th>
-                                    <th style="text-align: right;">Prom. Transacción</th>
-                                    <th style="text-align: right;">Clientes</th>
+                                    <th class="bp-sortable" data-sort="cod_sitio" data-type="text">Cod. Sitio <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="sitio" data-type="text">Sitio de Venta <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="oficina" data-type="text">Oficina <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="zona" data-type="text">Zona <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="ciudad" data-type="text">Municipio <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="monto" data-type="num" style="text-align: right;">Monto <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="cantidad" data-type="num" style="text-align: right;">Transacciones <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="ticket_promedio" data-type="num" style="text-align: right;">Prom. Transacción <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="clientes" data-type="num" style="text-align: right;">Clientes <i class="fa-solid fa-sort bp-sort-icon"></i></th>
                                 </tr>
                             </thead>
                             <tbody id="bp-table-body">
@@ -703,6 +713,27 @@
                 </details>
 
             </div><!-- /#betplay-content -->
+
+            <!-- MODAL: EXPORTAR A PDF (selección de visuales) -->
+            <div class="modal-overlay" id="bp-pdf-modal" style="display:none;">
+                <div class="modal-container" style="max-width: 520px;">
+                    <div class="modal-header">
+                        <h3><i class="fa-solid fa-file-pdf"></i> Exportar a PDF</h3>
+                        <button class="modal-close-btn" id="bp-pdf-close">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="section-desc" style="margin-bottom: 14px;">Elige las visuales que quieres incluir en el PDF.</p>
+                        <label class="bp-pdf-item bp-pdf-all"><input type="checkbox" id="bp-pdf-all" checked> <strong>Seleccionar todas</strong></label>
+                        <hr class="modal-divider">
+                        <div id="bp-pdf-list" class="bp-pdf-list"></div>
+                        <div style="display:flex; gap:10px; margin-top:18px;">
+                            <button type="button" class="action-btn-primary" id="bp-pdf-generate"><i class="fa-solid fa-download"></i> Generar PDF</button>
+                            <button type="button" class="action-btn-secondary" id="bp-pdf-cancel">Cancelar</button>
+                        </div>
+                        <div id="bp-pdf-progress" class="bp-pdf-progress" hidden></div>
+                    </div>
+                </div>
+            </div>
 
         </div><!-- /#view-betplay -->
 
@@ -1022,6 +1053,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=2.9"></script>
+    <script src="app.js?v=3.6"></script>
 </body>
 </html>

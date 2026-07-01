@@ -2575,6 +2575,55 @@ input:checked + .slider:before {
     max-height: 480px;
     overflow: auto;
 }
+
+/* MODAL EXPORTAR PDF */
+.bp-pdf-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.bp-pdf-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.6);
+    font-size: 13px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+.bp-pdf-item:hover { background: rgba(18, 87, 209, 0.06); }
+.bp-pdf-item input[type="checkbox"] { accent-color: var(--brand-blue); width: 16px; height: 16px; }
+.bp-pdf-item.bp-pdf-all { background: var(--brand-blue-soft); border-color: rgba(18, 87, 209, 0.25); }
+.bp-pdf-progress {
+    font-size: 13px;
+    color: var(--brand-blue);
+    font-weight: 600;
+}
+
+/* Cabeceras ordenables */
+.bp-sortable {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    transition: background 0.15s ease;
+}
+.bp-sortable:hover {
+    background: rgba(18, 87, 209, 0.14);
+}
+.bp-sort-icon {
+    font-size: 10px;
+    margin-left: 4px;
+    opacity: 0.45;
+}
+.bp-sort-active .bp-sort-icon {
+    opacity: 1;
+    color: var(--brand-blue);
+}
 .betplay-detalle-scroll thead th {
     position: sticky;
     top: 0;

@@ -1825,31 +1825,10 @@ def aggregate_betplay(rows, amount_key, date_key, client_key=None):
     }
 
 
-def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
-    """
-    Núcleo reutilizable: devuelve (resultado_dict) con las agregaciones de Betplay
-    para el periodo. Usado por el endpoint /resumen y por el asistente IA.
-    """
-    tipo = (tipo or "").lower().strip()
-    if tipo not in BETPLAY_CONFIG:
-        raise HTTPException(status_code=400, detail="tipo debe ser 'pagos' o 'recargas'.")
-
-    cfg = BETPLAY_CONFIG[tipo]
-    cache_key = f"betplay_{tipo}_{desde}_{hasta}"
-
-    # 1. Serve from cache unless forcing refresh
-    cached_data, last_updated = get_cached_sales(cache_key)
-    if cached_data is not None and not force_refresh:
-        logger.info(f"Serving Betplay '{tipo}' summary from SQLite Cache (key {cache_key}).")
-        return {"source": "LOCAL_CACHE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
-
-    # 2. Query both Oracle databases
-    logger.info(f"Fetching Betplay '{tipo}' from Oracle: {desde} -> {hasta}")
-    rows = []
-    errors = []
-    db_failures = False
+def _fetch_betplay_rows(query, desde, hasta):
+    """Ejecuta una query Betplay en ambas BD y devuelve (rows, errors, db_failures)."""
+    rows, errors, db_failures = [], [], False
     params = {"desde": desde, "hasta": hasta}
-
     for db_name, get_conn, pool in (
         ("CAUCAMED", db_manager.get_cauca_connection, db_manager.pool_cauca),
         ("FORTUMED", db_manager.get_fortuna_connection, db_manager.pool_fortuna),
@@ -1861,7 +1840,7 @@ def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
         try:
             with get_conn() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute(cfg["query"], params)
+                    cursor.execute(query, params)
                     res = rows_to_dicts(cursor)
                     for r in res:
                         r["Fuente"] = "CAUCA" if db_name == "CAUCAMED" else "FORTUNA"
@@ -1872,6 +1851,55 @@ def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
             logger.error(msg)
             errors.append(msg)
             db_failures = True
+    return rows, errors, db_failures
+
+
+# Claves unificadas usadas cuando tipo == 'ambos' (pagos + recargas juntos).
+BETPLAY_UNIFIED = {"amount_key": "VALOR_UNIFICADO", "date_key": "FECHA_UNIFICADA", "client_key": "CLIENTE_UNIFICADO"}
+
+
+def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
+    """
+    Núcleo reutilizable: devuelve (resultado_dict) con las agregaciones de Betplay
+    para el periodo. Usado por el endpoint /resumen y por el asistente IA.
+    tipo: 'pagos' | 'recargas' | 'ambos' (combina ambos).
+    """
+    tipo = (tipo or "").lower().strip()
+    if tipo not in BETPLAY_CONFIG and tipo != "ambos":
+        raise HTTPException(status_code=400, detail="tipo debe ser 'pagos', 'recargas' o 'ambos'.")
+
+    cache_key = f"betplay_{tipo}_{desde}_{hasta}"
+
+    # 1. Serve from cache unless forcing refresh
+    cached_data, last_updated = get_cached_sales(cache_key)
+    if cached_data is not None and not force_refresh:
+        logger.info(f"Serving Betplay '{tipo}' summary from SQLite Cache (key {cache_key}).")
+        return {"source": "LOCAL_CACHE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
+
+    logger.info(f"Fetching Betplay '{tipo}' from Oracle: {desde} -> {hasta}")
+
+    # 2. Fetch rows (una o ambas queries según el tipo)
+    errors = []
+    db_failures = False
+    if tipo == "ambos":
+        rows = []
+        for sub in ("pagos", "recargas"):
+            cfg = BETPLAY_CONFIG[sub]
+            sub_rows, sub_err, sub_fail = _fetch_betplay_rows(cfg["query"], desde, hasta)
+            errors.extend(sub_err)
+            db_failures = db_failures or sub_fail
+            # Normalizar a columnas unificadas para agregar todo junto.
+            for r in sub_rows:
+                r["TIPO_TX"] = "Pago" if sub == "pagos" else "Recarga"
+                r["VALOR_UNIFICADO"] = r.get(cfg["amount_key"])
+                r["FECHA_UNIFICADA"] = r.get(cfg["date_key"])
+                r["CLIENTE_UNIFICADO"] = r.get(cfg["client_key"])
+            rows.extend(sub_rows)
+        agg_cfg = BETPLAY_UNIFIED
+    else:
+        cfg = BETPLAY_CONFIG[tipo]
+        rows, errors, db_failures = _fetch_betplay_rows(cfg["query"], desde, hasta)
+        agg_cfg = cfg
 
     # 3. Fallback to stale cache if DB failed and we have something cached
     if db_failures and not rows and cached_data is not None:
@@ -1882,7 +1910,7 @@ def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
     # Tope amplio porque el filtrado del dashboard se hace en el navegador sobre
     # estas filas; si se supera, los filtros operan sobre una muestra.
     DETALLE_LIMIT = 20000
-    resumen = aggregate_betplay(rows, cfg["amount_key"], cfg["date_key"], client_key=cfg.get("client_key"))
+    resumen = aggregate_betplay(rows, agg_cfg["amount_key"], agg_cfg["date_key"], client_key=agg_cfg.get("client_key"))
     resumen["detalle"] = rows[:DETALLE_LIMIT]
     resumen["detalle_total"] = len(rows)
     set_cached_sales(cache_key, resumen)

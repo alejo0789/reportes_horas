@@ -954,7 +954,12 @@ function setupBetplayControls() {
     }
 
     // Filtros generales del dashboard (se aplican en el navegador).
-    ['bp-filter-municipio', 'bp-filter-tipo', 'bp-filter-zona'].forEach(id => {
+    const muniSel = document.getElementById('bp-filter-municipio');
+    if (muniSel) muniSel.addEventListener('change', () => {
+        refreshZonaOptionsForMunicipio();  // zonas dependientes del municipio
+        applyBetplayFilters();
+    });
+    ['bp-filter-tipo', 'bp-filter-zona'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener('change', applyBetplayFilters);
     });
@@ -966,12 +971,36 @@ function setupBetplayControls() {
     if (clearBtn) clearBtn.addEventListener('click', () => {
         ['bp-filter-municipio', 'bp-filter-tipo', 'bp-filter-zona', 'bp-filter-sitio', 'bp-filter-cliente']
             .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        refreshZonaOptionsForMunicipio();  // restaura todas las zonas
         applyBetplayFilters();
+    });
+
+    // Restablecer el orden original de la tabla de sitios.
+    const sortResetBtn = document.getElementById('bp-table-sort-reset');
+    if (sortResetBtn) sortResetBtn.addEventListener('click', () => {
+        State.betplay.tableSort = { key: null, dir: 1, type: 'text' };
+        updateBetplaySortIcons();
+        if (State.betplay._tableDraw) State.betplay._tableDraw();
     });
 
     // Exportar tabla "Detalle por Sitio de Venta" a Excel.
     const exportBtn = document.getElementById('bp-table-export');
     if (exportBtn) exportBtn.addEventListener('click', exportBetplayTable);
+
+    // Exportar visuales a PDF (modal de selección).
+    const pdfBtn = document.getElementById('bp-export-pdf');
+    if (pdfBtn) pdfBtn.addEventListener('click', openBetplayPdfModal);
+    const pdfClose = document.getElementById('bp-pdf-close');
+    const pdfCancel = document.getElementById('bp-pdf-cancel');
+    [pdfClose, pdfCancel].forEach(b => { if (b) b.addEventListener('click', () => {
+        const m = document.getElementById('bp-pdf-modal'); if (m) m.style.display = 'none';
+    }); });
+    const pdfAll = document.getElementById('bp-pdf-all');
+    if (pdfAll) pdfAll.addEventListener('change', () => {
+        document.querySelectorAll('#bp-pdf-list input[type="checkbox"]').forEach(c => c.checked = pdfAll.checked);
+    });
+    const pdfGen = document.getElementById('bp-pdf-generate');
+    if (pdfGen) pdfGen.addEventListener('click', generateBetplayPDF);
 
     // Maximizar / restaurar el mapa a pantalla completa.
     const maxBtn = document.getElementById('bp-map-maximize');
@@ -1151,7 +1180,8 @@ function bpFormatMetric(val) {
 // Nombres de columna crudas por tipo (para agregar en el navegador).
 const BP_KEYS = {
     pagos:    { amount: 'VALOR_PAGO',  date: 'FEC_PAGO',  client: 'IDENTIFICACION' },
-    recargas: { amount: 'VLR_RECARGA', date: 'FEC_VENTA', client: 'NUM_CELULAR' }
+    recargas: { amount: 'VLR_RECARGA', date: 'FEC_VENTA', client: 'NUM_CELULAR' },
+    ambos:    { amount: 'VALOR_UNIFICADO', date: 'FECHA_UNIFICADA', client: 'CLIENTE_UNIFICADO' }
 };
 
 // Re-agrega las filas crudas del detalle (misma forma que el backend) para
@@ -1293,6 +1323,34 @@ function populateBetplayFilters(data) {
     fill('bp-filter-zona', uniq((data.por_zona || []).map(z => z.zona)), 'Todas las zonas');
 }
 
+// Recalcula las zonas del selector según el municipio elegido (filtros
+// dependientes): si hay municipio, solo aparecen las zonas presentes en él.
+function refreshZonaOptionsForMunicipio() {
+    const base = State.betplay.resumen;
+    const muni = (document.getElementById('bp-filter-municipio') || {}).value || '';
+    const zonaSel = document.getElementById('bp-filter-zona');
+    if (!base || !zonaSel) return;
+    const prev = zonaSel.value;
+
+    let zonas;
+    if (!muni) {
+        zonas = Array.from(new Set((base.por_zona || []).map(z => z.zona)));
+    } else {
+        const set = new Set();
+        (base.detalle || []).forEach(r => {
+            if ((r['Ciudad'] || 'Sin Ciudad') === muni) set.add(r['Zona'] || 'Sin Zona');
+        });
+        zonas = Array.from(set);
+    }
+    zonas = zonas.filter(z => z !== null && z !== undefined && z !== '')
+        .sort((a, b) => String(a).localeCompare(String(b), 'es'));
+
+    zonaSel.innerHTML = '<option value="">Todas las zonas</option>'
+        + zonas.map(z => `<option value="${String(z).replace(/"/g, '&quot;')}">${z}</option>`).join('');
+    // Conservar la zona previa solo si sigue siendo válida para el municipio.
+    zonaSel.value = zonas.includes(prev) ? prev : '';
+}
+
 // Lee los filtros y re-renderiza el dashboard.
 function applyBetplayFilters() {
     if (!State.betplay.resumen) return;
@@ -1332,6 +1390,242 @@ function exportBetplayTable() {
     XLSX.writeFile(wb, `betplay_${tipo}_detalle_sitios_${fecha}.xlsx`);
 }
 
+// ===================== EXPORTAR A PDF =====================
+let _pdfLogos = null;
+function _pdfLoadImg(src) {
+    return new Promise((resolve, reject) => {
+        const im = new Image();
+        im.crossOrigin = 'anonymous';
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = src;
+    });
+}
+async function getPdfLogos() {
+    if (_pdfLogos) return _pdfLogos;
+    const [a, s, b] = await Promise.all([
+        _pdfLoadImg('assets/logos/acertemos.png'),
+        _pdfLoadImg('assets/logos/sured.png'),
+        _pdfLoadImg('assets/logos/betplay.jpg'),
+    ]);
+    _pdfLogos = { a, s, b };
+    return _pdfLogos;
+}
+
+function betplayPdfPeriodText() {
+    const el = document.getElementById('betplay-selection-text');
+    return el ? el.textContent.replace('Mostrando:', '').trim() : '';
+}
+
+// Dibuja el header de marca (logos, sin estado de conexión). Devuelve su alto en mm.
+async function drawBetplayPdfHeader(doc, pageW) {
+    const logos = await getPdfLogos();
+    const H = 24;
+    doc.setFillColor(10, 46, 115);      // azul profundo
+    doc.rect(0, 0, pageW, H, 'F');
+    doc.setFillColor(255, 196, 0);      // línea amarilla inferior
+    doc.rect(0, H, pageW, 1, 'F');
+
+    let x = 10;
+    const cy = 6, logoH = 12;
+    const aW = logos.a.width * logoH / logos.a.height;
+    doc.addImage(logos.a, 'PNG', x, cy, aW, logoH); x += aW + 5;
+    doc.setDrawColor(255, 255, 255); doc.setLineWidth(0.2);
+    doc.line(x, cy, x, cy + logoH); x += 5;
+    const sW = logos.s.width * logoH / logos.s.height;
+    doc.addImage(logos.s, 'PNG', x, cy, sW, logoH); x += sW + 6;
+
+    // Logo Betplay como chip blanco redondeado
+    const bH = logoH - 1;
+    const bW = logos.b.width * bH / logos.b.height;
+    const chipW = bW + 6, chipH = logoH + 2;
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(x, cy - 1, chipW, chipH, 1.6, 1.6, 'F');
+    doc.addImage(logos.b, 'JPEG', x + 3, cy, bW, bH);
+
+    // Título + tipo/periodo a la derecha
+    const tipo = State.betplay.type;
+    const tipoLabel = tipo === 'ambos' ? 'Pagos y Recargas' : (tipo === 'recargas' ? 'Recargas' : 'Pagos');
+    doc.setTextColor(255, 255, 255); doc.setFontSize(12);
+    doc.text('Dashboard de Operaciones — Betplay', pageW - 10, 10, { align: 'right' });
+    doc.setFontSize(9); doc.setTextColor(210, 224, 248);
+    doc.text(`${tipoLabel} · ${betplayPdfPeriodText()}`, pageW - 10, 16, { align: 'right' });
+
+    return H + 1;
+}
+
+// Lista de visuales exportables presentes y visibles en el dashboard.
+// kind: 'wide' (ancho completo) | 'compact' (media página, 2 por fila).
+function getBetplayPdfTargets() {
+    const panelOf = (id) => {
+        const c = document.getElementById(id);
+        return c ? (c.closest('.chart-panel') || c.closest('.table-panel')) : null;
+    };
+    const list = [
+        { name: 'Indicadores (KPIs)', el: document.querySelector('#betplay-content .kpi-strip'), kind: 'wide' },
+        { name: 'Comportamiento en el tiempo', el: panelOf('bp-chart-time'), kind: 'wide' },
+        { name: 'Distribución por Zona', el: panelOf('bp-chart-zona'), kind: 'compact' },
+        { name: 'Distribución por Tipo de SV', el: panelOf('bp-chart-tipo'), kind: 'compact' },
+        { name: 'Top 10 Municipios', el: panelOf('bp-chart-municipio'), kind: 'compact' },
+        { name: 'Distribución por Municipio', el: panelOf('bp-chart-municipio-donut'), kind: 'compact' },
+        { name: 'Top 10 Sitios de Venta', el: panelOf('bp-chart-sitios'), kind: 'compact' },
+        { name: 'Top 10 Usuarios', el: panelOf('bp-chart-usuarios'), kind: 'compact' },
+        { name: 'Top 10 Menos Recargas', el: panelOf('bp-chart-menos'), kind: 'compact' },
+        { name: 'Mapa de Ventas', el: document.getElementById('bp-map-wrapper'), kind: 'wide', isMap: true },
+        { name: 'Detalle por Sitio de Venta', el: panelOf('bp-table'), kind: 'wide', tableEl: document.getElementById('bp-table') },
+    ];
+    return list.filter(t => t.el && t.el.offsetParent !== null);
+}
+
+// Captura una visual a canvas. Casos especiales: mapa (leaflet-image, sin
+// offset) y tabla (expandir scroll y capturar solo la tabla, sin botones).
+async function captureBetplayTarget(t) {
+    if (t.isMap && State.betplay.map && typeof leafletImage === 'function') {
+        try {
+            const map = State.betplay.map;
+            const base = await new Promise((res, rej) =>
+                leafletImage(map, (err, canvas) => err ? rej(err) : res(canvas)));
+            // leaflet-image trae los tiles bien ubicados pero NO los circleMarker,
+            // así que dibujamos los puntos nosotros usando la proyección del mapa.
+            const size = map.getSize();
+            const scaleX = base.width / size.x, scaleY = base.height / size.y;
+            const points = bpComputeMapPoints((getBetplayRenderData() || {}).por_sitio || []);
+            const maxVal = Math.max(1, ...points.map(p => bpMetricValue(p)));
+            const ctx = base.getContext('2d');
+            points.forEach(p => {
+                const pt = map.latLngToContainerPoint([p.lat, p.lng]);
+                const x = pt.x * scaleX, y = pt.y * scaleY;
+                const r = (6 + 18 * (bpMetricValue(p) / maxVal)) * scaleX;
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, 2 * Math.PI);
+                ctx.fillStyle = 'rgba(18, 87, 209, 0.5)';
+                ctx.fill();
+                ctx.lineWidth = Math.max(1, scaleX);
+                ctx.strokeStyle = '#1257d1';
+                ctx.stroke();
+            });
+            return base;
+        } catch (e) { console.warn('[PDF] leaflet-image falló, uso html2canvas:', e); }
+    }
+    if (t.tableEl) {
+        const sc = t.el.querySelector('.betplay-detalle-scroll');
+        const prevMax = sc ? sc.style.maxHeight : null;
+        const prevOv = sc ? sc.style.overflow : null;
+        if (sc) { sc.style.maxHeight = 'none'; sc.style.overflow = 'visible'; }
+        const canvas = await html2canvas(t.tableEl, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+        if (sc) { sc.style.maxHeight = prevMax || ''; sc.style.overflow = prevOv || ''; }
+        return canvas;
+    }
+    return await html2canvas(t.el, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+}
+
+function openBetplayPdfModal() {
+    if (!State.betplay.resumen) { alert('Primero consulta datos de Betplay.'); return; }
+    const targets = getBetplayPdfTargets();
+    State.betplay._pdfTargets = targets;
+    const listEl = document.getElementById('bp-pdf-list');
+    if (listEl) listEl.innerHTML = targets.map((t, i) =>
+        `<label class="bp-pdf-item"><input type="checkbox" data-idx="${i}" checked> ${t.name}</label>`
+    ).join('');
+    const all = document.getElementById('bp-pdf-all'); if (all) all.checked = true;
+    const prog = document.getElementById('bp-pdf-progress'); if (prog) { prog.hidden = true; prog.textContent = ''; }
+    const modal = document.getElementById('bp-pdf-modal'); if (modal) modal.style.display = 'flex';
+}
+
+async function generateBetplayPDF() {
+    const targets = State.betplay._pdfTargets || [];
+    const checks = [...document.querySelectorAll('#bp-pdf-list input[type="checkbox"]')];
+    const selected = checks.filter(c => c.checked).map(c => targets[Number(c.dataset.idx)]).filter(Boolean);
+    if (!selected.length) { alert('Selecciona al menos una visual.'); return; }
+
+    const prog = document.getElementById('bp-pdf-progress');
+    const genBtn = document.getElementById('bp-pdf-generate');
+    const setProg = (t) => { if (prog) { prog.hidden = false; prog.textContent = t; } };
+    if (genBtn) genBtn.disabled = true;
+
+    try {
+        setProg('Preparando…');
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const pageW = doc.internal.pageSize.getWidth();
+        const pageH = doc.internal.pageSize.getHeight();
+        const margin = 10, gap = 6;
+        const fullW = pageW - margin * 2;
+        const colW = (fullW - gap) / 2;
+
+        let y = (await drawBetplayPdfHeader(doc, pageW)) + 6;
+        const newPage = async () => { doc.addPage(); y = (await drawBetplayPdfHeader(doc, pageW)) + 6; };
+
+        // Añade una imagen a lo ancho completo, partiéndola en varias páginas si es alta.
+        const addWidePaged = async (name, canvas) => {
+            if (y + 12 > pageH - margin) await newPage();
+            doc.setFontSize(11); doc.setTextColor(18, 87, 209);
+            doc.text(name, margin, y); y += 6;
+            const pxPerMm = canvas.width / fullW;
+            let srcY = 0, remaining = canvas.height;
+            while (remaining > 0) {
+                const availMm = pageH - margin - y;
+                if (availMm < 20) { await newPage(); continue; }
+                const slicePx = Math.min(remaining, availMm * pxPerMm);
+                const sliceMm = slicePx / pxPerMm;
+                const tmp = document.createElement('canvas');
+                tmp.width = canvas.width; tmp.height = Math.round(slicePx);
+                tmp.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
+                doc.addImage(tmp.toDataURL('image/png'), 'PNG', margin, y, fullW, sliceMm);
+                y += sliceMm + 3; srcY += slicePx; remaining -= slicePx;
+                if (remaining > 0) await newPage();
+            }
+            y += 5;
+        };
+
+        // Procesa una fila de hasta 2 visuales compactas (media página c/u).
+        const addCompactRow = async (a, b) => {
+            const ca = await captureBetplayTarget(a);
+            const cb = b ? await captureBetplayTarget(b) : null;
+            const ha = colW * ca.height / ca.width;
+            const hb = cb ? colW * cb.height / cb.width : 0;
+            const rowH = 6 + Math.max(ha, hb);
+            if (y + rowH > pageH - margin) await newPage();
+            doc.setFontSize(9); doc.setTextColor(18, 87, 209);
+            doc.text(a.name, margin, y + 4);
+            doc.addImage(ca.toDataURL('image/png'), 'PNG', margin, y + 6, colW, ha);
+            if (b) {
+                doc.text(b.name, margin + colW + gap, y + 4);
+                doc.addImage(cb.toDataURL('image/png'), 'PNG', margin + colW + gap, y + 6, colW, hb);
+            }
+            y += rowH + gap;
+        };
+
+        // Recorre en orden: agrupa compactas de a 2; las anchas van solas.
+        let pending = null;
+        let done = 0;
+        const total = selected.length;
+        for (const t of selected) {
+            setProg(`Generando ${++done}/${total}: ${t.name}…`);
+            if (t.kind === 'compact') {
+                if (!pending) { pending = t; }
+                else { await addCompactRow(pending, t); pending = null; }
+            } else {
+                if (pending) { await addCompactRow(pending, null); pending = null; }
+                const canvas = await captureBetplayTarget(t);
+                await addWidePaged(t.name, canvas);
+            }
+        }
+        if (pending) await addCompactRow(pending, null);
+
+        const tipo = State.betplay.type || 'betplay';
+        const fecha = new Date().toISOString().slice(0, 10);
+        setProg('Guardando…');
+        doc.save(`betplay_${tipo}_${fecha}.pdf`);
+        const modal = document.getElementById('bp-pdf-modal'); if (modal) modal.style.display = 'none';
+    } catch (err) {
+        console.error('[PDF] Error:', err);
+        setProg('Error generando el PDF: ' + (err && err.message ? err.message : err));
+    } finally {
+        if (genBtn) genBtn.disabled = false;
+    }
+}
+
 function renderBetplay(data) {
     renderBetplayKPIs(data.totales || {});
     renderBetplayTimeChart(data);
@@ -1369,7 +1663,8 @@ function renderBetplayKPIs(totales) {
     const cliEl = document.getElementById('bp-kpi-clientes');
     if (cliEl) cliEl.textContent = (totales.clientes_unicos || 0).toLocaleString('es-CO');
     const cliSub = document.getElementById('bp-kpi-clientes-sub');
-    if (cliSub) cliSub.textContent = State.betplay.type === 'recargas' ? 'Por N° celular' : 'Por identificación';
+    if (cliSub) cliSub.textContent = State.betplay.type === 'recargas' ? 'Por N° celular'
+        : State.betplay.type === 'ambos' ? 'Identificación + celular' : 'Por identificación';
 }
 
 // Callbacks reutilizables para tortas: muestran porcentaje en tooltip.
@@ -1476,6 +1771,9 @@ function renderBetplayDonut(key, canvasId, items, labelField) {
 function renderBetplayBar(key, canvasId, items, labelField) {
     const labels = items.map(i => String(i[labelField] ?? 'N/D'));
     const values = items.map(bpMetricValue);
+    // Colores alternados amarillo/azul de marca (una sí, una no).
+    const bg = values.map((_, i) => i % 2 === 0 ? 'rgba(255, 196, 0, 0.80)' : 'rgba(18, 87, 209, 0.72)');
+    const bd = values.map((_, i) => i % 2 === 0 ? '#e0a800' : '#1257d1');
     drawBetplayChart(key, canvasId, {
         type: 'bar',
         data: {
@@ -1483,8 +1781,8 @@ function renderBetplayBar(key, canvasId, items, labelField) {
             datasets: [{
                 label: State.betplay.metric === 'cantidad' ? 'Transacciones' : 'Monto',
                 data: values,
-                backgroundColor: 'rgba(255, 196, 0, 0.75)',
-                borderColor: '#e0a800',
+                backgroundColor: bg,
+                borderColor: bd,
                 borderWidth: 1,
                 borderRadius: 4
             }]
@@ -1520,15 +1818,20 @@ function drawBetplayChart(key, canvasId, config) {
     State.betplay.charts[key] = new Chart(canvas.getContext('2d'), config);
 }
 
+// Extrae los puntos con coordenadas válidas de una lista de sitios.
+function bpComputeMapPoints(sites) {
+    return (sites || [])
+        .map(s => ({ lat: parseFloat(s.cy), lng: parseFloat(s.cx), monto: s.monto || 0, cantidad: s.cantidad || 0, sitio: s.sitio, oficina: s.oficina, zona: s.zona, ciudad: s.ciudad, tipo_sv: s.tipo_sv, clientes: s.clientes || 0 }))
+        .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.lat !== 0 && p.lng !== 0);
+}
+
 // Mapa Leaflet: puntos o mapa de calor según State.betplay.mapMode.
 function renderBetplayMap(sites) {
     const mapEl = document.getElementById('bp-map');
     if (!mapEl || typeof L === 'undefined') return;
 
     // Sitios con coordenadas válidas
-    const points = sites
-        .map(s => ({ lat: parseFloat(s.cy), lng: parseFloat(s.cx), monto: s.monto || 0, cantidad: s.cantidad || 0, sitio: s.sitio, oficina: s.oficina, zona: s.zona, ciudad: s.ciudad, tipo_sv: s.tipo_sv, clientes: s.clientes || 0 }))
-        .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.lat !== 0 && p.lng !== 0);
+    const points = bpComputeMapPoints(sites);
 
     // Inicializar el mapa una sola vez
     if (!State.betplay.map) {
@@ -1634,16 +1937,26 @@ function renderBetplayTable(sites) {
 
     // Guardar los sitios actuales para que la búsqueda use siempre el último dataset.
     State.betplay._tableSites = sites;
+    if (!State.betplay.tableSort) State.betplay.tableSort = { key: null, dir: 1, type: 'text' };
 
-    const draw = (filterText) => {
-        const ft = (filterText || '').toLowerCase().trim();
-        const current = State.betplay._tableSites || [];
-        const rows = current.filter(s => !ft
+    const draw = () => {
+        const ft = (searchEl ? searchEl.value : '').toLowerCase().trim();
+        let rows = (State.betplay._tableSites || []).filter(s => !ft
             || String(s.sitio || '').toLowerCase().includes(ft)
             || String(s.oficina || '').toLowerCase().includes(ft)
             || String(s.zona || '').toLowerCase().includes(ft)
             || String(s.ciudad || '').toLowerCase().includes(ft)
             || String(s.cod_sitio || '').toLowerCase().includes(ft));
+
+        // Orden por columna (alfabético para texto, numérico para números).
+        const sort = State.betplay.tableSort;
+        if (sort.key) {
+            rows = rows.slice().sort((a, b) => {
+                let va = a[sort.key], vb = b[sort.key];
+                if (sort.type === 'num') return ((Number(va) || 0) - (Number(vb) || 0)) * sort.dir;
+                return String(va ?? '').localeCompare(String(vb ?? ''), 'es', { numeric: true }) * sort.dir;
+            });
+        }
 
         if (countEl) countEl.textContent = `${rows.length} sitios`;
 
@@ -1666,11 +1979,51 @@ function renderBetplayTable(sites) {
         `).join('');
     };
 
-    draw('');
+    State.betplay._tableDraw = draw;
+    draw();
+
     if (searchEl && !searchEl.dataset.bound) {
         searchEl.dataset.bound = '1';
-        searchEl.addEventListener('input', () => draw(searchEl.value));
+        searchEl.addEventListener('input', draw);
     }
+
+    // Encabezados ordenables: primer clic ordena, segundo invierte.
+    const thead = document.querySelector('#bp-table thead');
+    if (thead && !thead.dataset.sortBound) {
+        thead.dataset.sortBound = '1';
+        thead.querySelectorAll('th.bp-sortable').forEach(th => {
+            th.addEventListener('click', () => {
+                const key = th.dataset.sort;
+                const type = th.dataset.type || 'text';
+                const s = State.betplay.tableSort;
+                if (s.key === key) {
+                    s.dir = -s.dir;
+                } else {
+                    s.key = key; s.type = type;
+                    s.dir = type === 'num' ? -1 : 1;  // números: mayor→menor; texto: A→Z
+                }
+                updateBetplaySortIcons();
+                if (State.betplay._tableDraw) State.betplay._tableDraw();
+            });
+        });
+    }
+    updateBetplaySortIcons();
+}
+
+// Actualiza los íconos de orden (▲/▼) en la cabecera de la tabla de sitios.
+function updateBetplaySortIcons() {
+    const s = State.betplay.tableSort || {};
+    document.querySelectorAll('#bp-table th.bp-sortable').forEach(th => {
+        const icon = th.querySelector('.bp-sort-icon');
+        if (!icon) return;
+        if (th.dataset.sort === s.key) {
+            icon.className = 'fa-solid bp-sort-icon ' + (s.dir === 1 ? 'fa-sort-up' : 'fa-sort-down');
+            th.classList.add('bp-sort-active');
+        } else {
+            icon.className = 'fa-solid fa-sort bp-sort-icon';
+            th.classList.remove('bp-sort-active');
+        }
+    });
 }
 
 // Helper setup for expand/collapse all buttons
