@@ -7,13 +7,17 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from backend.auth import get_current_user, CurrentUser
 
 load_dotenv()
 
 from backend.db import db_manager
-from backend.queries import VENTAS_POR_HORA_QUERY, SITIOS_VENTA_QUERY, PRODUCTOS_QUERY
+from backend.queries import (
+    VENTAS_POR_HORA_QUERY, SITIOS_VENTA_QUERY, PRODUCTOS_QUERY,
+    PAGOS_BETPLAY_COMPLETO, RECARGAS_BETPLAY_COMPLETO
+)
 from backend.excel_parser import parse_metas_excel, parse_promoters_excel
 from backend.cache import (
     init_cache_db, get_cached_sales, set_cached_sales, clear_cache,
@@ -82,6 +86,10 @@ def rows_to_dicts(cursor):
             # Format datetime objects as strings
             if isinstance(val, (datetime, date)):
                 row_dict[col_name] = val.isoformat()
+            elif isinstance(val, (bytes, bytearray)):
+                # Columnas binarias (RAW/GUID/BLOB): representar como hex para evitar
+                # fallos de serialización JSON (UnicodeDecodeError).
+                row_dict[col_name] = bytes(val).hex()
             else:
                 row_dict[col_name] = val
         results.append(row_dict)
@@ -766,7 +774,20 @@ def get_whatsapp_query(
     elif is_coordinator:
         for item in distribution_store:
             item_zone = item.get("zona", "")
-            if item_zone and str(item_zone).strip().lower() == user_zone.strip().lower():
+            
+            match_zone = False
+            is_yudy = "yud" in user_name.strip().lower() or "moral" in user_name.strip().lower() or "oriente y municipios centro" in user_zone.strip().lower()
+            if is_yudy:
+                item_z_lower = str(item_zone).strip().lower()
+                if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
+                    match_zone = True
+                elif "centro" in item_z_lower or "oriente" in item_z_lower:
+                    match_zone = True
+            else:
+                if item_zone and str(item_zone).strip().lower() == user_zone.strip().lower():
+                    match_zone = True
+                    
+            if match_zone:
                 if item.get("cod_oficina") is not None:
                     try:
                         assigned_offices.add(int(item["cod_oficina"]))
@@ -822,7 +843,20 @@ def get_whatsapp_query(
             c_offices = set()
             for item in distribution_store:
                 item_zone = item.get("zona", "")
-                if item_zone and item_zone.strip().lower() == c_zone.strip().lower():
+                
+                match_zone = False
+                is_yudy_admin = "yud" in c_name.strip().lower() or "moral" in c_name.strip().lower() or "oriente y municipios centro" in c_zone.strip().lower()
+                if is_yudy_admin:
+                    item_z_lower = str(item_zone).strip().lower()
+                    if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
+                        match_zone = True
+                    elif "centro" in item_z_lower or "oriente" in item_z_lower:
+                        match_zone = True
+                else:
+                    if item_zone and item_zone.strip().lower() == c_zone.strip().lower():
+                        match_zone = True
+                        
+                if match_zone:
                     if item.get("cod_oficina") is not None:
                         try:
                             c_offices.add(int(item["cod_oficina"]))
@@ -874,9 +908,23 @@ def get_whatsapp_query(
     promoter_compliance_list = []
     if is_coordinator and report_type in {"products", "offices", "prompt_promoter"}:
         promoter_to_offices = {}
+        promoter_zones = {}
         for item in distribution_store:
             item_zone = item.get("zona", "")
-            if item_zone and item_zone.strip().lower() == user_zone.strip().lower():
+            
+            match_zone = False
+            is_yudy = "yud" in user_name.strip().lower() or "moral" in user_name.strip().lower() or "oriente y municipios centro" in user_zone.strip().lower()
+            if is_yudy:
+                item_z_lower = str(item_zone).strip().lower()
+                if item_z_lower in ["oriente y municipios centro", "centro", "municipios centro", "zona centro", "oriente"]:
+                    match_zone = True
+                elif "centro" in item_z_lower or "oriente" in item_z_lower:
+                    match_zone = True
+            else:
+                if item_zone and item_zone.strip().lower() == user_zone.strip().lower():
+                    match_zone = True
+                    
+            if match_zone:
                 p_name = item.get("promotor")
                 off = item.get("cod_oficina")
                 if p_name and off is not None:
@@ -885,6 +933,11 @@ def get_whatsapp_query(
                         if p_name not in promoter_to_offices:
                             promoter_to_offices[p_name] = set()
                         promoter_to_offices[p_name].add(off_int)
+                        item_z_lower = str(item_zone).strip().lower()
+                        if "centro" in item_z_lower and "oriente" not in item_z_lower:
+                            promoter_zones[p_name] = "Centro"
+                        else:
+                            promoter_zones[p_name] = "Oriente"
                     except:
                         pass
                         
@@ -967,7 +1020,7 @@ def get_whatsapp_query(
                 p_comp = (p_sales / p_meta * 100.0)
             else:
                 p_comp = 100.0 if p_sales > 0 else 0.0
-            promoter_compliance_list.append((p_name, p_sales, p_meta, p_comp))
+            promoter_compliance_list.append((p_name, p_sales, p_meta, p_comp, promoter_zones.get(p_name, "")))
             
         promoter_compliance_list.sort(key=lambda x: x[0])
 
@@ -1016,19 +1069,49 @@ def get_whatsapp_query(
                 "report_type": "prompt_promoter",
                 "is_coordinator": True
             }
-        msg = f"👥 *RESUMEN DE PROMOTORES - ZONA: {user_zone}*\n"
-        msg += f"📅 *Fecha:* {today_str}\n"
-        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
-        msg += f"──────────────────\n"
-        for idx, (p_name, p_sales, p_meta, p_comp) in enumerate(promoter_compliance_list, 1):
-            p_emoji = "🟢" if p_comp >= 95 else "🔴"
-            p_faltante = max(0.0, p_meta - p_sales)
-            msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
-            msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
-            msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+        is_yudy = "yud" in user_name.strip().lower() or "moral" in user_name.strip().lower() or "oriente y municipios centro" in user_zone.strip().lower()
+        if is_yudy:
+            msg = f"👥 *RESUMEN DE PROMOTORES (v4) - ZONA: ORIENTE Y CENTRO*\n"
+            msg += f"📅 *Fecha:* {today_str}\n"
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
             
-        msg += f"──────────────────\n"
-        msg += f"💪 ¡Vamos por la meta! 🚀"
+            msg += f"\n---- promotores zona oriente ----\n"
+            for (p_name, p_sales, p_meta, p_comp, p_zone) in promoter_compliance_list:
+                if p_zone != "Centro":
+                    p_emoji = "🟢" if p_comp >= 95 else "🔴"
+                    p_faltante = max(0.0, p_meta - p_sales)
+                    msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
+                    msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
+                    msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                    
+            msg += f"---- zona centro ----\n"
+            for (p_name, p_sales, p_meta, p_comp, p_zone) in promoter_compliance_list:
+                if p_zone == "Centro":
+                    p_emoji = "🟢" if p_comp >= 95 else "🔴"
+                    p_faltante = max(0.0, p_meta - p_sales)
+                    msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
+                    msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
+                    msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                    
+            msg += f"──────────────────\n"
+            msg += f"💪 ¡Vamos por la meta! 🚀"
+        else:
+            msg = f"👥 *RESUMEN DE PROMOTORES (Debug) - ZONA: {user_zone}*\n"
+            msg += f"👤 *Coordinador:* {user_name}\n"
+            msg += f"📅 *Fecha:* {today_str}\n"
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+            msg += f"──────────────────\n"
+            for idx, item in enumerate(promoter_compliance_list, 1):
+                p_name, p_sales, p_meta, p_comp = item[:4]
+                p_emoji = "🟢" if p_comp >= 95 else "🔴"
+                p_faltante = max(0.0, p_meta - p_sales)
+                msg += f"• 👤 *{p_name}* ({p_emoji} *{p_comp:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: ${round(p_meta):,}\n"
+                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                
+            msg += f"──────────────────\n"
+            msg += f"💪 ¡Vamos por la meta! 🚀"
+
         return {
             "text": msg,
             "report_type": "prompt_promoter",
@@ -1562,6 +1645,895 @@ def get_productos(
             {"Cod_Producto": 13, "Producto": "GIROS CREADOS", "Tipo_Producto": "GIROS"}
         ]
     }
+
+
+# ============================ BETPLAY ============================
+
+# Configuration per Betplay transaction type: which query to run and which
+# columns hold the amount and the event date.
+BETPLAY_CONFIG = {
+    "pagos": {
+        "query": PAGOS_BETPLAY_COMPLETO,
+        "amount_key": "VALOR_PAGO",
+        "date_key": "FEC_PAGO",
+        # Cédula del CLIENTE final (distinta del vendedor NUM_IDENTIFICACION).
+        "client_key": "IDENTIFICACION",
+    },
+    "recargas": {
+        "query": RECARGAS_BETPLAY_COMPLETO,
+        "amount_key": "VLR_RECARGA",
+        "date_key": "FEC_VENTA",
+        # En recargas el identificador del cliente es el número de celular.
+        "client_key": "NUM_CELULAR",
+    },
+}
+
+
+def _to_float(val):
+    """Safe numeric conversion; returns 0.0 for None/invalid values."""
+    if val is None:
+        return 0.0
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _hour_of(date_str):
+    """Extracts the hour (0-23) from an ISO datetime string; None if unparseable."""
+    if not date_str:
+        return None
+    try:
+        return datetime.fromisoformat(str(date_str)).hour
+    except ValueError:
+        return None
+
+
+def _day_of(date_str):
+    """Extracts the day 'YYYY-MM-DD' from an ISO datetime string; None if unparseable."""
+    if not date_str:
+        return None
+    try:
+        return datetime.fromisoformat(str(date_str)).date().isoformat()
+    except ValueError:
+        return None
+
+
+def aggregate_betplay(rows, amount_key, date_key, client_key=None):
+    """
+    Builds pre-calculated aggregations over raw Betplay rows.
+    Each group carries both 'monto' (sum of amount) and 'cantidad' (row count).
+
+    client_key: columna con la cédula/identificador del CLIENTE final
+    (IDENTIFICACION en pagos, NUM_CELULAR en recargas). Se usa para contar
+    clientes únicos (globales y por sitio), aparte de los usuarios/vendedores.
+    """
+    by_hour = {}        # hour(int) -> {monto, cantidad}
+    by_day = {}         # 'YYYY-MM-DD' -> {monto, cantidad}
+    by_zone = {}        # zona -> {monto, cantidad}
+    by_city = {}        # ciudad -> {monto, cantidad}
+    by_type_sv = {}     # tipo SV -> {monto, cantidad}
+    by_office = {}      # cod_oficina -> {oficina, monto, cantidad}
+    by_site = {}        # cod_sitio -> {sitio, oficina, zona, ciudad, tipo_sv, cx, cy, monto, cantidad}
+    by_user = {}        # identificacion -> {monto, cantidad}
+    by_channel = {}     # canal -> {monto, cantidad}
+    site_clients = {}   # cod_sitio -> set(client ids)  (para contar clientes por sitio)
+
+    total_monto = 0.0
+    total_cantidad = 0
+    usuarios = set()
+    clientes = set()
+    sitios = set()
+
+    def bump(d, key, monto, **labels):
+        if key not in d:
+            d[key] = {"monto": 0.0, "cantidad": 0, **labels}
+        d[key]["monto"] += monto
+        d[key]["cantidad"] += 1
+
+    for r in rows:
+        monto = _to_float(r.get(amount_key))
+        total_monto += monto
+        total_cantidad += 1
+
+        # Por hora / por día
+        h = _hour_of(r.get(date_key))
+        if h is not None:
+            bump(by_hour, h, monto)
+        d = _day_of(r.get(date_key))
+        if d is not None:
+            bump(by_day, d, monto)
+
+        # Por zona
+        zona = r.get("Zona") or "Sin Zona"
+        bump(by_zone, zona, monto)
+
+        # Por ciudad
+        ciudad = r.get("Ciudad") or "Sin Ciudad"
+        bump(by_city, ciudad, monto, ciudad=ciudad)
+
+        # Por tipo de sitio de venta
+        tipo = r.get("Tipo SV") or "Sin Tipo"
+        bump(by_type_sv, tipo, monto)
+
+        # Por oficina
+        cod_of = r.get("Cod. Oficina")
+        bump(by_office, cod_of, monto, oficina=(r.get("Oficina") or "Sin Oficina"), cod_oficina=cod_of)
+
+        # Por sitio (incluye coordenadas para el mapa, municipio y tipo SV)
+        cod_sitio = r.get("Cod. Sitio")
+        bump(
+            by_site, cod_sitio, monto,
+            cod_sitio=cod_sitio,
+            sitio=(r.get("Sitio de venta") or "Sin Sitio"),
+            oficina=(r.get("Oficina") or "Sin Oficina"),
+            zona=zona,
+            ciudad=ciudad,
+            tipo_sv=tipo,
+            cx=r.get("CX"),
+            cy=r.get("CY"),
+        )
+        if cod_sitio is not None:
+            sitios.add(cod_sitio)
+
+        # Por usuario/vendedor (número de identificación del usuario del sistema)
+        ident = r.get("NUM_IDENTIFICACION")
+        if ident is not None and str(ident).strip() != "":
+            bump(by_user, ident, monto, identificacion=ident)
+            usuarios.add(ident)
+
+        # Por CLIENTE final (IDENTIFICACION en pagos / NUM_CELULAR en recargas)
+        if client_key:
+            cli = r.get(client_key)
+            if cli is not None and str(cli).strip() != "":
+                clientes.add(cli)
+                if cod_sitio is not None:
+                    site_clients.setdefault(cod_sitio, set()).add(cli)
+
+        # Por canal
+        canal = r.get("IDE_CANAL")
+        bump(by_channel, canal if canal is not None else "Sin Canal", monto, canal=canal)
+
+    # Sort helpers
+    def as_sorted_list(d, sort_key="monto", reverse=True, label_key=None):
+        items = []
+        for k, v in d.items():
+            entry = dict(v)
+            if label_key:
+                entry[label_key] = k
+            items.append(entry)
+        items.sort(key=lambda x: x.get(sort_key, 0), reverse=reverse)
+        return items
+
+    # Enriquecer cada sitio con clientes únicos y ticket promedio por transacción.
+    for cod_sitio, entry in by_site.items():
+        entry["clientes"] = len(site_clients.get(cod_sitio, ()))
+        cant = entry.get("cantidad", 0)
+        entry["ticket_promedio"] = round(entry.get("monto", 0) / cant, 2) if cant else 0
+
+    return {
+        "totales": {
+            "monto": round(total_monto, 2),
+            "cantidad": total_cantidad,
+            "usuarios_unicos": len(usuarios),
+            "clientes_unicos": len(clientes),
+            "sitios_unicos": len(sitios),
+            "ticket_promedio": round(total_monto / total_cantidad, 2) if total_cantidad else 0,
+        },
+        # por_hora / por_dia ordenados cronológicamente
+        "por_hora": [
+            {"hora": h, **by_hour[h]} for h in sorted(by_hour.keys())
+        ],
+        "por_dia": [
+            {"fecha": d, **by_day[d]} for d in sorted(by_day.keys())
+        ],
+        "por_zona": as_sorted_list(by_zone, label_key="zona"),
+        "por_ciudad": as_sorted_list(by_city),
+        "por_tipo_sv": as_sorted_list(by_type_sv, label_key="tipo"),
+        "por_oficina": as_sorted_list(by_office),
+        "por_sitio": as_sorted_list(by_site),
+        "por_usuario": as_sorted_list(by_user),
+        "por_canal": as_sorted_list(by_channel, label_key="canal_label"),
+    }
+
+
+def _fetch_betplay_rows(query, desde, hasta):
+    """Ejecuta una query Betplay en ambas BD y devuelve (rows, errors, db_failures)."""
+    rows, errors, db_failures = [], [], False
+    params = {"desde": desde, "hasta": hasta}
+    for db_name, get_conn, pool in (
+        ("CAUCAMED", db_manager.get_cauca_connection, db_manager.pool_cauca),
+        ("FORTUMED", db_manager.get_fortuna_connection, db_manager.pool_fortuna),
+    ):
+        if not pool:
+            errors.append(f"{db_name} pool not initialized.")
+            db_failures = True
+            continue
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, params)
+                    res = rows_to_dicts(cursor)
+                    for r in res:
+                        r["Fuente"] = "CAUCA" if db_name == "CAUCAMED" else "FORTUNA"
+                    rows.extend(res)
+                    logger.info(f"Retrieved {len(res)} Betplay rows from {db_name}.")
+        except Exception as e:
+            msg = f"{db_name} Betplay query failed: {e}"
+            logger.error(msg)
+            errors.append(msg)
+            db_failures = True
+    return rows, errors, db_failures
+
+
+# Claves unificadas usadas cuando tipo == 'ambos' (pagos + recargas juntos).
+BETPLAY_UNIFIED = {"amount_key": "VALOR_UNIFICADO", "date_key": "FECHA_UNIFICADA", "client_key": "CLIENTE_UNIFICADO"}
+
+
+def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
+    """
+    Núcleo reutilizable: devuelve (resultado_dict) con las agregaciones de Betplay
+    para el periodo. Usado por el endpoint /resumen y por el asistente IA.
+    tipo: 'pagos' | 'recargas' | 'ambos' (combina ambos).
+    """
+    tipo = (tipo or "").lower().strip()
+    if tipo not in BETPLAY_CONFIG and tipo != "ambos":
+        raise HTTPException(status_code=400, detail="tipo debe ser 'pagos', 'recargas' o 'ambos'.")
+
+    cache_key = f"betplay_{tipo}_{desde}_{hasta}"
+
+    # 1. Serve from cache unless forcing refresh
+    cached_data, last_updated = get_cached_sales(cache_key)
+    if cached_data is not None and not force_refresh:
+        logger.info(f"Serving Betplay '{tipo}' summary from SQLite Cache (key {cache_key}).")
+        return {"source": "LOCAL_CACHE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
+
+    logger.info(f"Fetching Betplay '{tipo}' from Oracle: {desde} -> {hasta}")
+
+    # 2. Fetch rows (una o ambas queries según el tipo)
+    errors = []
+    db_failures = False
+    if tipo == "ambos":
+        rows = []
+        for sub in ("pagos", "recargas"):
+            cfg = BETPLAY_CONFIG[sub]
+            sub_rows, sub_err, sub_fail = _fetch_betplay_rows(cfg["query"], desde, hasta)
+            errors.extend(sub_err)
+            db_failures = db_failures or sub_fail
+            # Normalizar a columnas unificadas para agregar todo junto.
+            for r in sub_rows:
+                r["TIPO_TX"] = "Pago" if sub == "pagos" else "Recarga"
+                r["VALOR_UNIFICADO"] = r.get(cfg["amount_key"])
+                r["FECHA_UNIFICADA"] = r.get(cfg["date_key"])
+                r["CLIENTE_UNIFICADO"] = r.get(cfg["client_key"])
+            rows.extend(sub_rows)
+        agg_cfg = BETPLAY_UNIFIED
+    else:
+        cfg = BETPLAY_CONFIG[tipo]
+        rows, errors, db_failures = _fetch_betplay_rows(cfg["query"], desde, hasta)
+        agg_cfg = cfg
+
+    # 3. Fallback to stale cache if DB failed and we have something cached
+    if db_failures and not rows and cached_data is not None:
+        logger.warning(f"Betplay DB query failed. Serving stale cache. Errors: {errors}")
+        return {"source": "LOCAL_CACHE_STALE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
+
+    # 4. Aggregate and cache (incluye filas crudas con tope para no inflar el payload).
+    # Tope amplio porque el filtrado del dashboard se hace en el navegador sobre
+    # estas filas; si se supera, los filtros operan sobre una muestra.
+    DETALLE_LIMIT = 20000
+    resumen = aggregate_betplay(rows, agg_cfg["amount_key"], agg_cfg["date_key"], client_key=agg_cfg.get("client_key"))
+    resumen["detalle"] = rows[:DETALLE_LIMIT]
+    resumen["detalle_total"] = len(rows)
+    set_cached_sales(cache_key, resumen)
+
+    return {"source": "DATABASE", "tipo": tipo, "desde": desde, "hasta": hasta, "errors": errors, "data": resumen}
+
+
+@app.get("/api/betplay/resumen")
+def get_betplay_resumen(
+    tipo: str = Query("pagos", description="Tipo de transacción: 'pagos' o 'recargas'"),
+    desde: str = Query(..., description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
+    hasta: str = Query(..., description="Fecha fin (exclusiva) YYYY-MM-DD HH:MM:SS"),
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar caché"),
+):
+    """
+    Returns pre-calculated aggregations of Betplay payments/recharges for the
+    given period, querying both CAUCAMED and FORTUMED. Cached in SQLite per key.
+    """
+    return compute_betplay_resumen(tipo, desde, hasta, force_refresh)
+
+
+# ============================ ASISTENTE IA ============================
+
+# Configuración del modelo (LM Studio en Mac local, API compatible con OpenAI).
+# Los valores por defecto están "quemados" para que producción funcione aunque
+# no exista el archivo .env; pueden sobreescribirse vía variables de entorno.
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://10.0.29.27:1234/v1")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemma-4-e4b-it-qat")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
+LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "2"))
+LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "50"))
+
+# Topes del CONTEXTO agregado que se inyecta al modelo en cada mensaje.
+# Ajustables por variable de entorno para reducir el tamaño del prompt sin
+# tocar el código. Valores por defecto = recorte "moderado".
+CTX_CIUDAD_TOP = int(os.getenv("CTX_CIUDAD_TOP", "10"))
+CTX_OFICINA_TOP = int(os.getenv("CTX_OFICINA_TOP", "5"))
+CTX_SITIOS_TOP = int(os.getenv("CTX_SITIOS_TOP", "5"))
+CTX_USUARIOS_TOP = int(os.getenv("CTX_USUARIOS_TOP", "5"))
+CTX_HISTORIAL_DIAS = int(os.getenv("CTX_HISTORIAL_DIAS", "14"))
+
+# Host base de LM Studio (sin /v1), para la REST API nativa de control de modelos
+# (POST /api/v1/models/load y /unload, GET /api/v0/models).
+LLM_HOST = LLM_BASE_URL.rsplit("/v1", 1)[0].rstrip("/")
+
+# Catálogo de modelos seleccionables por el usuario, con nombres amigables
+# (nivel de "inteligencia"). El id DEBE coincidir (minúsculas) con LM Studio.
+ASSISTANT_MODELS = [
+    {"id": "gemma-4-e2b-it-qat", "label": "Inteligencia Baja"},
+    {"id": "gemma-4-e4b-it-qat", "label": "Inteligencia Media"},
+    {"id": "gemma-4-12b-it-qat", "label": "Inteligencia Alta"},
+]
+_ASSISTANT_MODEL_IDS = {m["id"] for m in ASSISTANT_MODELS}
+
+# Modelos con capacidad de visión (aceptan imágenes). Solo el 12B la tiene.
+# Las imágenes adjuntas solo se envían al modelo si es uno de estos.
+VISION_MODEL_IDS = {"gemma-4-12b-it-qat"}
+
+# Límites de adjuntos (para no desbordar el contexto ni la memoria).
+UPLOAD_MAX_BYTES = int(os.getenv("ASSISTANT_UPLOAD_MAX_MB", "10")) * 1024 * 1024
+PDF_TEXT_MAX_CHARS = int(os.getenv("ASSISTANT_PDF_TEXT_MAX_CHARS", "12000"))
+
+
+@app.get("/api/assistant/health")
+def assistant_health():
+    """
+    Verifica si la API del modelo (LM Studio en la Mac) está accesible.
+    Hace un GET a {LLM_BASE_URL}/models con timeout corto.
+    """
+    import urllib.request
+    import urllib.error
+
+    url = LLM_BASE_URL.rstrip("/") + "/models"
+    try:
+        req = urllib.request.Request(url, headers={"Authorization": "Bearer lm-studio"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        # LM Studio devuelve { "data": [ { "id": "..." }, ... ] }
+        models = [m.get("id") for m in payload.get("data", [])] if isinstance(payload, dict) else []
+        return {"online": True, "base_url": LLM_BASE_URL, "configured_model": LLM_MODEL, "models": models}
+    except Exception as e:
+        logger.warning(f"Assistant health check failed: {e}")
+        return {"online": False, "base_url": LLM_BASE_URL, "configured_model": LLM_MODEL, "error": str(e)}
+
+
+_llm_client = None
+
+
+def get_llm_client():
+    """Lazy singleton del cliente OpenAI apuntando a LM Studio."""
+    global _llm_client
+    if _llm_client is None:
+        from openai import OpenAI
+        _llm_client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+    return _llm_client
+
+
+# ---- Control nativo de modelos en LM Studio (load/unload) ----
+
+def _lmstudio_request(method, path, body=None, timeout=10):
+    """Hace una petición HTTP a la REST API nativa de LM Studio."""
+    import urllib.request
+    url = LLM_HOST + path
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8")
+    return json.loads(raw) if raw.strip() else {}
+
+
+def _lmstudio_loaded_llms():
+    """Devuelve la lista de ids de modelos LLM actualmente cargados (state=loaded)."""
+    payload = _lmstudio_request("GET", "/api/v0/models", timeout=5)
+    out = []
+    for m in (payload.get("data", []) if isinstance(payload, dict) else []):
+        if m.get("type") in ("llm", "vlm") and m.get("state") == "loaded":
+            out.append(m.get("id"))
+    return out
+
+
+def _current_catalog_model():
+    """
+    Devuelve el id del modelo del catálogo que esté actualmente cargado en
+    LM Studio, o None si ninguno del catálogo está cargado. Útil para arrancar
+    usando lo que ya está cargado sin forzar un swap.
+    """
+    try:
+        for mid in _lmstudio_loaded_llms():
+            if mid in _ASSISTANT_MODEL_IDS:
+                return mid
+    except Exception as e:
+        logger.warning(f"No se pudo determinar el modelo cargado: {e}")
+    return None
+
+
+def ensure_model_loaded(target):
+    """
+    Garantiza que `target` sea el modelo cargado en LM Studio, descargando
+    cualquier otro LLM cargado (eject) y cargando el solicitado si hace falta.
+    Devuelve dict con el resultado. Best-effort: si LM Studio no soporta algún
+    paso, se reporta el error pero no se lanza excepción.
+    """
+    result = {"model": target, "swapped": False, "unloaded": [], "load_time_seconds": None}
+    try:
+        loaded = _lmstudio_loaded_llms()
+    except Exception as e:
+        result["error"] = f"No se pudo consultar modelos cargados: {e}"
+        return result
+
+    if target in loaded:
+        result["already_loaded"] = True
+        return result
+
+    # Eject de los demás LLM cargados.
+    for mid in loaded:
+        if mid == target:
+            continue
+        try:
+            _lmstudio_request("POST", "/api/v1/models/unload", {"instance_id": mid}, timeout=30)
+            result["unloaded"].append(mid)
+        except Exception as e:
+            logger.warning(f"No se pudo descargar el modelo {mid}: {e}")
+
+    # Carga del modelo solicitado (puede tardar para modelos grandes).
+    try:
+        loaded_info = _lmstudio_request("POST", "/api/v1/models/load", {"model": target}, timeout=180)
+        result["swapped"] = True
+        result["load_time_seconds"] = loaded_info.get("load_time_seconds")
+    except Exception as e:
+        result["error"] = f"No se pudo cargar el modelo {target}: {e}"
+    return result
+
+
+@app.get("/api/assistant/models")
+def assistant_models():
+    """
+    Catálogo de modelos seleccionables (nombres amigables) y su estado de carga
+    en LM Studio, más el modelo configurado por defecto.
+    """
+    try:
+        loaded = set(_lmstudio_loaded_llms())
+    except Exception as e:
+        logger.warning(f"No se pudo consultar estado de modelos: {e}")
+        loaded = set()
+    models = [
+        {"id": m["id"], "label": m["label"], "loaded": m["id"] in loaded,
+         "vision": m["id"] in VISION_MODEL_IDS}
+        for m in ASSISTANT_MODELS
+    ]
+    return {"models": models, "default": LLM_MODEL}
+
+
+class AssistantModelSelectRequest(BaseModel):
+    model: str
+
+
+@app.post("/api/assistant/model/select")
+def assistant_model_select(req: AssistantModelSelectRequest):
+    """
+    Cambia el modelo activo en LM Studio: descarga el actual y carga el pedido.
+    """
+    if req.model not in _ASSISTANT_MODEL_IDS:
+        return {"ok": False, "error": f"Modelo no permitido: {req.model}"}
+    res = ensure_model_loaded(req.model)
+    res["ok"] = "error" not in res
+    return res
+
+
+def _compact_resumen_for_context(tipo, desde, hasta):
+    """
+    Construye una versión compacta del resumen agregado (sin filas crudas)
+    para inyectar como contexto al modelo. Recorta listas largas a top-N.
+    """
+    try:
+        result = compute_betplay_resumen(tipo, desde, hasta, force_refresh=False)
+    except Exception as e:
+        logger.error(f"No se pudo calcular resumen para contexto ({tipo}): {e}")
+        return {"tipo": tipo, "error": str(e)}
+
+    data = result.get("data", {}) or {}
+    return {
+        "tipo": tipo,
+        "totales": data.get("totales", {}),
+        "por_hora": data.get("por_hora", []),
+        "por_zona": data.get("por_zona", []),
+        "por_ciudad": (data.get("por_ciudad", []) or [])[:CTX_CIUDAD_TOP],
+        "por_tipo_sv": data.get("por_tipo_sv", []),
+        "por_oficina": (data.get("por_oficina", []) or [])[:CTX_OFICINA_TOP],
+        "top_sitios": (data.get("por_sitio", []) or [])[:CTX_SITIOS_TOP],
+        "top_usuarios": (data.get("por_usuario", []) or [])[:CTX_USUARIOS_TOP],
+        "por_canal": data.get("por_canal", []),
+    }
+
+
+def _betplay_historial_diario(dias=28):
+    """
+    Devuelve los totales por día de pagos y recargas de los últimos `dias` días
+    (para que el asistente pueda hacer proyecciones). Usa caché por rango.
+    """
+    today = date.today()
+    desde = f"{(today - timedelta(days=dias)).isoformat()} 00:00:00"
+    hasta = f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
+    series = {}
+    for tipo in ("pagos", "recargas"):
+        try:
+            result = compute_betplay_resumen(tipo, desde, hasta, force_refresh=False)
+            series[tipo] = (result.get("data", {}) or {}).get("por_dia", [])
+        except Exception as e:
+            logger.error(f"No se pudo calcular historial diario ({tipo}): {e}")
+            series[tipo] = []
+    return {"desde": desde, "hasta": hasta, "dias": dias, "por_dia": series}
+
+
+@app.post("/api/assistant/upload")
+async def assistant_upload(file: UploadFile = File(...)):
+    """
+    Procesa un PDF adjunto y devuelve su texto extraído (para inyectarlo como
+    contexto en el chat). Solo PDFs: las imágenes se manejan en el cliente
+    (base64) y solo se envían al modelo con visión.
+    """
+    raw = await file.read()
+    if len(raw) > UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"El archivo supera el límite de {UPLOAD_MAX_BYTES // (1024*1024)} MB.")
+
+    name = (file.filename or "").lower()
+    if not name.endswith(".pdf"):
+        raise HTTPException(status_code=415, detail="Solo se aceptan archivos PDF en este endpoint.")
+
+    try:
+        from pypdf import PdfReader
+        import io
+        reader = PdfReader(io.BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                continue
+        texto = "\n".join(parts).strip()
+    except Exception as e:
+        logger.error(f"No se pudo extraer texto del PDF: {e}")
+        raise HTTPException(status_code=422, detail="No se pudo leer el PDF.")
+
+    truncated = len(texto) > PDF_TEXT_MAX_CHARS
+    if truncated:
+        texto = texto[:PDF_TEXT_MAX_CHARS]
+
+    return {
+        "filename": file.filename,
+        "kind": "pdf",
+        "chars": len(texto),
+        "truncated": truncated,
+        "escaneado": len(texto) < 40,  # casi sin texto => probablemente escaneado
+        "texto": texto,
+    }
+
+
+ASSISTANT_SYSTEM_PROMPT = """Eres un asistente de análisis de datos para el producto Betplay de una empresa de apuestas y servicios.
+Respondes y piensas/razonas SIEMPRE en español, de forma clara y concisa, orientado a la toma de decisiones.
+Puedes usar Markdown (negritas con **texto**, listas con guiones, etc.).
+
+Se te entrega un CONTEXTO con datos AGREGADOS del día (pagos y recargas): totales, ventas por hora, por zona,
+por CIUDAD, por tipo de sitio de venta, por oficina, top sitios y top usuarios (por número de identificación), y por canal.
+Además, se incluye "historial_diario" con los totales por día (monto y cantidad) de pagos y recargas de los últimos días disponibles.
+- "monto" está en pesos colombianos (COP). "cantidad" es número de transacciones.
+- Hay datos por ZONA y por CIUDAD; úsalos según lo que pregunten.
+- Básate en los datos del contexto para las cifras. Si te piden algo que no está en el contexto, dilo con honestidad.
+- No inventes cifras. Cuando des números, sé preciso con los del contexto.
+- Aún NO ejecutas consultas SQL.
+
+FORMA DE RESPONDER (importante):
+- No sobrepienses. Para preguntas simples, directas o de un solo dato (por ejemplo "¿cuánto se vendió hoy?",
+  "¿cuál fue la zona con más ventas?"), responde de forma directa y breve, sin razonamiento extenso.
+  Reserva el análisis más elaborado para preguntas analíticas, comparativas o de proyección.
+- Tienes LIBERTAD para enriquecer tus respuestas: cuando aporte valor, puedes agregar datos de apoyo,
+  observaciones y conclusiones que ayuden a la toma de decisiones. Etiqueta claramente lo que es interpretación
+  tuya (por ejemplo con "Observación:" o "Conclusión:") y no lo mezcles con las cifras exactas del contexto.
+- EXCEPCIÓN: si el usuario pide EXPLÍCITAMENTE solo un dato o solo cierta información
+  (por ejemplo "dame solo el total", "únicamente el número", "sin análisis"), entrega solo eso,
+  sin observaciones ni conclusiones añadidas.
+
+PROYECCIONES:
+Si te piden un estimado/proyección de ventas del día, PUEDES hacerlo usando "historial_diario"
+(por ejemplo, promediando los mismos días de la semana o la tendencia reciente). SIEMPRE que proyectes:
+- Explica brevemente el método usado.
+- Añade una nota clara: "Esta es una proyección estimada y subjetiva, no un valor garantizado."
+- Ten en cuenta que el día actual puede estar incompleto (parcial hasta la hora actual).
+
+GRÁFICOS Y TABLAS:
+Cuando una visualización ayude a responder, puedes incluirla usando bloques de código cercados con un lenguaje especial.
+El texto explicativo va FUERA de los bloques (antes o después). Usa JSON válido dentro del bloque.
+
+Para un gráfico, usa un bloque ```chart con este formato exacto:
+```chart
+{"chart_type": "bar", "title": "Monto por zona", "x": ["Norte","Sur"], "series": [{"label": "Monto", "data": [3800000, 2100000]}]}
+```
+- chart_type puede ser: "bar", "horizontalBar", "line", "doughnut" o "pie".
+- "x" son las etiquetas/categorías; cada serie tiene "label" y "data" (números alineados con "x").
+
+Para una tabla, usa un bloque ```table con este formato exacto:
+```table
+{"columns": ["Sitio","Transacciones"], "rows": [["Puesto A", 15], ["Puesto B", 9]]}
+```
+
+Reglas:
+- Genera un gráfico o tabla SOLO si aporta valor; no abuses.
+- El JSON debe ser válido y completo (no lo cortes). Una sola visualización por bloque.
+- Acompaña la visualización con una breve explicación en texto, pero NO repitas los mismos datos dos veces:
+  si usas un bloque ```table o ```chart, NO vuelvas a escribir esos datos como tabla Markdown ni los enumeres todos en texto.
+- No generes em-dashes
+- No responder con emojis 
+"""
+
+
+class AssistantChatRequest(BaseModel):
+    pregunta: str
+    historial: Optional[List[dict]] = None  # [{role, content}, ...]
+    desde: Optional[str] = None
+    hasta: Optional[str] = None
+    model: Optional[str] = None  # id del modelo elegido (catálogo amigable)
+    # Adjuntos de la pregunta actual:
+    #   pdf   -> {"kind":"pdf","filename":..., "texto":...}
+    #   image -> {"kind":"image","filename":..., "data_url":"data:image/...;base64,..."}
+    adjuntos: Optional[List[dict]] = None
+
+
+@app.post("/api/assistant/chat")
+def assistant_chat(req: AssistantChatRequest):
+    """
+    Chat del asistente con streaming. Inyecta como contexto el resumen agregado
+    de pagos y recargas del periodo (por defecto, el día actual) y transmite la
+    respuesta del modelo token a token (text/plain).
+    """
+    # Rango por defecto: día actual [hoy 00:00, mañana 00:00)
+    today = date.today()
+    desde = req.desde or f"{today.isoformat()} 00:00:00"
+    hasta = req.hasta or f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
+
+    contexto = {
+        "periodo": {"desde": desde, "hasta": hasta},
+        "pagos": _compact_resumen_for_context("pagos", desde, hasta),
+        "recargas": _compact_resumen_for_context("recargas", desde, hasta),
+        "historial_diario": _betplay_historial_diario(CTX_HISTORIAL_DIAS),
+    }
+
+    # Resolución del modelo (se hace antes de armar el mensaje porque las
+    # imágenes solo se envían a modelos con visión):
+    # - Si el usuario eligió uno del catálogo, se usa y se asegura su carga.
+    # - Si NO hay selección explícita, se usa el modelo del catálogo que ya esté
+    #   cargado. Solo si no hay ninguno cargado se recurre al configurado.
+    if req.model in _ASSISTANT_MODEL_IDS:
+        model_id = req.model
+        ensure_model_loaded(model_id)
+    else:
+        loaded = _current_catalog_model()
+        model_id = loaded or LLM_MODEL
+        if loaded is None:
+            ensure_model_loaded(model_id)
+
+    tiene_vision = model_id in VISION_MODEL_IDS
+
+    messages = [
+        {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
+        {"role": "system", "content": "CONTEXTO (datos agregados del periodo):\n" + json.dumps(contexto, ensure_ascii=False)},
+    ]
+    if req.historial:
+        for m in req.historial[-8:]:  # limitar historial
+            role = m.get("role")
+            content = m.get("content")
+            if role in ("user", "assistant") and content:
+                messages.append({"role": role, "content": content})
+
+    # Mensaje del usuario, enriquecido con adjuntos (PDF como texto, imágenes
+    # como image_url solo si el modelo tiene visión).
+    texto_usuario = req.pregunta
+    imagenes = []
+    if req.adjuntos:
+        bloques_pdf = []
+        for a in req.adjuntos:
+            kind = (a or {}).get("kind")
+            if kind == "pdf" and a.get("texto"):
+                fn = a.get("filename") or "documento.pdf"
+                bloques_pdf.append(f"--- Documento adjunto: {fn} ---\n{a['texto']}")
+            elif kind == "image" and a.get("data_url"):
+                if tiene_vision:
+                    imagenes.append(a["data_url"])
+                # Si no hay visión, la imagen se ignora silenciosamente
+                # (el frontend ya avisa al usuario antes de enviar).
+        if bloques_pdf:
+            texto_usuario = (
+                "Documentos adjuntos por el usuario (úsalos como contexto para responder):\n\n"
+                + "\n\n".join(bloques_pdf)
+                + "\n\n--- Pregunta ---\n"
+                + req.pregunta
+            )
+
+    if imagenes:
+        content = [{"type": "text", "text": texto_usuario}]
+        for url in imagenes:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": texto_usuario})
+
+    def token_stream():
+        # El razonamiento llega en un campo aparte (reasoning_content en LM Studio
+        # 0.4.x). Lo envolvemos token a token en las etiquetas que el frontend ya
+        # sabe parsear, para mostrarlo en vivo como bloque colapsable separado de
+        # la respuesta (se preserva el streaming completo, sin bufferizar).
+        in_reasoning = False
+        try:
+            client = get_llm_client()
+            stream = client.chat.completions.create(
+                model=model_id,
+                messages=messages,
+                temperature=0.4,
+                stream=True,
+            )
+            for chunk in stream:
+                try:
+                    delta = chunk.choices[0].delta
+                except (AttributeError, IndexError):
+                    continue
+                # reasoning_content (0.4.x) o reasoning (0.3.x), por robustez.
+                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                content = getattr(delta, "content", None)
+                if reasoning:
+                    if not in_reasoning:
+                        in_reasoning = True
+                        yield "<|channel>thought"
+                    yield reasoning
+                if content:
+                    if in_reasoning:
+                        in_reasoning = False
+                        yield "<channel|>"
+                    yield content
+            if in_reasoning:
+                yield "<channel|>"
+        except Exception as e:
+            logger.error(f"Assistant chat streaming failed: {e}")
+            if in_reasoning:
+                yield "<channel|>"
+            yield f"\n\n[Error al contactar el modelo: {e}]"
+
+    return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")
+
+
+def _resolve_assistant_model(model):
+    """Resuelve y asegura la carga del modelo (misma lógica que el chat)."""
+    if model in _ASSISTANT_MODEL_IDS:
+        ensure_model_loaded(model)
+        return model
+    loaded = _current_catalog_model()
+    model_id = loaded or LLM_MODEL
+    if loaded is None:
+        ensure_model_loaded(model_id)
+    return model_id
+
+
+def _stream_assistant_tokens(messages, model_id, temperature=0.4):
+    """Generador que streamea la respuesta del modelo, envolviendo el
+    razonamiento en las etiquetas que el frontend sabe parsear."""
+    in_reasoning = False
+    try:
+        client = get_llm_client()
+        stream = client.chat.completions.create(
+            model=model_id, messages=messages, temperature=temperature, stream=True,
+        )
+        for chunk in stream:
+            try:
+                delta = chunk.choices[0].delta
+            except (AttributeError, IndexError):
+                continue
+            reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            content = getattr(delta, "content", None)
+            if reasoning:
+                if not in_reasoning:
+                    in_reasoning = True
+                    yield "<|channel>thought"
+                yield reasoning
+            if content:
+                if in_reasoning:
+                    in_reasoning = False
+                    yield "<channel|>"
+                yield content
+        if in_reasoning:
+            yield "<channel|>"
+    except Exception as e:
+        logger.error(f"Assistant streaming failed: {e}")
+        if in_reasoning:
+            yield "<channel|>"
+        yield f"\n\n[Error al contactar el modelo: {e}]"
+
+
+REPORT_SYSTEM_PROMPT = """Eres un redactor de informes ejecutivos para el producto Betplay.
+A partir de FUENTES (fragmentos de una conversación de análisis: preguntas del usuario y respuestas del asistente)
+y un CATÁLOGO DE FIGURAS disponibles, redacta un informe profesional en español, claro y orientado a decisiones.
+
+Estructura el informe con:
+- Un título (encabezado con "# ").
+- Una introducción breve que contextualice el análisis.
+- Secciones de análisis (encabezados con "## ") que integren y redacten la información de las fuentes.
+- Una sección final de "## Conclusiones" con hallazgos y recomendaciones accionables.
+
+Sobre las FIGURAS:
+- El catálogo lista figuras numeradas (Figura 1, Figura 2, ...) con su título.
+- Cuando quieras que una figura aparezca en el informe, escribe en una LÍNEA APARTE exactamente el marcador: [[FIGURA:N]]
+  (por ejemplo, una línea que contenga solo "[[FIGURA:1]]"). El sistema insertará ahí el gráfico o tabla real.
+- Puedes referenciarla en el texto como "(ver Figura N)". Usa cada figura como máximo una vez.
+- No escribas bloques de código ```chart o ```table; solo usa los marcadores [[FIGURA:N]].
+
+Reglas:
+- Usa SOLO la información de las fuentes; no inventes cifras nuevas.
+- Redacta de forma fluida y profesional (no copies las preguntas ni el estilo de chat).
+- Usa Markdown (encabezados #/##, negritas **, listas con guiones).
+- No generes em-dashes. No uses emojis.
+"""
+
+
+class AssistantReportRequest(BaseModel):
+    fuentes: List[dict]          # [{rol:'user'|'assistant', texto:'...'}]
+    figuras: Optional[List[dict]] = None  # [{n, tipo:'chart'|'table', titulo}]
+    titulo: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/api/assistant/report")
+def assistant_report(req: AssistantReportRequest):
+    """
+    Segundo pase del modelo: toma mensajes seleccionados como fuentes y redacta
+    un informe ejecutivo (con marcadores [[FIGURA:N]] para intercalar figuras).
+    Devuelve el texto en streaming.
+    """
+    model_id = _resolve_assistant_model(req.model)
+
+    fuentes_txt = []
+    for i, f in enumerate(req.fuentes or [], 1):
+        rol = "Usuario" if (f or {}).get("rol") == "user" else "Asistente"
+        texto = (f or {}).get("texto", "")
+        fuentes_txt.append(f"[Fuente {i} - {rol}]\n{texto}")
+
+    figuras_txt = []
+    for fig in (req.figuras or []):
+        n = fig.get("n")
+        tipo = "gráfico" if fig.get("tipo") == "chart" else "tabla"
+        titulo = fig.get("titulo") or f"Figura {n}"
+        figuras_txt.append(f"- Figura {n} ({tipo}): {titulo}")
+
+    partes = ["FUENTES:\n" + "\n\n".join(fuentes_txt)]
+    if figuras_txt:
+        partes.append("CATÁLOGO DE FIGURAS:\n" + "\n".join(figuras_txt))
+    else:
+        partes.append("CATÁLOGO DE FIGURAS: (ninguna)")
+    if req.titulo:
+        partes.append(f"El usuario sugiere este título: {req.titulo}")
+    partes.append("Redacta el informe ahora.")
+
+    messages = [
+        {"role": "system", "content": REPORT_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(partes)},
+    ]
+
+    return StreamingResponse(
+        _stream_assistant_tokens(messages, model_id, temperature=0.5),
+        media_type="text/plain; charset=utf-8",
+    )
+
+# ============================ ASISTENTE IA ============================
 
 @app.post("/api/upload/metas")
 async def upload_metas(

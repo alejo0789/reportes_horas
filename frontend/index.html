@@ -12,19 +12,45 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="stylesheet" href="styles.css?v=1.1">
+    <!-- SheetJS (exportar tablas a Excel) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- html2canvas + jsPDF (exportar visuales a PDF) -->
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <!-- Leaflet (mapa geográfico + heatmap) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+    <!-- leaflet-image: renderiza el mapa a canvas para el PDF (sin offset) -->
+    <script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
+    <link rel="stylesheet" href="styles.css?v=3.9">
 </head>
 <body>
+    <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
+         Se define una sola vez; lo usan .lg-refract (tabs, botones, toggles). -->
+    <svg class="lg-svg" aria-hidden="true" width="0" height="0" style="position:absolute;">
+        <filter id="lensRefraction" x="0%" y="0%" width="100%" height="100%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.002 0.002"
+                numOctaves="1" seed="14" stitchTiles="stitch" result="noise" />
+            <feGaussianBlur in="noise" stdDeviation="6" result="soft" />
+            <feDisplacementMap in="SourceGraphic" in2="soft"
+                scale="40" xChannelSelector="R" yChannelSelector="G" />
+        </filter>
+    </svg>
+
     <div class="glow-bg"></div>
     
-    <div class="container">
-        <!-- HEADER -->
-        <header class="glass-panel main-header">
+    <!-- HEADER (full-width, pegado arriba) -->
+    <header class="main-header">
             <div class="header-logo">
-                <i class="fa-solid fa-chart-line-up logo-icon"></i>
-                <div>
-                    <h1>DASHBOARD VENTAS POR HORA</h1>
-                    <p class="subtitle">Análisis Transaccional y Control de Metas Diarias</p>
+                <img src="assets/logos/acertemos.png" alt="Acertemos" class="brand-logo">
+                <span class="brand-divider"></span>
+                <img src="assets/logos/sured.png" alt="SU RED" class="brand-logo">
+                <span class="brand-divider"></span>
+                <img src="assets/logos/negativo.png" alt="Logo" class="brand-logo">
+                <div class="header-title">
+                    <h1>Dashboard de Operaciones</h1>
+                    <p class="subtitle">Análisis transaccional y control de metas</p>
                 </div>
             </div>
             <div class="header-actions">
@@ -40,11 +66,42 @@
                     </div>
                 </div>
             </div>
-        </header>
+    </header>
+
+    <div class="container">
+        <!-- TAB NAVIGATION + TOOLBAR ASISTENTE (misma fila) -->
+        <div class="nav-row">
+            <nav class="tab-bar" id="tab-bar">
+                <!-- Indicador de vidrio que se desliza entre pestañas -->
+                <span class="tab-indicator lg-refract" id="tab-indicator" aria-hidden="true"></span>
+                <button type="button" class="tab-btn active" data-view="view-ventas">
+                    <i class="fa-solid fa-chart-line"></i> <span>Ventas por Hora</span>
+                </button>
+                <button type="button" class="tab-btn" data-view="view-betplay">
+                    <img src="assets/logos/betplay.jpg" alt="Betplay" class="tab-logo">
+                </button>
+                <button type="button" class="tab-btn" data-view="view-asistente">
+                    <i class="fa-solid fa-robot"></i> <span>Asistente IA</span>
+                </button>
+            </nav>
+
+            <!-- Barra de estado + selector de modelo (solo visible en Asistente) -->
+            <div class="asistente-toolbar" id="asistente-conn" hidden>
+                <span class="status-indicator" id="asistente-conn-indicator"></span>
+                <span class="status-text" id="asistente-conn-text">Verificando conexión...</span>
+                <span class="asistente-toolbar-divider"></span>
+                <i class="fa-solid fa-brain"></i>
+                <select id="asistente-model-select" class="asistente-model-select"></select>
+                <span class="asistente-model-status" id="asistente-model-status" hidden></span>
+            </div>
+        </div>
+
+        <!-- ===================== VISTA: VENTAS POR HORA ===================== -->
+        <div class="tab-view" id="view-ventas">
 
         <!-- TOP KPI CARDS -->
-        <section class="kpi-grid">
-            <div class="glass-panel kpi-card">
+        <section class="kpi-strip">
+            <div class="kpi-card">
                 <div class="kpi-icon icon-sales"><i class="fa-solid fa-wallet"></i></div>
                 <div class="kpi-content">
                     <span class="kpi-title">Venta Neta del Día</span>
@@ -52,7 +109,7 @@
                     <span class="kpi-trend trend-neutral" id="kpi-sales-sub">Cargando...</span>
                 </div>
             </div>
-            <div class="glass-panel kpi-card">
+            <div class="kpi-card">
                 <div class="kpi-icon icon-goal"><i class="fa-solid fa-bullseye-arrow"></i></div>
                 <div class="kpi-content">
                     <span class="kpi-title">Meta Total Acumulada</span>
@@ -60,7 +117,7 @@
                     <span class="kpi-trend trend-neutral" id="kpi-goal-sub">Cargando...</span>
                 </div>
             </div>
-            <div class="glass-panel kpi-card">
+            <div class="kpi-card">
                 <div class="kpi-icon icon-compliance"><i class="fa-solid fa-percent"></i></div>
                 <div class="kpi-content">
                     <span class="kpi-title">% Cumplimiento</span>
@@ -70,7 +127,7 @@
                     </div>
                 </div>
             </div>
-            <div class="glass-panel kpi-card">
+            <div class="kpi-card">
                 <div class="kpi-icon icon-sites"><i class="fa-solid fa-shop"></i></div>
                 <div class="kpi-content">
                     <span class="kpi-title">Sitios de Venta</span>
@@ -95,7 +152,7 @@
                         <button class="action-btn-primary" id="btn-manage-coordinators" style="width: 100%; background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);">
                             <i class="fa-solid fa-user-shield"></i> Gestionar Coordinadores
                         </button>
-                        <button class="action-btn-primary" id="btn-manage-administrators" style="width: 100%; background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);">
+                        <button class="action-btn-primary" id="btn-manage-administrators" style="width: 100%; background: linear-gradient(135deg, #0a2e73 0%, #06205a 100%);">
                             <i class="fa-solid fa-user-gear"></i> Gestionar Administradores
                         </button>
                     </div>
@@ -235,7 +292,7 @@
                 <h3 class="section-title">
                     <i class="fa-solid fa-table-list"></i> 
                     Detalle de Ventas y Metas por Sitio
-                    <span id="table-results-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.04);"></span>
+                    <span id="table-results-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
                 </h3>
                 <div class="table-search">
                     <i class="fa-solid fa-magnifying-glass"></i>
@@ -309,7 +366,7 @@
                 </div>
                 <!-- RESUMEN PRODUCTOS POR PROMOTOR -->
                 <div class="promoter-products-section" id="promoter-products-section" style="margin-top: 20px; margin-bottom: 24px;">
-                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #ffffff;"><i class="fa-solid fa-tags"></i> Resumen Productos</h5>
+                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: var(--text-primary);"><i class="fa-solid fa-tags"></i> Resumen Productos</h5>
                     <div class="promoter-offices-grid" id="promoter-products-grid">
                         <!-- Tarjetas de producto se cargan dinámicamente -->
                     </div>
@@ -317,7 +374,7 @@
 
                 <!-- RESUMEN OFICINAS POR PROMOTOR -->
                 <div class="promoter-offices-section" id="promoter-offices-section" style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 20px;">
-                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: #ffffff;"><i class="fa-solid fa-building"></i> Resumen Oficinas</h5>
+                    <h5 class="promoter-section-title" style="margin-bottom: 12px; font-size: 15px; font-weight: 600; color: var(--text-primary);"><i class="fa-solid fa-building"></i> Resumen Oficinas</h5>
                     <div class="promoter-offices-grid" id="promoter-offices-grid">
                         <!-- Tarjetas de oficina se cargan dinámicamente -->
                     </div>
@@ -350,6 +407,443 @@
                 </table>
             </div>
         </section>
+
+        </div><!-- /#view-ventas -->
+
+        <!-- ===================== VISTA: BETPLAY ===================== -->
+        <div class="tab-view" id="view-betplay" hidden>
+
+            <!-- CONTROLES: TIPO Y RANGO DE FECHAS -->
+            <section class="glass-panel betplay-controls">
+                <h3 class="section-title"><i class="fa-solid fa-dice"></i> Betplay · Pagos y Recargas</h3>
+                <p class="section-desc">Selecciona el tipo de transacción y el periodo a analizar.</p>
+
+                <div class="betplay-controls-row">
+                    <!-- TIPO DE TRANSACCION -->
+                    <div class="filter-group">
+                        <label for="betplay-type"><i class="fa-solid fa-layer-group"></i> Tipo</label>
+                        <select id="betplay-type" class="filter-select">
+                            <option value="pagos">Pagos</option>
+                            <option value="recargas">Recargas</option>
+                            <option value="ambos">Pagos y Recargas</option>
+                        </select>
+                    </div>
+
+                    <!-- MODO DE FECHA -->
+                    <div class="filter-group">
+                        <label for="betplay-date-mode"><i class="fa-solid fa-calendar-days"></i> Periodo</label>
+                        <select id="betplay-date-mode" class="filter-select">
+                            <option value="today">Día actual</option>
+                            <option value="single">Fecha puntual</option>
+                            <option value="range">Rango de fechas</option>
+                        </select>
+                    </div>
+
+                    <!-- FECHA PUNTUAL -->
+                    <div class="filter-group betplay-date-field" id="betplay-single-field" hidden>
+                        <label for="betplay-date-single"><i class="fa-solid fa-calendar-day"></i> Fecha</label>
+                        <input type="date" id="betplay-date-single" class="filter-select">
+                    </div>
+
+                    <!-- RANGO: DESDE / HASTA -->
+                    <div class="filter-group betplay-date-field" id="betplay-range-from-field" hidden>
+                        <label for="betplay-date-from"><i class="fa-solid fa-calendar-day"></i> Desde</label>
+                        <input type="date" id="betplay-date-from" class="filter-select">
+                    </div>
+                    <div class="filter-group betplay-date-field" id="betplay-range-to-field" hidden>
+                        <label for="betplay-date-to"><i class="fa-solid fa-calendar-day"></i> Hasta</label>
+                        <input type="date" id="betplay-date-to" class="filter-select">
+                    </div>
+
+                    <!-- METRICA: MONTO / CANTIDAD -->
+                    <div class="filter-group">
+                        <label><i class="fa-solid fa-coins"></i> Métrica</label>
+                        <div class="betplay-metric-toggle" id="betplay-metric-toggle">
+                            <button type="button" class="metric-btn active" data-metric="monto">Monto ($)</button>
+                            <button type="button" class="metric-btn" data-metric="cantidad">Cantidad</button>
+                        </div>
+                    </div>
+
+                    <!-- BOTON CONSULTAR (solo necesario para fecha puntual / rango) -->
+                    <div class="filter-group betplay-apply-group">
+                        <button type="button" class="action-btn-primary" id="btn-betplay-apply">
+                            <i class="fa-solid fa-magnifying-glass-chart"></i> Consultar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- RESUMEN DEL RANGO SELECCIONADO -->
+                <div class="betplay-selection-summary" id="betplay-selection-summary">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <span id="betplay-selection-text">Mostrando: día actual</span>
+                </div>
+            </section>
+
+            <!-- ESTADO DE CARGA -->
+            <div class="betplay-loading" id="betplay-loading" hidden>
+                <i class="fa-solid fa-spinner fa-spin"></i> Consultando transacciones de Betplay...
+            </div>
+
+            <!-- ESTADO VACIO -->
+            <section class="glass-panel betplay-placeholder" id="betplay-empty" hidden>
+                <div class="betplay-placeholder-content">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <p>No se encontraron transacciones para el periodo seleccionado.</p>
+                </div>
+            </section>
+
+            <!-- CONTENIDO (KPIs + GRAFICOS + MAPA + TABLA) -->
+            <div id="betplay-content" hidden>
+
+                <!-- FILTROS GENERALES (aplican a todo el dashboard) -->
+                <section class="glass-panel betplay-filters" id="bp-filters">
+                    <span class="bp-filters-label"><i class="fa-solid fa-filter"></i> Filtros</span>
+                    <select id="bp-filter-municipio" class="filter-select-sm"><option value="">Todos los municipios</option></select>
+                    <select id="bp-filter-tipo" class="filter-select-sm"><option value="">Todos los tipos de SV</option></select>
+                    <select id="bp-filter-zona" class="filter-select-sm"><option value="">Todas las zonas</option></select>
+                    <div class="input-with-icon">
+                        <i class="fa-solid fa-magnifying-glass input-icon"></i>
+                        <input type="text" id="bp-filter-sitio" placeholder="Sitio de venta...">
+                    </div>
+                    <div class="input-with-icon">
+                        <i class="fa-solid fa-magnifying-glass input-icon"></i>
+                        <input type="text" id="bp-filter-cliente" placeholder="Cliente (cédula/celular)...">
+                    </div>
+                    <button type="button" class="btn-table-action" id="bp-filter-clear"><i class="fa-solid fa-eraser"></i> Limpiar</button>
+                    <button type="button" class="action-btn-primary" id="bp-export-pdf" style="padding:8px 16px;"><i class="fa-solid fa-file-pdf"></i> Exportar PDF</button>
+                    <span class="bp-filters-info" id="bp-filters-info"></span>
+                </section>
+
+                <!-- KPI CARDS -->
+                <section class="kpi-strip">
+                    <div class="kpi-card">
+                        <div class="kpi-icon icon-sales"><i class="fa-solid fa-wallet"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-title">Monto Total</span>
+                            <h2 class="kpi-value" id="bp-kpi-monto">$0</h2>
+                            <span class="kpi-trend trend-neutral" id="bp-kpi-ticket">Ticket prom. $0</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-icon icon-goal"><i class="fa-solid fa-receipt"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-title">Transacciones</span>
+                            <h2 class="kpi-value" id="bp-kpi-cantidad">0</h2>
+                            <span class="kpi-trend trend-neutral">Total del periodo</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-icon icon-compliance"><i class="fa-solid fa-user-tie"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-title">Usuarios Únicos</span>
+                            <h2 class="kpi-value" id="bp-kpi-usuarios">0</h2>
+                            <span class="kpi-trend trend-neutral">Vendedores</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-icon icon-goal"><i class="fa-solid fa-users"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-title">Clientes Únicos</span>
+                            <h2 class="kpi-value" id="bp-kpi-clientes">0</h2>
+                            <span class="kpi-trend trend-neutral" id="bp-kpi-clientes-sub">Clientes finales</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-icon icon-sites"><i class="fa-solid fa-shop"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-title">Sitios de Venta</span>
+                            <h2 class="kpi-value" id="bp-kpi-sitios">0</h2>
+                            <span class="kpi-trend trend-neutral">Con transacciones</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- GRAFICO PRINCIPAL: POR HORA / POR DIA -->
+                <div class="glass-panel chart-panel">
+                    <div class="chart-header">
+                        <h3 class="section-title"><i class="fa-solid fa-chart-column"></i> <span id="bp-time-title">Comportamiento por Hora</span></h3>
+                    </div>
+                    <div class="chart-wrapper">
+                        <canvas id="bp-chart-time"></canvas>
+                    </div>
+                </div>
+
+                <!-- SEGUNDA FILA: DONA ZONA + DONA TIPO SV -->
+                <div class="secondary-charts-grid">
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-chart-pie"></i> Distribución por Zona</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-zona"></canvas>
+                        </div>
+                    </div>
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-chart-pie"></i> Distribución por Tipo de SV</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-tipo"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- FILA: TOP MUNICIPIOS -->
+                <div class="secondary-charts-grid">
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-city"></i> Top 10 Municipios</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-municipio"></canvas>
+                        </div>
+                    </div>
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-chart-pie"></i> Distribución por Municipio</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-municipio-donut"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TERCERA FILA: TOP SITIOS + TOP USUARIOS -->
+                <div class="secondary-charts-grid">
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-ranking-star"></i> Top 10 Sitios de Venta</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-sitios"></canvas>
+                        </div>
+                    </div>
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-user-tag"></i> Top 10 Usuarios (Identificación)</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-usuarios"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SOLO RECARGAS: TOP 10 SITIOS CON MENOS RECARGAS -->
+                <div class="secondary-charts-grid" id="bp-menos-row" hidden>
+                    <div class="glass-panel chart-panel">
+                        <h3 class="section-title"><i class="fa-solid fa-arrow-trend-down"></i> Top 10 Sitios con Menos Recargas</h3>
+                        <div class="chart-wrapper small-chart">
+                            <canvas id="bp-chart-menos"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- MAPA GEOGRAFICO -->
+                <div class="glass-panel chart-panel">
+                    <div class="chart-header">
+                        <h3 class="section-title"><i class="fa-solid fa-map-location-dot"></i> Mapa de Ventas por Sitio</h3>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <div class="betplay-map-toggle" id="betplay-map-toggle">
+                                <button type="button" class="metric-btn active" data-map="points">Puntos</button>
+                                <button type="button" class="metric-btn" data-map="heat">Mapa de calor</button>
+                            </div>
+                            <button type="button" class="btn-table-action" id="bp-map-maximize" title="Maximizar mapa">
+                                <i class="fa-solid fa-expand"></i> Maximizar
+                            </button>
+                        </div>
+                    </div>
+                    <div class="bp-map-wrapper" id="bp-map-wrapper">
+                        <button type="button" class="bp-map-close" id="bp-map-close" title="Cerrar pantalla completa">
+                            <i class="fa-solid fa-xmark"></i> Cerrar
+                        </button>
+                        <div id="bp-map"></div>
+                    </div>
+                </div>
+
+                <!-- TABLA DETALLE POR SITIO (primero, con scroll) -->
+                <section class="glass-panel table-panel">
+                    <div class="table-header">
+                        <h3 class="section-title"><i class="fa-solid fa-table-list"></i> Detalle por Sitio de Venta
+                            <span id="bp-table-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
+                        </h3>
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <div class="table-search">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                                <input type="text" id="bp-table-search" placeholder="Buscar sitio, oficina, zona o municipio...">
+                            </div>
+                            <button type="button" class="btn-table-action" id="bp-table-sort-reset" title="Restablecer el orden original">
+                                <i class="fa-solid fa-rotate-left"></i> Orden original
+                            </button>
+                            <button type="button" class="btn-table-action" id="bp-table-export" title="Exportar a Excel">
+                                <i class="fa-solid fa-file-excel"></i> Exportar
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-responsive betplay-detalle-scroll">
+                        <table class="data-table" id="bp-table">
+                            <thead>
+                                <tr>
+                                    <th class="bp-sortable" data-sort="cod_sitio" data-type="text">Cod. Sitio <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="sitio" data-type="text">Sitio de Venta <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="oficina" data-type="text">Oficina <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="zona" data-type="text">Zona <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="ciudad" data-type="text">Municipio <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="monto" data-type="num" style="text-align: right;">Monto <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="cantidad" data-type="num" style="text-align: right;">Transacciones <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="ticket_promedio" data-type="num" style="text-align: right;">Prom. Transacción <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                    <th class="bp-sortable" data-sort="clientes" data-type="num" style="text-align: right;">Clientes <i class="fa-solid fa-sort bp-sort-icon"></i></th>
+                                </tr>
+                            </thead>
+                            <tbody id="bp-table-body">
+                                <tr><td class="empty-table" colspan="9">Sin datos.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- TABLA DATOS CRUDOS (colapsable, colapsada por defecto) -->
+                <details class="glass-panel table-panel bp-collapsible" id="bp-raw-details">
+                    <summary class="bp-collapsible-summary">
+                        <span class="section-title" style="border:none; padding:0;">
+                            <i class="fa-solid fa-database"></i> Datos Crudos (consulta base)
+                            <span id="bp-raw-count" style="font-size: 12px; color: var(--text-muted); font-weight: 500; margin-left: 8px; background: rgba(18,87,209,0.08); padding: 2px 8px; border-radius: 20px; border: 1px solid rgba(18,87,209,0.14);"></span>
+                        </span>
+                        <i class="fa-solid fa-chevron-down bp-collapsible-chevron"></i>
+                    </summary>
+                    <div class="bp-collapsible-body">
+                        <div class="table-search" style="margin: 8px 0 12px;">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="bp-raw-search" placeholder="Buscar en cualquier columna...">
+                        </div>
+                        <div class="table-responsive betplay-raw-scroll">
+                            <table class="data-table" id="bp-raw-table">
+                                <thead id="bp-raw-thead"></thead>
+                                <tbody id="bp-raw-body">
+                                    <tr><td class="empty-table">Sin datos.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </details>
+
+            </div><!-- /#betplay-content -->
+
+            <!-- MODAL: EXPORTAR A PDF (selección de visuales) -->
+            <div class="modal-overlay" id="bp-pdf-modal" style="display:none;">
+                <div class="modal-container" style="max-width: 520px;">
+                    <div class="modal-header">
+                        <h3><i class="fa-solid fa-file-pdf"></i> Exportar a PDF</h3>
+                        <button class="modal-close-btn" id="bp-pdf-close">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="section-desc" style="margin-bottom: 14px;">Elige las visuales que quieres incluir en el PDF.</p>
+                        <label class="bp-pdf-item bp-pdf-all"><input type="checkbox" id="bp-pdf-all" checked> <strong>Seleccionar todas</strong></label>
+                        <hr class="modal-divider">
+                        <div id="bp-pdf-list" class="bp-pdf-list"></div>
+                        <div style="display:flex; gap:10px; margin-top:18px;">
+                            <button type="button" class="action-btn-primary" id="bp-pdf-generate"><i class="fa-solid fa-download"></i> Generar PDF</button>
+                            <button type="button" class="action-btn-secondary" id="bp-pdf-cancel">Cancelar</button>
+                        </div>
+                        <div id="bp-pdf-progress" class="bp-pdf-progress" hidden></div>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- /#view-betplay -->
+
+        <!-- ===================== VISTA: ASISTENTE IA ===================== -->
+        <div class="tab-view" id="view-asistente" hidden>
+
+            <!-- KPIs GENERALES: PAGOS Y RECARGAS (DIA ACTUAL) -->
+            <section class="glass-panel asistente-kpis">
+                <div class="asistente-kpis-head">
+                    <h4 class="asistente-kpis-title"><i class="fa-solid fa-gauge-high"></i> Resumen del día</h4>
+                    <span class="asistente-kpis-date" id="asistente-kpis-date"></span>
+                </div>
+
+                <div class="asistente-kpi-rows">
+                <!-- FILA PAGOS -->
+                <div class="asistente-kpi-row">
+                    <span class="asistente-kpi-rowlabel"><i class="fa-solid fa-money-bill-wave"></i> Pagos</span>
+                    <div class="asistente-kpi-cells">
+                        <div class="asistente-kpi"><span class="ak-label">Monto Total</span><span class="ak-value" id="ak-pagos-monto">-</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Transacciones</span><span class="ak-value" id="ak-pagos-cantidad">-</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Usuarios Únicos</span><span class="ak-value" id="ak-pagos-usuarios">-</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Sitios de Venta</span><span class="ak-value" id="ak-pagos-sitios">-</span></div>
+                    </div>
+                </div>
+
+                <!-- FILA RECARGAS -->
+                <div class="asistente-kpi-row">
+                    <span class="asistente-kpi-rowlabel recargas"><i class="fa-solid fa-mobile-screen-button"></i> Recargas</span>
+                    <div class="asistente-kpi-cells">
+                        <div class="asistente-kpi"><span class="ak-label">Monto Total</span><span class="ak-value" id="ak-recargas-monto">-</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Transacciones</span><span class="ak-value" id="ak-recargas-cantidad">-</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Usuarios Únicos</span><span class="ak-value" id="ak-recargas-usuarios">-</span></div>
+                        <div class="asistente-kpi"><span class="ak-label">Sitios de Venta</span><span class="ak-value" id="ak-recargas-sitios">-</span></div>
+                    </div>
+                </div>
+                </div><!-- /.asistente-kpi-rows -->
+            </section>
+
+            <!-- AREA DE CHAT -->
+            <section class="glass-panel asistente-chat">
+                <div class="asistente-chat-head">
+                    <h4 class="asistente-chat-title"><i class="fa-solid fa-comments"></i> Conversación</h4>
+                    <div class="asistente-chat-actions">
+                        <button type="button" class="asistente-report-btn" id="asistente-report" title="Generar informe a partir de mensajes seleccionados">
+                            <i class="fa-solid fa-file-lines"></i> Generar informe
+                        </button>
+                        <button type="button" class="asistente-clear-btn" id="asistente-clear" title="Limpiar conversación">
+                            <i class="fa-solid fa-trash-can"></i> Limpiar
+                        </button>
+                    </div>
+                </div>
+                <!-- Barra de selección (modo informe) -->
+                <div class="asistente-select-bar" id="asistente-select-bar" hidden>
+                    <span class="select-hint"><i class="fa-solid fa-hand-pointer"></i> Marca los mensajes que quieres incluir como fuentes.</span>
+                    <span class="select-count" id="asistente-select-count">0 seleccionados</span>
+                    <button type="button" class="action-btn-primary" id="asistente-report-create">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i> Crear informe
+                    </button>
+                    <button type="button" class="asistente-select-cancel" id="asistente-report-cancel">Cancelar</button>
+                </div>
+                <div class="asistente-messages" id="asistente-messages">
+                    <!-- Mensaje de bienvenida -->
+                    <div class="chat-msg assistant">
+                        <div class="chat-avatar"><i class="fa-solid fa-robot"></i></div>
+                        <div class="chat-bubble">
+                            ¡Hola! Soy tu asistente de datos de Betplay. Pregúntame cosas como
+                            <em>"¿qué zona vendió más hoy?"</em> o <em>"compárame pagos vs recargas"</em>.
+                            Por ahora respondo en texto sobre los datos del día; los gráficos llegarán en el siguiente paso.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ADJUNTOS (chips) -->
+                <div class="asistente-attachments" id="asistente-attachments" hidden></div>
+
+                <!-- CAJA DE ENTRADA -->
+                <div class="asistente-inputbar">
+                    <input type="file" id="asistente-file" accept="application/pdf,image/png,image/jpeg,image/webp" multiple hidden>
+                    <button type="button" class="asistente-attach-btn" id="asistente-attach" title="Adjuntar PDF o imagen">
+                        <i class="fa-solid fa-paperclip"></i>
+                    </button>
+                    <textarea id="asistente-input" rows="1" placeholder="Escribe tu pregunta sobre Betplay..."></textarea>
+                    <button type="button" class="action-btn-primary" id="asistente-send">
+                        <i class="fa-solid fa-paper-plane"></i> Enviar
+                    </button>
+                </div>
+                <p class="asistente-input-hint">El asistente responde con base en los datos agregados del día actual.</p>
+            </section>
+
+            <!-- MODAL: VISTA PREVIA DEL INFORME -->
+            <div class="report-modal" id="report-modal" style="display:none;">
+                <div class="report-modal-box">
+                    <div class="report-modal-head">
+                        <h4><i class="fa-solid fa-file-lines"></i> Vista previa del informe</h4>
+                        <button type="button" class="report-modal-close" id="report-close" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
+                    </div>
+                    <div class="report-modal-body" id="report-preview"></div>
+                    <div class="report-modal-foot">
+                        <span class="report-status" id="report-status"></span>
+                        <div class="report-foot-actions">
+                            <button type="button" class="asistente-select-cancel" id="report-regenerate"><i class="fa-solid fa-rotate"></i> Regenerar</button>
+                            <button type="button" class="action-btn-primary" id="report-download" disabled><i class="fa-solid fa-file-pdf"></i> Descargar PDF</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- /#view-asistente -->
     </div>
 
     <!-- MODAL DE GESTIÓN DE PROMOTORES WHATSAPP -->
@@ -401,7 +895,7 @@
                     <h4>Promotores Registrados</h4>
                     <div class="search-box-container">
                         <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                        <input type="text" id="search-promoters" placeholder="Buscar por nombre o celular..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                        <input type="text" id="search-promoters" placeholder="Buscar por nombre o celular..." style="background: rgba(255, 255, 255, 0.7); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 12px 10px 32px; color: var(--text-primary); font-size: 14px; width: 280px;">
                     </div>
                 </div>
 
@@ -485,7 +979,7 @@
                     <h4>Coordinadores Registrados</h4>
                     <div class="search-box-container">
                         <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                        <input type="text" id="search-coordinators" placeholder="Buscar por nombre, cédula o zona..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                        <input type="text" id="search-coordinators" placeholder="Buscar por nombre, cédula o zona..." style="background: rgba(255, 255, 255, 0.7); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 12px 10px 32px; color: var(--text-primary); font-size: 14px; width: 280px;">
                     </div>
                 </div>
 
@@ -553,7 +1047,7 @@
                     <h4>Administradores Registrados</h4>
                     <div class="search-box-container">
                         <i class="fa-solid fa-magnifying-glass search-icon"></i>
-                        <input type="text" id="search-administrators" placeholder="Buscar por nombre o cédula..." style="background: rgba(11, 13, 25, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 10px 12px 10px 32px; color: #ffffff; font-size: 14px; width: 280px;">
+                        <input type="text" id="search-administrators" placeholder="Buscar por nombre o cédula..." style="background: rgba(255, 255, 255, 0.7); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 12px 10px 32px; color: var(--text-primary); font-size: 14px; width: 280px;">
                     </div>
                 </div>
 
@@ -606,6 +1100,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=1.3"></script>
+    <script src="app.js?v=3.7"></script>
 </body>
 </html>
