@@ -761,6 +761,18 @@ body {
     border: 1px solid var(--panel-border);
 }
 
+/* Scroll vertical con cabecera fija para el detalle de ventas y metas por sitio */
+.detalle-sitios-scroll {
+    max-height: 600px;
+    overflow: auto;
+}
+.detalle-sitios-scroll thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #dbe6f7;
+}
+
 .data-table {
     width: 100%;
     border-collapse: collapse;
