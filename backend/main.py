@@ -1943,6 +1943,15 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
 LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "2"))
 LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "50"))
 
+# Topes del CONTEXTO agregado que se inyecta al modelo en cada mensaje.
+# Ajustables por variable de entorno para reducir el tamaño del prompt sin
+# tocar el código. Valores por defecto = recorte "moderado".
+CTX_CIUDAD_TOP = int(os.getenv("CTX_CIUDAD_TOP", "10"))
+CTX_OFICINA_TOP = int(os.getenv("CTX_OFICINA_TOP", "5"))
+CTX_SITIOS_TOP = int(os.getenv("CTX_SITIOS_TOP", "5"))
+CTX_USUARIOS_TOP = int(os.getenv("CTX_USUARIOS_TOP", "5"))
+CTX_HISTORIAL_DIAS = int(os.getenv("CTX_HISTORIAL_DIAS", "14"))
+
 # Host base de LM Studio (sin /v1), para la REST API nativa de control de modelos
 # (POST /api/v1/models/load y /unload, GET /api/v0/models).
 LLM_HOST = LLM_BASE_URL.rsplit("/v1", 1)[0].rstrip("/")
@@ -1955,6 +1964,14 @@ ASSISTANT_MODELS = [
     {"id": "gemma-4-12b-it-qat", "label": "Inteligencia Alta"},
 ]
 _ASSISTANT_MODEL_IDS = {m["id"] for m in ASSISTANT_MODELS}
+
+# Modelos con capacidad de visión (aceptan imágenes). Solo el 12B la tiene.
+# Las imágenes adjuntas solo se envían al modelo si es uno de estos.
+VISION_MODEL_IDS = {"gemma-4-12b-it-qat"}
+
+# Límites de adjuntos (para no desbordar el contexto ni la memoria).
+UPLOAD_MAX_BYTES = int(os.getenv("ASSISTANT_UPLOAD_MAX_MB", "10")) * 1024 * 1024
+PDF_TEXT_MAX_CHARS = int(os.getenv("ASSISTANT_PDF_TEXT_MAX_CHARS", "12000"))
 
 
 @app.get("/api/assistant/health")
@@ -2082,7 +2099,8 @@ def assistant_models():
         logger.warning(f"No se pudo consultar estado de modelos: {e}")
         loaded = set()
     models = [
-        {"id": m["id"], "label": m["label"], "loaded": m["id"] in loaded}
+        {"id": m["id"], "label": m["label"], "loaded": m["id"] in loaded,
+         "vision": m["id"] in VISION_MODEL_IDS}
         for m in ASSISTANT_MODELS
     ]
     return {"models": models, "default": LLM_MODEL}
@@ -2121,11 +2139,11 @@ def _compact_resumen_for_context(tipo, desde, hasta):
         "totales": data.get("totales", {}),
         "por_hora": data.get("por_hora", []),
         "por_zona": data.get("por_zona", []),
-        "por_ciudad": (data.get("por_ciudad", []) or [])[:20],
+        "por_ciudad": (data.get("por_ciudad", []) or [])[:CTX_CIUDAD_TOP],
         "por_tipo_sv": data.get("por_tipo_sv", []),
-        "por_oficina": (data.get("por_oficina", []) or [])[:10],
-        "top_sitios": (data.get("por_sitio", []) or [])[:10],
-        "top_usuarios": (data.get("por_usuario", []) or [])[:10],
+        "por_oficina": (data.get("por_oficina", []) or [])[:CTX_OFICINA_TOP],
+        "top_sitios": (data.get("por_sitio", []) or [])[:CTX_SITIOS_TOP],
+        "top_usuarios": (data.get("por_usuario", []) or [])[:CTX_USUARIOS_TOP],
         "por_canal": data.get("por_canal", []),
     }
 
@@ -2149,21 +2167,76 @@ def _betplay_historial_diario(dias=28):
     return {"desde": desde, "hasta": hasta, "dias": dias, "por_dia": series}
 
 
+@app.post("/api/assistant/upload")
+async def assistant_upload(file: UploadFile = File(...)):
+    """
+    Procesa un PDF adjunto y devuelve su texto extraído (para inyectarlo como
+    contexto en el chat). Solo PDFs: las imágenes se manejan en el cliente
+    (base64) y solo se envían al modelo con visión.
+    """
+    raw = await file.read()
+    if len(raw) > UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"El archivo supera el límite de {UPLOAD_MAX_BYTES // (1024*1024)} MB.")
+
+    name = (file.filename or "").lower()
+    if not name.endswith(".pdf"):
+        raise HTTPException(status_code=415, detail="Solo se aceptan archivos PDF en este endpoint.")
+
+    try:
+        from pypdf import PdfReader
+        import io
+        reader = PdfReader(io.BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                continue
+        texto = "\n".join(parts).strip()
+    except Exception as e:
+        logger.error(f"No se pudo extraer texto del PDF: {e}")
+        raise HTTPException(status_code=422, detail="No se pudo leer el PDF.")
+
+    truncated = len(texto) > PDF_TEXT_MAX_CHARS
+    if truncated:
+        texto = texto[:PDF_TEXT_MAX_CHARS]
+
+    return {
+        "filename": file.filename,
+        "kind": "pdf",
+        "chars": len(texto),
+        "truncated": truncated,
+        "escaneado": len(texto) < 40,  # casi sin texto => probablemente escaneado
+        "texto": texto,
+    }
+
+
 ASSISTANT_SYSTEM_PROMPT = """Eres un asistente de análisis de datos para el producto Betplay de una empresa de apuestas y servicios.
 Respondes y piensas/razonas SIEMPRE en español, de forma clara y concisa, orientado a la toma de decisiones.
 Puedes usar Markdown (negritas con **texto**, listas con guiones, etc.).
 
 Se te entrega un CONTEXTO con datos AGREGADOS del día (pagos y recargas): totales, ventas por hora, por zona,
 por CIUDAD, por tipo de sitio de venta, por oficina, top sitios y top usuarios (por número de identificación), y por canal.
-Además, se incluye "historial_diario_4_semanas" con los totales por día (monto y cantidad) de pagos y recargas de los últimos 28 días.
+Además, se incluye "historial_diario" con los totales por día (monto y cantidad) de pagos y recargas de los últimos días disponibles.
 - "monto" está en pesos colombianos (COP). "cantidad" es número de transacciones.
 - Hay datos por ZONA y por CIUDAD; úsalos según lo que pregunten.
-- Usa SOLO los datos del contexto para responder. Si te piden algo que no está en el contexto, dilo con honestidad.
+- Básate en los datos del contexto para las cifras. Si te piden algo que no está en el contexto, dilo con honestidad.
 - No inventes cifras. Cuando des números, sé preciso con los del contexto.
 - Aún NO ejecutas consultas SQL.
 
+FORMA DE RESPONDER (importante):
+- No sobrepienses. Para preguntas simples, directas o de un solo dato (por ejemplo "¿cuánto se vendió hoy?",
+  "¿cuál fue la zona con más ventas?"), responde de forma directa y breve, sin razonamiento extenso.
+  Reserva el análisis más elaborado para preguntas analíticas, comparativas o de proyección.
+- Tienes LIBERTAD para enriquecer tus respuestas: cuando aporte valor, puedes agregar datos de apoyo,
+  observaciones y conclusiones que ayuden a la toma de decisiones. Etiqueta claramente lo que es interpretación
+  tuya (por ejemplo con "Observación:" o "Conclusión:") y no lo mezcles con las cifras exactas del contexto.
+- EXCEPCIÓN: si el usuario pide EXPLÍCITAMENTE solo un dato o solo cierta información
+  (por ejemplo "dame solo el total", "únicamente el número", "sin análisis"), entrega solo eso,
+  sin observaciones ni conclusiones añadidas.
+
 PROYECCIONES:
-Si te piden un estimado/proyección de ventas del día, PUEDES hacerlo usando "historial_diario_4_semanas"
+Si te piden un estimado/proyección de ventas del día, PUEDES hacerlo usando "historial_diario"
 (por ejemplo, promediando los mismos días de la semana o la tendencia reciente). SIEMPRE que proyectes:
 - Explica brevemente el método usado.
 - Añade una nota clara: "Esta es una proyección estimada y subjetiva, no un valor garantizado."
@@ -2201,6 +2274,10 @@ class AssistantChatRequest(BaseModel):
     desde: Optional[str] = None
     hasta: Optional[str] = None
     model: Optional[str] = None  # id del modelo elegido (catálogo amigable)
+    # Adjuntos de la pregunta actual:
+    #   pdf   -> {"kind":"pdf","filename":..., "texto":...}
+    #   image -> {"kind":"image","filename":..., "data_url":"data:image/...;base64,..."}
+    adjuntos: Optional[List[dict]] = None
 
 
 @app.post("/api/assistant/chat")
@@ -2219,8 +2296,24 @@ def assistant_chat(req: AssistantChatRequest):
         "periodo": {"desde": desde, "hasta": hasta},
         "pagos": _compact_resumen_for_context("pagos", desde, hasta),
         "recargas": _compact_resumen_for_context("recargas", desde, hasta),
-        "historial_diario_4_semanas": _betplay_historial_diario(28),
+        "historial_diario": _betplay_historial_diario(CTX_HISTORIAL_DIAS),
     }
+
+    # Resolución del modelo (se hace antes de armar el mensaje porque las
+    # imágenes solo se envían a modelos con visión):
+    # - Si el usuario eligió uno del catálogo, se usa y se asegura su carga.
+    # - Si NO hay selección explícita, se usa el modelo del catálogo que ya esté
+    #   cargado. Solo si no hay ninguno cargado se recurre al configurado.
+    if req.model in _ASSISTANT_MODEL_IDS:
+        model_id = req.model
+        ensure_model_loaded(model_id)
+    else:
+        loaded = _current_catalog_model()
+        model_id = loaded or LLM_MODEL
+        if loaded is None:
+            ensure_model_loaded(model_id)
+
+    tiene_vision = model_id in VISION_MODEL_IDS
 
     messages = [
         {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
@@ -2232,23 +2325,38 @@ def assistant_chat(req: AssistantChatRequest):
             content = m.get("content")
             if role in ("user", "assistant") and content:
                 messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": req.pregunta})
 
-    # Resolución del modelo:
-    # - Si el usuario eligió uno del catálogo, se usa y se asegura su carga
-    #   (haciendo eject del anterior si hace falta).
-    # - Si NO hay selección explícita, se usa el modelo del catálogo que ya esté
-    #   cargado (comodidad: no descargar/cargar al arrancar). Solo si no hay
-    #   ninguno cargado se recurre al configurado por defecto.
-    if req.model in _ASSISTANT_MODEL_IDS:
-        model_id = req.model
-        ensure_model_loaded(model_id)
+    # Mensaje del usuario, enriquecido con adjuntos (PDF como texto, imágenes
+    # como image_url solo si el modelo tiene visión).
+    texto_usuario = req.pregunta
+    imagenes = []
+    if req.adjuntos:
+        bloques_pdf = []
+        for a in req.adjuntos:
+            kind = (a or {}).get("kind")
+            if kind == "pdf" and a.get("texto"):
+                fn = a.get("filename") or "documento.pdf"
+                bloques_pdf.append(f"--- Documento adjunto: {fn} ---\n{a['texto']}")
+            elif kind == "image" and a.get("data_url"):
+                if tiene_vision:
+                    imagenes.append(a["data_url"])
+                # Si no hay visión, la imagen se ignora silenciosamente
+                # (el frontend ya avisa al usuario antes de enviar).
+        if bloques_pdf:
+            texto_usuario = (
+                "Documentos adjuntos por el usuario (úsalos como contexto para responder):\n\n"
+                + "\n\n".join(bloques_pdf)
+                + "\n\n--- Pregunta ---\n"
+                + req.pregunta
+            )
+
+    if imagenes:
+        content = [{"type": "text", "text": texto_usuario}]
+        for url in imagenes:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        messages.append({"role": "user", "content": content})
     else:
-        loaded = _current_catalog_model()
-        model_id = loaded or LLM_MODEL
-        # Solo forzamos carga si no hay nada del catálogo cargado.
-        if loaded is None:
-            ensure_model_loaded(model_id)
+        messages.append({"role": "user", "content": texto_usuario})
 
     def token_stream():
         # El razonamiento llega en un campo aparte (reasoning_content en LM Studio
@@ -2291,6 +2399,127 @@ def assistant_chat(req: AssistantChatRequest):
             yield f"\n\n[Error al contactar el modelo: {e}]"
 
     return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")
+
+
+def _resolve_assistant_model(model):
+    """Resuelve y asegura la carga del modelo (misma lógica que el chat)."""
+    if model in _ASSISTANT_MODEL_IDS:
+        ensure_model_loaded(model)
+        return model
+    loaded = _current_catalog_model()
+    model_id = loaded or LLM_MODEL
+    if loaded is None:
+        ensure_model_loaded(model_id)
+    return model_id
+
+
+def _stream_assistant_tokens(messages, model_id, temperature=0.4):
+    """Generador que streamea la respuesta del modelo, envolviendo el
+    razonamiento en las etiquetas que el frontend sabe parsear."""
+    in_reasoning = False
+    try:
+        client = get_llm_client()
+        stream = client.chat.completions.create(
+            model=model_id, messages=messages, temperature=temperature, stream=True,
+        )
+        for chunk in stream:
+            try:
+                delta = chunk.choices[0].delta
+            except (AttributeError, IndexError):
+                continue
+            reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            content = getattr(delta, "content", None)
+            if reasoning:
+                if not in_reasoning:
+                    in_reasoning = True
+                    yield "<|channel>thought"
+                yield reasoning
+            if content:
+                if in_reasoning:
+                    in_reasoning = False
+                    yield "<channel|>"
+                yield content
+        if in_reasoning:
+            yield "<channel|>"
+    except Exception as e:
+        logger.error(f"Assistant streaming failed: {e}")
+        if in_reasoning:
+            yield "<channel|>"
+        yield f"\n\n[Error al contactar el modelo: {e}]"
+
+
+REPORT_SYSTEM_PROMPT = """Eres un redactor de informes ejecutivos para el producto Betplay.
+A partir de FUENTES (fragmentos de una conversación de análisis: preguntas del usuario y respuestas del asistente)
+y un CATÁLOGO DE FIGURAS disponibles, redacta un informe profesional en español, claro y orientado a decisiones.
+
+Estructura el informe con:
+- Un título (encabezado con "# ").
+- Una introducción breve que contextualice el análisis.
+- Secciones de análisis (encabezados con "## ") que integren y redacten la información de las fuentes.
+- Una sección final de "## Conclusiones" con hallazgos y recomendaciones accionables.
+
+Sobre las FIGURAS:
+- El catálogo lista figuras numeradas (Figura 1, Figura 2, ...) con su título.
+- Cuando quieras que una figura aparezca en el informe, escribe en una LÍNEA APARTE exactamente el marcador: [[FIGURA:N]]
+  (por ejemplo, una línea que contenga solo "[[FIGURA:1]]"). El sistema insertará ahí el gráfico o tabla real.
+- Puedes referenciarla en el texto como "(ver Figura N)". Usa cada figura como máximo una vez.
+- No escribas bloques de código ```chart o ```table; solo usa los marcadores [[FIGURA:N]].
+
+Reglas:
+- Usa SOLO la información de las fuentes; no inventes cifras nuevas.
+- Redacta de forma fluida y profesional (no copies las preguntas ni el estilo de chat).
+- Usa Markdown (encabezados #/##, negritas **, listas con guiones).
+- No generes em-dashes. No uses emojis.
+"""
+
+
+class AssistantReportRequest(BaseModel):
+    fuentes: List[dict]          # [{rol:'user'|'assistant', texto:'...'}]
+    figuras: Optional[List[dict]] = None  # [{n, tipo:'chart'|'table', titulo}]
+    titulo: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/api/assistant/report")
+def assistant_report(req: AssistantReportRequest):
+    """
+    Segundo pase del modelo: toma mensajes seleccionados como fuentes y redacta
+    un informe ejecutivo (con marcadores [[FIGURA:N]] para intercalar figuras).
+    Devuelve el texto en streaming.
+    """
+    model_id = _resolve_assistant_model(req.model)
+
+    fuentes_txt = []
+    for i, f in enumerate(req.fuentes or [], 1):
+        rol = "Usuario" if (f or {}).get("rol") == "user" else "Asistente"
+        texto = (f or {}).get("texto", "")
+        fuentes_txt.append(f"[Fuente {i} - {rol}]\n{texto}")
+
+    figuras_txt = []
+    for fig in (req.figuras or []):
+        n = fig.get("n")
+        tipo = "gráfico" if fig.get("tipo") == "chart" else "tabla"
+        titulo = fig.get("titulo") or f"Figura {n}"
+        figuras_txt.append(f"- Figura {n} ({tipo}): {titulo}")
+
+    partes = ["FUENTES:\n" + "\n\n".join(fuentes_txt)]
+    if figuras_txt:
+        partes.append("CATÁLOGO DE FIGURAS:\n" + "\n".join(figuras_txt))
+    else:
+        partes.append("CATÁLOGO DE FIGURAS: (ninguna)")
+    if req.titulo:
+        partes.append(f"El usuario sugiere este título: {req.titulo}")
+    partes.append("Redacta el informe ahora.")
+
+    messages = [
+        {"role": "system", "content": REPORT_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(partes)},
+    ]
+
+    return StreamingResponse(
+        _stream_assistant_tokens(messages, model_id, temperature=0.5),
+        media_type="text/plain; charset=utf-8",
+    )
 
 # ============================ ASISTENTE IA ============================
 
