@@ -794,8 +794,15 @@
                     </div>
                 </div>
 
+                <!-- ADJUNTOS (chips) -->
+                <div class="asistente-attachments" id="asistente-attachments" hidden></div>
+
                 <!-- CAJA DE ENTRADA -->
                 <div class="asistente-inputbar">
+                    <input type="file" id="asistente-file" accept="application/pdf,image/png,image/jpeg,image/webp" multiple hidden>
+                    <button type="button" class="asistente-attach-btn" id="asistente-attach" title="Adjuntar PDF o imagen">
+                        <i class="fa-solid fa-paperclip"></i>
+                    </button>
                     <textarea id="asistente-input" rows="1" placeholder="Escribe tu pregunta sobre Betplay..."></textarea>
                     <button type="button" class="action-btn-primary" id="asistente-send">
                         <i class="fa-solid fa-paper-plane"></i> Enviar

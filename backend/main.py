@@ -1965,6 +1965,14 @@ ASSISTANT_MODELS = [
 ]
 _ASSISTANT_MODEL_IDS = {m["id"] for m in ASSISTANT_MODELS}
 
+# Modelos con capacidad de visión (aceptan imágenes). Solo el 12B la tiene.
+# Las imágenes adjuntas solo se envían al modelo si es uno de estos.
+VISION_MODEL_IDS = {"gemma-4-12b-it-qat"}
+
+# Límites de adjuntos (para no desbordar el contexto ni la memoria).
+UPLOAD_MAX_BYTES = int(os.getenv("ASSISTANT_UPLOAD_MAX_MB", "10")) * 1024 * 1024
+PDF_TEXT_MAX_CHARS = int(os.getenv("ASSISTANT_PDF_TEXT_MAX_CHARS", "12000"))
+
 
 @app.get("/api/assistant/health")
 def assistant_health():
@@ -2091,7 +2099,8 @@ def assistant_models():
         logger.warning(f"No se pudo consultar estado de modelos: {e}")
         loaded = set()
     models = [
-        {"id": m["id"], "label": m["label"], "loaded": m["id"] in loaded}
+        {"id": m["id"], "label": m["label"], "loaded": m["id"] in loaded,
+         "vision": m["id"] in VISION_MODEL_IDS}
         for m in ASSISTANT_MODELS
     ]
     return {"models": models, "default": LLM_MODEL}
@@ -2158,6 +2167,50 @@ def _betplay_historial_diario(dias=28):
     return {"desde": desde, "hasta": hasta, "dias": dias, "por_dia": series}
 
 
+@app.post("/api/assistant/upload")
+async def assistant_upload(file: UploadFile = File(...)):
+    """
+    Procesa un PDF adjunto y devuelve su texto extraído (para inyectarlo como
+    contexto en el chat). Solo PDFs: las imágenes se manejan en el cliente
+    (base64) y solo se envían al modelo con visión.
+    """
+    raw = await file.read()
+    if len(raw) > UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"El archivo supera el límite de {UPLOAD_MAX_BYTES // (1024*1024)} MB.")
+
+    name = (file.filename or "").lower()
+    if not name.endswith(".pdf"):
+        raise HTTPException(status_code=415, detail="Solo se aceptan archivos PDF en este endpoint.")
+
+    try:
+        from pypdf import PdfReader
+        import io
+        reader = PdfReader(io.BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                continue
+        texto = "\n".join(parts).strip()
+    except Exception as e:
+        logger.error(f"No se pudo extraer texto del PDF: {e}")
+        raise HTTPException(status_code=422, detail="No se pudo leer el PDF.")
+
+    truncated = len(texto) > PDF_TEXT_MAX_CHARS
+    if truncated:
+        texto = texto[:PDF_TEXT_MAX_CHARS]
+
+    return {
+        "filename": file.filename,
+        "kind": "pdf",
+        "chars": len(texto),
+        "truncated": truncated,
+        "escaneado": len(texto) < 40,  # casi sin texto => probablemente escaneado
+        "texto": texto,
+    }
+
+
 ASSISTANT_SYSTEM_PROMPT = """Eres un asistente de análisis de datos para el producto Betplay de una empresa de apuestas y servicios.
 Respondes y piensas/razonas SIEMPRE en español, de forma clara y concisa, orientado a la toma de decisiones.
 Puedes usar Markdown (negritas con **texto**, listas con guiones, etc.).
@@ -2221,6 +2274,10 @@ class AssistantChatRequest(BaseModel):
     desde: Optional[str] = None
     hasta: Optional[str] = None
     model: Optional[str] = None  # id del modelo elegido (catálogo amigable)
+    # Adjuntos de la pregunta actual:
+    #   pdf   -> {"kind":"pdf","filename":..., "texto":...}
+    #   image -> {"kind":"image","filename":..., "data_url":"data:image/...;base64,..."}
+    adjuntos: Optional[List[dict]] = None
 
 
 @app.post("/api/assistant/chat")
@@ -2242,6 +2299,22 @@ def assistant_chat(req: AssistantChatRequest):
         "historial_diario": _betplay_historial_diario(CTX_HISTORIAL_DIAS),
     }
 
+    # Resolución del modelo (se hace antes de armar el mensaje porque las
+    # imágenes solo se envían a modelos con visión):
+    # - Si el usuario eligió uno del catálogo, se usa y se asegura su carga.
+    # - Si NO hay selección explícita, se usa el modelo del catálogo que ya esté
+    #   cargado. Solo si no hay ninguno cargado se recurre al configurado.
+    if req.model in _ASSISTANT_MODEL_IDS:
+        model_id = req.model
+        ensure_model_loaded(model_id)
+    else:
+        loaded = _current_catalog_model()
+        model_id = loaded or LLM_MODEL
+        if loaded is None:
+            ensure_model_loaded(model_id)
+
+    tiene_vision = model_id in VISION_MODEL_IDS
+
     messages = [
         {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
         {"role": "system", "content": "CONTEXTO (datos agregados del periodo):\n" + json.dumps(contexto, ensure_ascii=False)},
@@ -2252,23 +2325,38 @@ def assistant_chat(req: AssistantChatRequest):
             content = m.get("content")
             if role in ("user", "assistant") and content:
                 messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": req.pregunta})
 
-    # Resolución del modelo:
-    # - Si el usuario eligió uno del catálogo, se usa y se asegura su carga
-    #   (haciendo eject del anterior si hace falta).
-    # - Si NO hay selección explícita, se usa el modelo del catálogo que ya esté
-    #   cargado (comodidad: no descargar/cargar al arrancar). Solo si no hay
-    #   ninguno cargado se recurre al configurado por defecto.
-    if req.model in _ASSISTANT_MODEL_IDS:
-        model_id = req.model
-        ensure_model_loaded(model_id)
+    # Mensaje del usuario, enriquecido con adjuntos (PDF como texto, imágenes
+    # como image_url solo si el modelo tiene visión).
+    texto_usuario = req.pregunta
+    imagenes = []
+    if req.adjuntos:
+        bloques_pdf = []
+        for a in req.adjuntos:
+            kind = (a or {}).get("kind")
+            if kind == "pdf" and a.get("texto"):
+                fn = a.get("filename") or "documento.pdf"
+                bloques_pdf.append(f"--- Documento adjunto: {fn} ---\n{a['texto']}")
+            elif kind == "image" and a.get("data_url"):
+                if tiene_vision:
+                    imagenes.append(a["data_url"])
+                # Si no hay visión, la imagen se ignora silenciosamente
+                # (el frontend ya avisa al usuario antes de enviar).
+        if bloques_pdf:
+            texto_usuario = (
+                "Documentos adjuntos por el usuario (úsalos como contexto para responder):\n\n"
+                + "\n\n".join(bloques_pdf)
+                + "\n\n--- Pregunta ---\n"
+                + req.pregunta
+            )
+
+    if imagenes:
+        content = [{"type": "text", "text": texto_usuario}]
+        for url in imagenes:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        messages.append({"role": "user", "content": content})
     else:
-        loaded = _current_catalog_model()
-        model_id = loaded or LLM_MODEL
-        # Solo forzamos carga si no hay nada del catálogo cargado.
-        if loaded is None:
-            ensure_model_loaded(model_id)
+        messages.append({"role": "user", "content": texto_usuario})
 
     def token_stream():
         # El razonamiento llega en un campo aparte (reasoning_content en LM Studio

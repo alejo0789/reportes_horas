@@ -54,7 +54,8 @@ const State = {
     assistant: {
         history: [],     // [{role:'user'|'assistant', content:'...'}]
         busy: false,     // si hay una respuesta en curso
-        model: null      // id del modelo seleccionado
+        model: null,     // id del modelo seleccionado
+        attachments: []  // adjuntos de la pregunta actual: {kind, filename, texto?|data_url?}
     }
 };
 
@@ -371,6 +372,7 @@ async function checkAssistantHealth() {
 
 // --- ASISTENTE IA: SELECTOR DE MODELO (NIVEL DE INTELIGENCIA) ---
 let _assistantModelsLoaded = false;
+const _assistantVisionModels = new Set();  // ids de modelos con visión
 async function loadAssistantModels() {
     const select = document.getElementById('asistente-model-select');
     if (!select) return;
@@ -378,6 +380,8 @@ async function loadAssistantModels() {
         const res = await fetch(`${API_BASE}/api/assistant/models?t=${new Date().getTime()}`);
         const json = await res.json();
         const models = json.models || [];
+        _assistantVisionModels.clear();
+        models.forEach(m => { if (m.vision) _assistantVisionModels.add(m.id); });
         // Modelo activo: el que esté cargado, o el guardado, o el default.
         const loaded = models.find(m => m.loaded);
         const current = State.assistant.model
@@ -540,9 +544,31 @@ function setupAssistantChat() {
             sendAssistantMessage();
         }
     });
+    // Pegar imágenes desde el portapapeles (Ctrl+V).
+    input.addEventListener('paste', (e) => {
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        const imgs = [];
+        for (const it of items) {
+            if (it.kind === 'file' && it.type.startsWith('image/')) {
+                const f = it.getAsFile();
+                if (f) imgs.push(f);
+            }
+        }
+        if (imgs.length) {
+            e.preventDefault();  // no pegar la ruta/binario como texto
+            handleAssistantFiles(imgs);
+        }
+    });
 
     const clearBtn = document.getElementById('asistente-clear');
     if (clearBtn) clearBtn.addEventListener('click', clearAssistantChat);
+
+    const attachBtn = document.getElementById('asistente-attach');
+    const fileInput = document.getElementById('asistente-file');
+    if (attachBtn && fileInput) {
+        attachBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => handleAssistantFiles(fileInput.files));
+    }
 
     // Restaura la conversación previa (si la hay).
     restoreAssistantHistory();
@@ -572,6 +598,48 @@ function appendChatBubble(role, text) {
     container.appendChild(msg);
     container.scrollTop = container.scrollHeight;
     return bubble;
+}
+
+// Icono SVG de documento PDF con los colores del header (azul profundo + amarillo).
+function pdfIconSVG() {
+    return `<svg class="chat-att-pdf-icon" viewBox="0 0 40 48" width="34" height="40" aria-hidden="true">
+        <path d="M4 2h22l10 10v32a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" fill="#0a2e73"/>
+        <path d="M26 2l10 10H28a2 2 0 0 1-2-2V2z" fill="#4a90ff"/>
+        <rect x="6" y="30" width="28" height="12" rx="2" fill="#ffc400"/>
+        <text x="20" y="39" text-anchor="middle" font-size="8" font-weight="700" fill="#0a2e73" font-family="Arial, sans-serif">PDF</text>
+    </svg>`;
+}
+
+// Burbuja del usuario con adjuntos: imágenes como miniatura y PDFs como icono,
+// con el nombre del archivo; el texto de la pregunta va debajo.
+function appendUserMessage(text, adjuntos) {
+    const container = document.getElementById('asistente-messages');
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg user';
+
+    const attHtml = (adjuntos || []).map(a => {
+        if (a.kind === 'image' && a.data_url) {
+            return `<div class="chat-att chat-att-img">
+                <img src="${a.data_url}" alt="${escapeHtml(a.filename)}">
+                <span class="chat-att-name">${escapeHtml(a.filename)}</span>
+            </div>`;
+        }
+        return `<div class="chat-att chat-att-file">
+            ${pdfIconSVG()}
+            <span class="chat-att-name">${escapeHtml(a.filename)}</span>
+        </div>`;
+    }).join('');
+
+    const textHtml = text ? `<div class="chat-att-text">${escapeHtml(text)}</div>` : '';
+    msg.innerHTML = `
+        <div class="chat-avatar"><i class="fa-solid fa-user"></i></div>
+        <div class="chat-bubble">
+            <div class="chat-attachments-in">${attHtml}</div>
+            ${textHtml}
+        </div>
+    `;
+    container.appendChild(msg);
+    container.scrollTop = container.scrollHeight;
 }
 
 // Crea un mensaje del asistente con avatar + columna de contenido (texto + islas).
@@ -878,6 +946,93 @@ function buildTableIsland(jsonStr) {
     return el;
 }
 
+// --- ASISTENTE IA: ADJUNTOS (PDF / imágenes) ---
+function modelHasVision() {
+    return _assistantVisionModels.has(State.assistant.model);
+}
+
+function renderAssistantAttachments() {
+    const cont = document.getElementById('asistente-attachments');
+    if (!cont) return;
+    const items = State.assistant.attachments;
+    cont.hidden = items.length === 0;
+    cont.innerHTML = items.map((a, i) => {
+        const icon = a.kind === 'image' ? 'fa-image' : 'fa-file-pdf';
+        const note = a.truncated ? ' <span class="att-note">(recortado)</span>'
+            : (a.escaneado ? ' <span class="att-note">(sin texto)</span>' : '');
+        return `<span class="asistente-chip" data-idx="${i}">
+            <i class="fa-solid ${icon}"></i>
+            <span class="att-name">${escapeHtml(a.filename)}</span>${note}
+            <button type="button" class="att-remove" data-idx="${i}" title="Quitar"><i class="fa-solid fa-xmark"></i></button>
+        </span>`;
+    }).join('');
+    cont.querySelectorAll('.att-remove').forEach(btn => {
+        btn.addEventListener('click', () => {
+            State.assistant.attachments.splice(Number(btn.dataset.idx), 1);
+            renderAssistantAttachments();
+        });
+    });
+}
+
+function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+    });
+}
+
+async function handleAssistantFiles(fileList) {
+    const files = [...(fileList || [])];
+    const input = document.getElementById('asistente-file');
+    if (input) input.value = '';  // permite re-seleccionar el mismo archivo
+    if (State.assistant.busy) return;
+
+    for (const file of files) {
+        const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        const isImg = file.type.startsWith('image/');
+
+        if (isImg) {
+            if (!modelHasVision()) {
+                alert('Las imágenes solo se pueden analizar con el modelo de "Inteligencia Alta" (con visión). Selecciónalo para adjuntar imágenes.');
+                continue;
+            }
+            try {
+                const dataUrl = await readFileAsDataURL(file);
+                State.assistant.attachments.push({ kind: 'image', filename: file.name, data_url: dataUrl });
+            } catch (e) {
+                console.error('[Asistente] No se pudo leer la imagen:', e);
+                alert(`No se pudo leer la imagen "${file.name}".`);
+            }
+        } else if (isPdf) {
+            try {
+                const fd = new FormData();
+                fd.append('file', file);
+                const res = await fetch(`${API_BASE}/api/assistant/upload`, { method: 'POST', body: fd });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                State.assistant.attachments.push({
+                    kind: 'pdf', filename: data.filename || file.name,
+                    texto: data.texto || '', truncated: !!data.truncated, escaneado: !!data.escaneado
+                });
+                if (data.escaneado) {
+                    alert(`El PDF "${file.name}" no contiene texto extraíble (probablemente escaneado). Para analizarlo, conviértelo a imagen y adjúntalo con el modelo de visión.`);
+                }
+            } catch (e) {
+                console.error('[Asistente] Error subiendo PDF:', e);
+                alert(`No se pudo procesar "${file.name}": ${e.message}`);
+            }
+        } else {
+            alert(`Tipo de archivo no soportado: ${file.name}`);
+        }
+    }
+    renderAssistantAttachments();
+}
+
 async function sendAssistantMessage() {
     const input = document.getElementById('asistente-input');
     const sendBtn = document.getElementById('asistente-send');
@@ -885,13 +1040,21 @@ async function sendAssistantMessage() {
     if (!input || State.assistant.busy) return;
 
     const pregunta = input.value.trim();
-    if (!pregunta) return;
+    const adjuntos = State.assistant.attachments.slice();
+    if (!pregunta && !adjuntos.length) return;
 
-    // Pinta la pregunta del usuario
-    appendChatBubble('user', pregunta);
-    State.assistant.history.push({ role: 'user', content: pregunta });
+    // Pinta la pregunta del usuario (con miniaturas/iconos de adjuntos si los hay).
+    if (adjuntos.length) {
+        appendUserMessage(pregunta, adjuntos);
+    } else {
+        appendChatBubble('user', pregunta);
+    }
+    State.assistant.history.push({ role: 'user', content: pregunta || '(archivos adjuntos)' });
     saveAssistantHistory();
     input.value = '';
+    // Los adjuntos se consumen en este envío; se limpian de la barra.
+    State.assistant.attachments = [];
+    renderAssistantAttachments();
 
     // Contenedor del mensaje del asistente (se re-renderiza con el stream)
     const { content: contentEl, timer: timerEl, timerVal } = appendAssistantMessage();
@@ -910,11 +1073,12 @@ async function sendAssistantMessage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                pregunta,
+                pregunta: pregunta || 'Analiza los archivos adjuntos.',
                 historial: State.assistant.history.slice(-8),
                 desde: range.desde,
                 hasta: range.hasta,
-                model: State.assistant.model
+                model: State.assistant.model,
+                adjuntos
             })
         });
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
