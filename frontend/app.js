@@ -476,11 +476,61 @@ async function loadAssistantKpis() {
     await Promise.all([fetchTipo('pagos'), fetchTipo('recargas')]);
 }
 
+// --- ASISTENTE IA: PERSISTENCIA DEL CHAT ---
+// Persistencia interina en localStorage (sobrevive recargas) mientras llega la BD.
+// TODO(BD): migrar guardado/recuperación de conversaciones a base de datos
+// (multi-conversación por usuario) cuando exista el backend correspondiente.
+const ASSISTANT_STORAGE_KEY = 'betplay.assistant.history.v1';
+let _assistantWelcomeHTML = '';
+
+function saveAssistantHistory() {
+    try {
+        localStorage.setItem(ASSISTANT_STORAGE_KEY, JSON.stringify(State.assistant.history));
+    } catch (e) { console.warn('[Asistente] No se pudo guardar el historial:', e); }
+}
+
+// Re-pinta en el DOM el historial guardado (usuario en texto plano, asistente
+// re-renderizado con sus islas de gráfico/tabla). No re-consulta al modelo.
+function restoreAssistantHistory() {
+    let saved = [];
+    try {
+        saved = JSON.parse(localStorage.getItem(ASSISTANT_STORAGE_KEY) || '[]');
+    } catch (e) { saved = []; }
+    if (!Array.isArray(saved) || !saved.length) return;
+
+    State.assistant.history = saved;
+    const container = document.getElementById('asistente-messages');
+    if (container) container.innerHTML = '';
+    for (const m of saved) {
+        if (m.role === 'user') {
+            appendChatBubble('user', m.content || '');
+        } else if (m.role === 'assistant') {
+            const { content } = appendAssistantMessage();
+            renderAssistantMessage(content, m.content || '', true);
+        }
+    }
+}
+
+// Limpia la conversación: vacía el DOM (restaura la bienvenida), el estado y el
+// almacenamiento local. La persistencia en BD se abordará más adelante.
+function clearAssistantChat() {
+    if (State.assistant.busy) return;
+    if (!confirm('¿Limpiar la conversación actual? Esta acción no se puede deshacer.')) return;
+    State.assistant.history = [];
+    try { localStorage.removeItem(ASSISTANT_STORAGE_KEY); } catch (e) { /* noop */ }
+    const container = document.getElementById('asistente-messages');
+    if (container) container.innerHTML = _assistantWelcomeHTML;
+}
+
 // --- ASISTENTE IA: CHAT CON STREAMING ---
 function setupAssistantChat() {
     const input = document.getElementById('asistente-input');
     const sendBtn = document.getElementById('asistente-send');
     if (!input || !sendBtn) return;
+
+    // Guarda el mensaje de bienvenida para poder restaurarlo al limpiar.
+    const container = document.getElementById('asistente-messages');
+    if (container) _assistantWelcomeHTML = container.innerHTML;
 
     sendBtn.addEventListener('click', () => sendAssistantMessage());
     // Enter envía; Shift+Enter hace salto de línea.
@@ -490,6 +540,12 @@ function setupAssistantChat() {
             sendAssistantMessage();
         }
     });
+
+    const clearBtn = document.getElementById('asistente-clear');
+    if (clearBtn) clearBtn.addEventListener('click', clearAssistantChat);
+
+    // Restaura la conversación previa (si la hay).
+    restoreAssistantHistory();
 }
 
 // Construye el rango "día actual" para el contexto del asistente.
@@ -834,6 +890,7 @@ async function sendAssistantMessage() {
     // Pinta la pregunta del usuario
     appendChatBubble('user', pregunta);
     State.assistant.history.push({ role: 'user', content: pregunta });
+    saveAssistantHistory();
     input.value = '';
 
     // Contenedor del mensaje del asistente (se re-renderiza con el stream)
@@ -878,6 +935,7 @@ async function sendAssistantMessage() {
         }
         // Guardamos solo la respuesta (sin el razonamiento) para no reenviarlo.
         State.assistant.history.push({ role: 'assistant', content: splitReasoning(acumulado).answer.trim() });
+        saveAssistantHistory();
         stopTimer('Respondió en');
     } catch (err) {
         console.error('[Asistente] Error en el chat:', err);
