@@ -1943,6 +1943,15 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
 LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "2"))
 LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "50"))
 
+# Topes del CONTEXTO agregado que se inyecta al modelo en cada mensaje.
+# Ajustables por variable de entorno para reducir el tamaño del prompt sin
+# tocar el código. Valores por defecto = recorte "moderado".
+CTX_CIUDAD_TOP = int(os.getenv("CTX_CIUDAD_TOP", "10"))
+CTX_OFICINA_TOP = int(os.getenv("CTX_OFICINA_TOP", "5"))
+CTX_SITIOS_TOP = int(os.getenv("CTX_SITIOS_TOP", "5"))
+CTX_USUARIOS_TOP = int(os.getenv("CTX_USUARIOS_TOP", "5"))
+CTX_HISTORIAL_DIAS = int(os.getenv("CTX_HISTORIAL_DIAS", "14"))
+
 # Host base de LM Studio (sin /v1), para la REST API nativa de control de modelos
 # (POST /api/v1/models/load y /unload, GET /api/v0/models).
 LLM_HOST = LLM_BASE_URL.rsplit("/v1", 1)[0].rstrip("/")
@@ -2121,11 +2130,11 @@ def _compact_resumen_for_context(tipo, desde, hasta):
         "totales": data.get("totales", {}),
         "por_hora": data.get("por_hora", []),
         "por_zona": data.get("por_zona", []),
-        "por_ciudad": (data.get("por_ciudad", []) or [])[:20],
+        "por_ciudad": (data.get("por_ciudad", []) or [])[:CTX_CIUDAD_TOP],
         "por_tipo_sv": data.get("por_tipo_sv", []),
-        "por_oficina": (data.get("por_oficina", []) or [])[:10],
-        "top_sitios": (data.get("por_sitio", []) or [])[:10],
-        "top_usuarios": (data.get("por_usuario", []) or [])[:10],
+        "por_oficina": (data.get("por_oficina", []) or [])[:CTX_OFICINA_TOP],
+        "top_sitios": (data.get("por_sitio", []) or [])[:CTX_SITIOS_TOP],
+        "top_usuarios": (data.get("por_usuario", []) or [])[:CTX_USUARIOS_TOP],
         "por_canal": data.get("por_canal", []),
     }
 
@@ -2155,15 +2164,26 @@ Puedes usar Markdown (negritas con **texto**, listas con guiones, etc.).
 
 Se te entrega un CONTEXTO con datos AGREGADOS del día (pagos y recargas): totales, ventas por hora, por zona,
 por CIUDAD, por tipo de sitio de venta, por oficina, top sitios y top usuarios (por número de identificación), y por canal.
-Además, se incluye "historial_diario_4_semanas" con los totales por día (monto y cantidad) de pagos y recargas de los últimos 28 días.
+Además, se incluye "historial_diario" con los totales por día (monto y cantidad) de pagos y recargas de los últimos días disponibles.
 - "monto" está en pesos colombianos (COP). "cantidad" es número de transacciones.
 - Hay datos por ZONA y por CIUDAD; úsalos según lo que pregunten.
-- Usa SOLO los datos del contexto para responder. Si te piden algo que no está en el contexto, dilo con honestidad.
+- Básate en los datos del contexto para las cifras. Si te piden algo que no está en el contexto, dilo con honestidad.
 - No inventes cifras. Cuando des números, sé preciso con los del contexto.
 - Aún NO ejecutas consultas SQL.
 
+FORMA DE RESPONDER (importante):
+- No sobrepienses. Para preguntas simples, directas o de un solo dato (por ejemplo "¿cuánto se vendió hoy?",
+  "¿cuál fue la zona con más ventas?"), responde de forma directa y breve, sin razonamiento extenso.
+  Reserva el análisis más elaborado para preguntas analíticas, comparativas o de proyección.
+- Tienes LIBERTAD para enriquecer tus respuestas: cuando aporte valor, puedes agregar datos de apoyo,
+  observaciones y conclusiones que ayuden a la toma de decisiones. Etiqueta claramente lo que es interpretación
+  tuya (por ejemplo con "Observación:" o "Conclusión:") y no lo mezcles con las cifras exactas del contexto.
+- EXCEPCIÓN: si el usuario pide EXPLÍCITAMENTE solo un dato o solo cierta información
+  (por ejemplo "dame solo el total", "únicamente el número", "sin análisis"), entrega solo eso,
+  sin observaciones ni conclusiones añadidas.
+
 PROYECCIONES:
-Si te piden un estimado/proyección de ventas del día, PUEDES hacerlo usando "historial_diario_4_semanas"
+Si te piden un estimado/proyección de ventas del día, PUEDES hacerlo usando "historial_diario"
 (por ejemplo, promediando los mismos días de la semana o la tendencia reciente). SIEMPRE que proyectes:
 - Explica brevemente el método usado.
 - Añade una nota clara: "Esta es una proyección estimada y subjetiva, no un valor garantizado."
@@ -2219,7 +2239,7 @@ def assistant_chat(req: AssistantChatRequest):
         "periodo": {"desde": desde, "hasta": hasta},
         "pagos": _compact_resumen_for_context("pagos", desde, hasta),
         "recargas": _compact_resumen_for_context("recargas", desde, hasta),
-        "historial_diario_4_semanas": _betplay_historial_diario(28),
+        "historial_diario": _betplay_historial_diario(CTX_HISTORIAL_DIAS),
     }
 
     messages = [
