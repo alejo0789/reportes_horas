@@ -505,14 +505,14 @@ function restoreAssistantHistory() {
     State.assistant.history = saved;
     const container = document.getElementById('asistente-messages');
     if (container) container.innerHTML = '';
-    for (const m of saved) {
+    saved.forEach((m, i) => {
         if (m.role === 'user') {
-            appendChatBubble('user', m.content || '');
+            appendChatBubble('user', m.content || '', i);
         } else if (m.role === 'assistant') {
-            const { content } = appendAssistantMessage();
+            const { content } = appendAssistantMessage(i);
             renderAssistantMessage(content, m.content || '', true);
         }
-    }
+    });
 }
 
 // Limpia la conversación: vacía el DOM (restaura la bienvenida), el estado y el
@@ -520,6 +520,7 @@ function restoreAssistantHistory() {
 function clearAssistantChat() {
     if (State.assistant.busy) return;
     if (!confirm('¿Limpiar la conversación actual? Esta acción no se puede deshacer.')) return;
+    exitReportSelection();
     State.assistant.history = [];
     try { localStorage.removeItem(ASSISTANT_STORAGE_KEY); } catch (e) { /* noop */ }
     const container = document.getElementById('asistente-messages');
@@ -570,6 +571,8 @@ function setupAssistantChat() {
         fileInput.addEventListener('change', () => handleAssistantFiles(fileInput.files));
     }
 
+    setupAssistantReport();
+
     // Restaura la conversación previa (si la hay).
     restoreAssistantHistory();
 }
@@ -584,10 +587,11 @@ function assistantTodayRange() {
 }
 
 // Agrega una burbuja de chat de usuario (texto plano).
-function appendChatBubble(role, text) {
+function appendChatBubble(role, text, histIndex) {
     const container = document.getElementById('asistente-messages');
     const msg = document.createElement('div');
     msg.className = `chat-msg ${role}`;
+    if (histIndex != null) msg.dataset.hi = histIndex;
     const icon = role === 'user' ? 'fa-user' : 'fa-robot';
     msg.innerHTML = `
         <div class="chat-avatar"><i class="fa-solid ${icon}"></i></div>
@@ -597,7 +601,7 @@ function appendChatBubble(role, text) {
     bubble.textContent = text;
     container.appendChild(msg);
     container.scrollTop = container.scrollHeight;
-    return bubble;
+    return msg;
 }
 
 // Icono SVG de documento PDF con los colores del header (azul profundo + amarillo).
@@ -612,10 +616,11 @@ function pdfIconSVG() {
 
 // Burbuja del usuario con adjuntos: imágenes como miniatura y PDFs como icono,
 // con el nombre del archivo; el texto de la pregunta va debajo.
-function appendUserMessage(text, adjuntos) {
+function appendUserMessage(text, adjuntos, histIndex) {
     const container = document.getElementById('asistente-messages');
     const msg = document.createElement('div');
     msg.className = 'chat-msg user';
+    if (histIndex != null) msg.dataset.hi = histIndex;
 
     const attHtml = (adjuntos || []).map(a => {
         if (a.kind === 'image' && a.data_url) {
@@ -640,14 +645,16 @@ function appendUserMessage(text, adjuntos) {
     `;
     container.appendChild(msg);
     container.scrollTop = container.scrollHeight;
+    return msg;
 }
 
 // Crea un mensaje del asistente con avatar + columna de contenido (texto + islas).
 // Devuelve la columna de contenido, que se re-renderiza con renderAssistantMessage().
-function appendAssistantMessage() {
+function appendAssistantMessage(histIndex) {
     const container = document.getElementById('asistente-messages');
     const msg = document.createElement('div');
     msg.className = 'chat-msg assistant';
+    if (histIndex != null) msg.dataset.hi = histIndex;
     msg.innerHTML = `
         <div class="chat-avatar"><i class="fa-solid fa-robot"></i></div>
         <div class="chat-col">
@@ -658,6 +665,7 @@ function appendAssistantMessage() {
     container.appendChild(msg);
     container.scrollTop = container.scrollHeight;
     return {
+        msg,
         content: msg.querySelector('.chat-content'),
         timer: msg.querySelector('.chat-timer'),
         timerVal: msg.querySelector('.chat-timer-val'),
@@ -692,7 +700,8 @@ function mdInline(s) {
         .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
 }
 function mdToHtml(text) {
-    const lines = String(text).split('\n');
+    // Em-dash / en-dash prohibidos: se reemplazan por guion simple al renderizar.
+    const lines = String(text).replace(/[—–]/g, '-').split('\n');
     const isSep = (l) => /^\s*\|?[\s:|-]*-[-\s:|]*\|?\s*$/.test(l) && l.includes('-');
     const parseRow = (l) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
 
@@ -729,6 +738,15 @@ function mdToHtml(text) {
                 i = j;
                 continue;
             }
+        }
+
+        const h = line.match(/^(#{1,3})\s+(.*)$/);
+        if (h) {
+            closeList();
+            const lvl = h[1].length;
+            html += `<h${lvl}>${mdInline(h[2])}</h${lvl}>`;
+            i++;
+            continue;
         }
 
         const li = line.match(/^\s*[-*]\s+(.*)$/);
@@ -1044,10 +1062,11 @@ async function sendAssistantMessage() {
     if (!pregunta && !adjuntos.length) return;
 
     // Pinta la pregunta del usuario (con miniaturas/iconos de adjuntos si los hay).
+    const uIndex = State.assistant.history.length;  // índice que tendrá tras el push
     if (adjuntos.length) {
-        appendUserMessage(pregunta, adjuntos);
+        appendUserMessage(pregunta, adjuntos, uIndex);
     } else {
-        appendChatBubble('user', pregunta);
+        appendChatBubble('user', pregunta, uIndex);
     }
     State.assistant.history.push({ role: 'user', content: pregunta || '(archivos adjuntos)' });
     saveAssistantHistory();
@@ -1057,7 +1076,7 @@ async function sendAssistantMessage() {
     renderAssistantAttachments();
 
     // Contenedor del mensaje del asistente (se re-renderiza con el stream)
-    const { content: contentEl, timer: timerEl, timerVal } = appendAssistantMessage();
+    const { msg: assistantMsgEl, content: contentEl, timer: timerEl, timerVal } = appendAssistantMessage();
     contentEl.innerHTML = '<div class="chat-bubble"><em>Pensando…</em></div>';
     const stopTimer = startResponseTimer(timerEl, timerVal);
 
@@ -1099,6 +1118,7 @@ async function sendAssistantMessage() {
         }
         // Guardamos solo la respuesta (sin el razonamiento) para no reenviarlo.
         State.assistant.history.push({ role: 'assistant', content: splitReasoning(acumulado).answer.trim() });
+        if (assistantMsgEl) assistantMsgEl.dataset.hi = State.assistant.history.length - 1;
         saveAssistantHistory();
         stopTimer('Respondió en');
     } catch (err) {
@@ -1111,6 +1131,265 @@ async function sendAssistantMessage() {
         sendBtn.disabled = false;
         input.focus();
     }
+}
+
+// ==================== ASISTENTE IA: INFORME (Fase D) ====================
+// Estado del informe en curso: figuras (specs) numeradas y texto redactado.
+let _reportState = { specsByN: {}, figuras: [], text: '' };
+
+function setupAssistantReport() {
+    const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+    wire('asistente-report', enterReportSelection);
+    wire('asistente-report-cancel', exitReportSelection);
+    wire('asistente-report-create', createReport);
+    wire('report-close', () => { document.getElementById('report-modal').style.display = 'none'; });
+    wire('report-regenerate', createReport);
+    wire('report-download', generateReportPDF);
+}
+
+// Entra al modo selección: agrega un checkbox a cada mensaje con índice de historial.
+function enterReportSelection() {
+    if (State.assistant.busy) return;
+    const msgs = document.querySelectorAll('#asistente-messages .chat-msg[data-hi]');
+    if (!msgs.length) { alert('No hay mensajes para incluir en un informe todavía.'); return; }
+    msgs.forEach(msg => {
+        if (msg.querySelector('.chat-select-check')) return;
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'chat-select-check';
+        cb.addEventListener('change', updateReportSelectCount);
+        msg.prepend(cb);
+        msg.classList.add('selectable');
+    });
+    document.getElementById('asistente-select-bar').hidden = false;
+    updateReportSelectCount();
+}
+
+function exitReportSelection() {
+    document.querySelectorAll('#asistente-messages .chat-select-check').forEach(cb => cb.remove());
+    document.querySelectorAll('#asistente-messages .chat-msg.selectable').forEach(m => m.classList.remove('selectable'));
+    const bar = document.getElementById('asistente-select-bar');
+    if (bar) bar.hidden = true;
+}
+
+function updateReportSelectCount() {
+    const n = document.querySelectorAll('#asistente-messages .chat-select-check:checked').length;
+    const el = document.getElementById('asistente-select-count');
+    if (el) el.textContent = `${n} seleccionado${n === 1 ? '' : 's'}`;
+}
+
+// Recolecta las fuentes (en orden) y las figuras de los mensajes marcados.
+function collectReportSources() {
+    const checked = [...document.querySelectorAll('#asistente-messages .chat-msg[data-hi] .chat-select-check:checked')];
+    const fuentes = [];
+    const figuras = [];
+    const specsByN = {};
+    let figN = 0;
+
+    for (const cb of checked) {
+        const msg = cb.closest('.chat-msg');
+        const hi = Number(msg.dataset.hi);
+        const entry = State.assistant.history[hi];
+        if (!entry) continue;
+
+        if (entry.role === 'user') {
+            fuentes.push({ rol: 'user', texto: entry.content || '' });
+            continue;
+        }
+        // Asistente: separar texto de figuras (chart/table) y numerarlas.
+        const segments = parseAssistantSegments(splitReasoning(entry.content).answer);
+        let texto = '';
+        for (const seg of segments) {
+            if (seg.type === 'text') {
+                texto += seg.content;
+            } else if (seg.type === 'chart' || seg.type === 'table') {
+                let spec;
+                try { spec = JSON.parse(seg.content); } catch (e) { continue; }
+                figN += 1;
+                const titulo = spec.title || (seg.type === 'chart' ? 'Gráfico' : 'Tabla');
+                figuras.push({ n: figN, tipo: seg.type, titulo });
+                specsByN[figN] = { type: seg.type, spec };
+                texto += `\n[Figura ${figN}: ${titulo}]\n`;
+            }
+        }
+        fuentes.push({ rol: 'assistant', texto: texto.trim() });
+    }
+    return { fuentes, figuras, specsByN };
+}
+
+async function createReport() {
+    const { fuentes, figuras, specsByN } = collectReportSources();
+    if (!fuentes.length) { alert('Selecciona al menos un mensaje para el informe.'); return; }
+
+    _reportState = { specsByN, figuras, text: '' };
+
+    const modal = document.getElementById('report-modal');
+    const preview = document.getElementById('report-preview');
+    const status = document.getElementById('report-status');
+    const dlBtn = document.getElementById('report-download');
+    modal.style.display = 'flex';
+    preview.innerHTML = '<p class="report-loading"><i class="fa-solid fa-spinner fa-spin"></i> Redactando informe…</p>';
+    status.textContent = 'Generando…';
+    dlBtn.disabled = true;
+
+    let acumulado = '';
+    try {
+        const res = await fetch(`${API_BASE}/api/assistant/report`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fuentes, figuras, model: State.assistant.model })
+        });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            acumulado += decoder.decode(value, { stream: true });
+            renderReportPreview(preview, acumulado, false);
+        }
+        _reportState.text = splitReasoning(acumulado).answer.trim();
+        renderReportPreview(preview, acumulado, true);
+        status.textContent = 'Informe listo. Revísalo y descarga el PDF.';
+        dlBtn.disabled = false;
+    } catch (err) {
+        console.error('[Informe] Error generando informe:', err);
+        preview.innerHTML = '<p class="report-loading">No se pudo generar el informe. Verifica la conexión con el modelo.</p>';
+        status.textContent = 'Error.';
+    }
+}
+
+// Renderiza el informe (markdown) intercalando las figuras donde aparece [[FIGURA:N]].
+// Durante el streaming (isFinal=false) las figuras se muestran como placeholder
+// para no re-instanciar Chart.js en cada token.
+function renderReportPreview(container, raw, isFinal) {
+    const answer = splitReasoning(raw).answer;
+    container.innerHTML = '';
+    const parts = answer.split(/\[\[FIGURA:(\d+)\]\]/);
+    parts.forEach((part, i) => {
+        if (i % 2 === 1) {
+            // Marcador de figura: parte impar = número.
+            const n = Number(part);
+            const fig = _reportState.specsByN[n];
+            if (!fig) return;
+            if (!isFinal) {
+                container.appendChild(buildIslandPlaceholder(fig.type));
+                return;
+            }
+            const island = fig.type === 'chart'
+                ? buildChartIsland(JSON.stringify(fig.spec))
+                : buildTableIsland(JSON.stringify(fig.spec));
+            island.classList.add('report-figure');
+            container.appendChild(island);
+        } else if (part.trim()) {
+            const block = document.createElement('div');
+            block.className = 'report-text';
+            block.innerHTML = mdToHtml(part);
+            container.appendChild(block);
+        }
+    });
+}
+
+// Genera el PDF rasterizando la vista previa (texto + figuras ya renderizadas),
+// reutilizando el header de marca y el paginado del export de Betplay.
+async function generateReportPDF() {
+    const preview = document.getElementById('report-preview');
+    const status = document.getElementById('report-status');
+    const dlBtn = document.getElementById('report-download');
+    if (!preview || !preview.children.length) return;
+
+    dlBtn.disabled = true;
+    status.textContent = 'Generando PDF…';
+    try {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const pageW = doc.internal.pageSize.getWidth();
+        const pageH = doc.internal.pageSize.getHeight();
+        const margin = 10;
+        const fullW = pageW - margin * 2;
+
+        const contentTop = (await drawAssistantReportHeader(doc, pageW)) + 6;
+        let y = contentTop;
+        const newPage = async () => { doc.addPage(); await drawAssistantReportHeader(doc, pageW); y = contentTop; };
+        // Alto máximo utilizable en una página (para escalar figuras muy altas).
+        const maxBlockMm = pageH - margin - contentTop;
+        const isFigure = (el) => el.classList.contains('chat-island') || el.classList.contains('report-figure');
+
+        for (const child of [...preview.children]) {
+            const canvas = await html2canvas(child, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+            const pxPerMm = canvas.width / fullW;
+            const blockMm = canvas.height / pxPerMm;
+
+            if (isFigure(child)) {
+                // Bloque indivisible: no se parte entre páginas.
+                let drawW = fullW, drawH = blockMm;
+                if (drawH > maxBlockMm) {
+                    // Más alta que una página: escalar para caber completa.
+                    drawH = maxBlockMm;
+                    drawW = fullW * (maxBlockMm / blockMm);
+                }
+                // Si no cabe en lo que queda de la página actual, pasa a la siguiente.
+                if (y + drawH > pageH - margin) await newPage();
+                const xC = margin + (fullW - drawW) / 2;
+                doc.addImage(canvas.toDataURL('image/png'), 'PNG', xC, y, drawW, drawH);
+                y += drawH + 5;
+                continue;
+            }
+
+            // Bloque de texto: se puede partir entre páginas.
+            let srcY = 0, remaining = canvas.height;
+            while (remaining > 0) {
+                const availMm = pageH - margin - y;
+                if (availMm < 20) { await newPage(); continue; }
+                const slicePx = Math.min(remaining, availMm * pxPerMm);
+                const sliceMm = slicePx / pxPerMm;
+                const tmp = document.createElement('canvas');
+                tmp.width = canvas.width; tmp.height = Math.round(slicePx);
+                tmp.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
+                doc.addImage(tmp.toDataURL('image/png'), 'PNG', margin, y, fullW, sliceMm);
+                y += sliceMm + 3; srcY += slicePx; remaining -= slicePx;
+                if (remaining > 0) await newPage();
+            }
+            y += 3;
+        }
+
+        const stamp = new Date().toISOString().slice(0, 10);
+        doc.save(`Informe_Asistente_Betplay_${stamp}.pdf`);
+        status.textContent = 'PDF descargado.';
+    } catch (err) {
+        console.error('[Informe] Error generando PDF:', err);
+        status.textContent = 'No se pudo generar el PDF.';
+    } finally {
+        dlBtn.disabled = false;
+    }
+}
+
+// Header de marca para el informe (reutiliza los logos del export de Betplay).
+async function drawAssistantReportHeader(doc, pageW) {
+    const logos = await getPdfLogos();
+    const H = 24;
+    doc.setFillColor(10, 46, 115);
+    doc.rect(0, 0, pageW, H, 'F');
+    doc.setFillColor(255, 196, 0);
+    doc.rect(0, H, pageW, 1, 'F');
+
+    let x = 10;
+    const cy = 6, logoH = 12;
+    const aW = logos.a.width * logoH / logos.a.height;
+    doc.addImage(logos.a, 'PNG', x, cy, aW, logoH); x += aW + 5;
+    doc.setDrawColor(255, 255, 255); doc.setLineWidth(0.2);
+    doc.line(x, cy, x, cy + logoH); x += 5;
+    const sW = logos.s.width * logoH / logos.s.height;
+    doc.addImage(logos.s, 'PNG', x, cy, sW, logoH); x += sW + 5;
+    doc.line(x, cy, x, cy + logoH); x += 5;
+    const nW = logos.n.width * logoH / logos.n.height;
+    doc.addImage(logos.n, 'PNG', x, cy, nW, logoH);
+
+    doc.setTextColor(255, 255, 255); doc.setFontSize(12);
+    doc.text('Informe · Asistente IA Betplay', pageW - 10, 10, { align: 'right' });
+    doc.setFontSize(9); doc.setTextColor(210, 224, 248);
+    doc.text(new Date().toLocaleDateString('es-CO', { year: 'numeric', month: 'long', day: 'numeric' }), pageW - 10, 16, { align: 'right' });
+    return H + 1;
 }
 
 // --- BETPLAY: TIPO Y RANGO DE FECHAS ---
@@ -1363,7 +1642,7 @@ function updateBetplaySelectionSummary(range) {
     if (range.mode === 'today') periodo = 'día actual';
     else if (range.mode === 'single') periodo = `fecha ${range.desde.split(' ')[0]}`;
     else periodo = `del ${range.desde.split(' ')[0]} al ${document.getElementById('betplay-date-to').value}`;
-    el.textContent = `Mostrando: ${tipo} — ${periodo}`;
+    el.textContent = `Mostrando: ${tipo} · ${periodo}`;
 }
 
 // --- PALETA CATEGÓRICA DE MARCA (tortas / barras multicolor) ---
@@ -1673,7 +1952,7 @@ async function drawBetplayPdfHeader(doc, pageW) {
     const tipo = State.betplay.type;
     const tipoLabel = tipo === 'ambos' ? 'Pagos y Recargas' : (tipo === 'recargas' ? 'Recargas' : 'Pagos');
     doc.setTextColor(255, 255, 255); doc.setFontSize(12);
-    doc.text('Dashboard de Operaciones — Betplay', pageW - 10, 10, { align: 'right' });
+    doc.text('Dashboard de Operaciones · Betplay', pageW - 10, 10, { align: 'right' });
     doc.setFontSize(9); doc.setTextColor(210, 224, 248);
     doc.text(`${tipoLabel} · ${betplayPdfPeriodText()}`, pageW - 10, 16, { align: 'right' });
 
@@ -2086,7 +2365,7 @@ function renderBetplayMap(sites) {
             L.circleMarker([p.lat, p.lng], {
                 radius, color: '#1257d1', fillColor: '#1257d1', fillOpacity: 0.5, weight: 1
             }).bindPopup(
-                `<strong>${p.sitio || 'Sitio'}</strong><br>${p.oficina || ''} — ${p.zona || ''}<br>`
+                `<strong>${p.sitio || 'Sitio'}</strong><br>${p.oficina || ''} · ${p.zona || ''}<br>`
                 + `${p.ciudad ? 'Municipio: ' + p.ciudad + '<br>' : ''}`
                 + `${p.tipo_sv ? 'Tipo SV: ' + p.tipo_sv + '<br>' : ''}`
                 + `Monto: ${formatCurrency(p.monto)}<br>Transacciones: ${p.cantidad.toLocaleString('es-CO')}<br>`

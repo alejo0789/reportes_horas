@@ -2400,6 +2400,127 @@ def assistant_chat(req: AssistantChatRequest):
 
     return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")
 
+
+def _resolve_assistant_model(model):
+    """Resuelve y asegura la carga del modelo (misma lógica que el chat)."""
+    if model in _ASSISTANT_MODEL_IDS:
+        ensure_model_loaded(model)
+        return model
+    loaded = _current_catalog_model()
+    model_id = loaded or LLM_MODEL
+    if loaded is None:
+        ensure_model_loaded(model_id)
+    return model_id
+
+
+def _stream_assistant_tokens(messages, model_id, temperature=0.4):
+    """Generador que streamea la respuesta del modelo, envolviendo el
+    razonamiento en las etiquetas que el frontend sabe parsear."""
+    in_reasoning = False
+    try:
+        client = get_llm_client()
+        stream = client.chat.completions.create(
+            model=model_id, messages=messages, temperature=temperature, stream=True,
+        )
+        for chunk in stream:
+            try:
+                delta = chunk.choices[0].delta
+            except (AttributeError, IndexError):
+                continue
+            reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            content = getattr(delta, "content", None)
+            if reasoning:
+                if not in_reasoning:
+                    in_reasoning = True
+                    yield "<|channel>thought"
+                yield reasoning
+            if content:
+                if in_reasoning:
+                    in_reasoning = False
+                    yield "<channel|>"
+                yield content
+        if in_reasoning:
+            yield "<channel|>"
+    except Exception as e:
+        logger.error(f"Assistant streaming failed: {e}")
+        if in_reasoning:
+            yield "<channel|>"
+        yield f"\n\n[Error al contactar el modelo: {e}]"
+
+
+REPORT_SYSTEM_PROMPT = """Eres un redactor de informes ejecutivos para el producto Betplay.
+A partir de FUENTES (fragmentos de una conversación de análisis: preguntas del usuario y respuestas del asistente)
+y un CATÁLOGO DE FIGURAS disponibles, redacta un informe profesional en español, claro y orientado a decisiones.
+
+Estructura el informe con:
+- Un título (encabezado con "# ").
+- Una introducción breve que contextualice el análisis.
+- Secciones de análisis (encabezados con "## ") que integren y redacten la información de las fuentes.
+- Una sección final de "## Conclusiones" con hallazgos y recomendaciones accionables.
+
+Sobre las FIGURAS:
+- El catálogo lista figuras numeradas (Figura 1, Figura 2, ...) con su título.
+- Cuando quieras que una figura aparezca en el informe, escribe en una LÍNEA APARTE exactamente el marcador: [[FIGURA:N]]
+  (por ejemplo, una línea que contenga solo "[[FIGURA:1]]"). El sistema insertará ahí el gráfico o tabla real.
+- Puedes referenciarla en el texto como "(ver Figura N)". Usa cada figura como máximo una vez.
+- No escribas bloques de código ```chart o ```table; solo usa los marcadores [[FIGURA:N]].
+
+Reglas:
+- Usa SOLO la información de las fuentes; no inventes cifras nuevas.
+- Redacta de forma fluida y profesional (no copies las preguntas ni el estilo de chat).
+- Usa Markdown (encabezados #/##, negritas **, listas con guiones).
+- No generes em-dashes. No uses emojis.
+"""
+
+
+class AssistantReportRequest(BaseModel):
+    fuentes: List[dict]          # [{rol:'user'|'assistant', texto:'...'}]
+    figuras: Optional[List[dict]] = None  # [{n, tipo:'chart'|'table', titulo}]
+    titulo: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/api/assistant/report")
+def assistant_report(req: AssistantReportRequest):
+    """
+    Segundo pase del modelo: toma mensajes seleccionados como fuentes y redacta
+    un informe ejecutivo (con marcadores [[FIGURA:N]] para intercalar figuras).
+    Devuelve el texto en streaming.
+    """
+    model_id = _resolve_assistant_model(req.model)
+
+    fuentes_txt = []
+    for i, f in enumerate(req.fuentes or [], 1):
+        rol = "Usuario" if (f or {}).get("rol") == "user" else "Asistente"
+        texto = (f or {}).get("texto", "")
+        fuentes_txt.append(f"[Fuente {i} - {rol}]\n{texto}")
+
+    figuras_txt = []
+    for fig in (req.figuras or []):
+        n = fig.get("n")
+        tipo = "gráfico" if fig.get("tipo") == "chart" else "tabla"
+        titulo = fig.get("titulo") or f"Figura {n}"
+        figuras_txt.append(f"- Figura {n} ({tipo}): {titulo}")
+
+    partes = ["FUENTES:\n" + "\n\n".join(fuentes_txt)]
+    if figuras_txt:
+        partes.append("CATÁLOGO DE FIGURAS:\n" + "\n".join(figuras_txt))
+    else:
+        partes.append("CATÁLOGO DE FIGURAS: (ninguna)")
+    if req.titulo:
+        partes.append(f"El usuario sugiere este título: {req.titulo}")
+    partes.append("Redacta el informe ahora.")
+
+    messages = [
+        {"role": "system", "content": REPORT_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(partes)},
+    ]
+
+    return StreamingResponse(
+        _stream_assistant_tokens(messages, model_id, temperature=0.5),
+        media_type="text/plain; charset=utf-8",
+    )
+
 # ============================ ASISTENTE IA ============================
 
 @app.post("/api/upload/metas")
