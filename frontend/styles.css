@@ -747,6 +747,41 @@ body {
     top: 0;
     z-index: 2;
     background: #dbe6f7;
+    /* Vidrio esmerilado: difumina el contenido que pasa por detrás al hacer scroll */
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+/* La segunda fila de cabecera (Venta/Meta/% Cump.) se fija justo debajo de la
+   primera, no en top:0, para que no se solapen al hacer scroll vertical. */
+.detalle-sitios-scroll thead tr:nth-child(2) th {
+    top: var(--thead-row1-h, 44px);
+}
+
+/* Fijar horizontalmente las 3 primeras columnas: Zona, Oficina/Sitio, Promotor */
+.detalle-sitios-scroll .sticky-col {
+    position: sticky;
+    z-index: 3;               /* por encima de las celdas de producto que se deslizan debajo */
+    background: #ffffff;      /* fondo opaco para tapar las columnas que pasan por detrás */
+}
+.detalle-sitios-scroll .sticky-col-1 { left: 0; }
+.detalle-sitios-scroll .sticky-col-2 { left: var(--sticky-left-2, 70px); }   /* ancho de Zona (recalculado en JS) */
+.detalle-sitios-scroll .sticky-col-3 { left: var(--sticky-left-3, 330px); }  /* Zona + Oficina (recalculado en JS) */
+
+/* Las cabeceras fijas deben quedar por encima de las celdas fijas del cuerpo */
+.detalle-sitios-scroll thead .sticky-col {
+    z-index: 5;
+    background: var(--brand-blue);
+}
+
+/* Conservar el matiz azul de las filas de oficina y el hover en las columnas fijas */
+.detalle-sitios-scroll .tr-office-parent .sticky-col { background: #eef3fc; }
+.detalle-sitios-scroll tbody tr:hover .sticky-col { background: #eef4fd; }
+.detalle-sitios-scroll .tr-office-parent:hover .sticky-col { background: #e3edfb; }
+
+/* Sombra sutil que separa la zona fija del área desplazable */
+.detalle-sitios-scroll .sticky-col-3 {
+    box-shadow: 4px 0 6px -4px rgba(15, 37, 64, 0.18);
 }
 
 .data-table {
@@ -1140,14 +1175,16 @@ body {
 }
 
 /* Highlight columns for easier horizontal grouping */
-.product-col-group-header {
+.data-table thead tr:first-child th.product-col-group-header {
     border-left: 1px solid rgba(255, 255, 255, 0.18);
     border-right: 1px solid rgba(255, 255, 255, 0.18);
-    background: linear-gradient(180deg, rgba(255, 196, 0, 0.30) 0%, rgba(255, 196, 0, 0.12) 100%) !important;
+    /* Gradiente amarillo sobre base clara opaca: se lee bien y no deja ver el scroll */
+    background: linear-gradient(180deg, rgba(255, 196, 0, 0.85) 0%, rgba(255, 210, 70, 0.80) 100%), #fbf3da !important;
+    color: #111;   /* texto oscuro sobre el fondo amarillo (antes heredaba blanco -> ilegible) */
 }
 
 .data-table thead tr:nth-child(2) th {
-    background: rgba(18, 87, 209, 0.08);
+    background: #dfe8f6;   /* opaco: la subcabecera Venta/Meta/% no deja ver el scroll */
     font-weight: 600;
     font-size: 9.5px;
     letter-spacing: 0.5px;

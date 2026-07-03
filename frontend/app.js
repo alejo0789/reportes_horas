@@ -4052,9 +4052,9 @@ function renderTable(prejoinedData) {
     if (elements.tableThead) {
         elements.tableThead.innerHTML = `
             <tr>
-                <th rowspan="2" style="width: 80px;">Zona</th>
-                <th rowspan="2" style="min-width: 280px; text-align: left;">Oficina / Sitio de Venta</th>
-                <th rowspan="2" style="min-width: 140px; text-align: left;">Promotor</th>
+                <th rowspan="2" class="sticky-col sticky-col-1" style="width: 70px; min-width: 70px;">Zona</th>
+                <th rowspan="2" class="sticky-col sticky-col-2" style="width: 260px; min-width: 260px; text-align: left;">Oficina / Sitio de Venta</th>
+                <th rowspan="2" class="sticky-col sticky-col-3" style="width: 150px; min-width: 150px; text-align: left;">Promotor</th>
                 ${displayedProducts.map(prod => `
                     <th colspan="3" class="product-col-group-header">${prod}</th>
                 `).join('')}
@@ -4162,8 +4162,8 @@ function renderTable(prejoinedData) {
         });
         
         let officeRowHtml = `
-            <td>${office.zona}</td>
-            <td>
+            <td class="sticky-col sticky-col-1">${office.zona}</td>
+            <td class="sticky-col sticky-col-2">
                 <div class="office-name-container">
                     <span class="office-chevron ${!isCollapsed ? 'expanded' : ''}">
                         <i class="fa-solid fa-chevron-right"></i>
@@ -4172,7 +4172,7 @@ function renderTable(prejoinedData) {
                     <span class="office-sites-count">${officeSitesCount} sitios</span>
                 </div>
             </td>
-            <td>${Array.from(office.promotores).join(', ') || 'Varios'}</td>
+            <td class="sticky-col sticky-col-3">${Array.from(office.promotores).join(', ') || 'Varios'}</td>
         `;
         
         // Horizontal columns for each product on Office level
@@ -4189,7 +4189,7 @@ function renderTable(prejoinedData) {
             
             officeRowHtml += `
                 <td class="num-col ${cellClasses}">${formatProductValue(prodData.venta, prod)}</td>
-                <td class="num-col ${cellClasses}" style="color:rgba(255,255,255,0.45);">${formatProductValue(prodData.meta, prod)}</td>
+                <td class="num-col ${cellClasses}" style="color:var(--text-muted);">${formatProductValue(prodData.meta, prod)}</td>
                 <td class="num-col ${cellClasses}" style="color: ${cumpColor} !important; font-weight: 600 !important;">${compliance}%</td>
             `;
         });
@@ -4207,15 +4207,15 @@ function renderTable(prejoinedData) {
             trSite.className = `tr-site-child ${isCollapsed ? 'collapsed-row' : ''}`;
             
             let siteRowHtml = `
-                <td style="color:var(--text-muted);">${site.zona}</td>
-                <td>
+                <td class="sticky-col sticky-col-1" style="color:var(--text-muted);">${site.zona}</td>
+                <td class="sticky-col sticky-col-2">
                     <div class="indent-site-container">
                         <span class="tree-branch-icon">└─</span>
                         <span style="color:var(--text-primary); font-weight: 500;">${site.sitio_venta}</span>
                         <span style="font-size: 10px; color: var(--text-muted); font-family: monospace;">(${site.cod_sitio})</span>
                     </div>
                 </td>
-                <td>${site.promotor || 'Sin Promotor'}</td>
+                <td class="sticky-col sticky-col-3">${site.promotor || 'Sin Promotor'}</td>
             `;
             
             // Horizontal columns for each product on Site level
@@ -4241,7 +4241,36 @@ function renderTable(prejoinedData) {
             elements.tableBody.appendChild(trSite);
         });
     });
+
+    // 6. Ajustar los offsets 'left' de las columnas fijas segun su ancho real,
+    //    para que Zona/Oficina/Promotor queden pegadas sin huecos ni solapes.
+    syncStickyColumnOffsets();
 }
+
+// Recalcula los offsets horizontales de las columnas sticky a partir del ancho
+// real renderizado de las dos primeras columnas de la cabecera.
+function syncStickyColumnOffsets() {
+    const scroll = document.querySelector('.detalle-sitios-scroll');
+    if (!scroll || !elements.tableThead) return;
+    const headerCells = elements.tableThead.querySelectorAll('tr:first-child .sticky-col');
+    if (headerCells.length < 3) return;
+    const zonaW = headerCells[0].getBoundingClientRect().width;
+    const oficinaW = headerCells[1].getBoundingClientRect().width;
+    scroll.style.setProperty('--sticky-left-2', `${zonaW}px`);
+    scroll.style.setProperty('--sticky-left-3', `${zonaW + oficinaW}px`);
+
+    // Alto real de la primera fila de cabecera, para fijar la segunda fila
+    // (Venta/Meta/% Cump.) justo debajo y evitar que se solapen al hacer scroll.
+    const row1 = elements.tableThead.querySelector('tr:first-child');
+    if (row1) {
+        scroll.style.setProperty('--thead-row1-h', `${row1.getBoundingClientRect().height}px`);
+    }
+}
+
+// Reajusta las columnas fijas cuando cambia el tamano de la ventana.
+window.addEventListener('resize', () => {
+    if (document.querySelector('.detalle-sitios-scroll .sticky-col')) syncStickyColumnOffsets();
+});
 
 // --- DYNAMIC TABLE FILTERS POPULATOR ---
 
