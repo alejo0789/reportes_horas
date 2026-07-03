@@ -23,7 +23,7 @@
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
     <!-- leaflet-image: renderiza el mapa a canvas para el PDF (sin offset) -->
     <script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
-    <link rel="stylesheet" href="styles.css?v=4.0">
+    <link rel="stylesheet" href="styles.css?v=4.9">
 </head>
 <body>
     <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
@@ -32,41 +32,13 @@
         <filter id="lensRefraction" x="0%" y="0%" width="100%" height="100%">
             <feTurbulence type="fractalNoise" baseFrequency="0.002 0.002"
                 numOctaves="1" seed="14" stitchTiles="stitch" result="noise" />
-            <feGaussianBlur in="noise" stdDeviation="6" result="soft" />
+            <feGaussianBlur in="noise" stdDeviation="8" result="soft" />
             <feDisplacementMap in="SourceGraphic" in2="soft"
-                scale="40" xChannelSelector="R" yChannelSelector="G" />
+                scale="34" xChannelSelector="R" yChannelSelector="G" />
         </filter>
     </svg>
 
     <div class="glow-bg"></div>
-    
-    <!-- HEADER (full-width, pegado arriba) -->
-    <header class="main-header">
-            <div class="header-logo">
-                <img src="assets/logos/acertemos.png" alt="Acertemos" class="brand-logo">
-                <span class="brand-divider"></span>
-                <img src="assets/logos/sured.png" alt="SU RED" class="brand-logo">
-                <span class="brand-divider"></span>
-                <img src="assets/logos/negativo.png" alt="Logo" class="brand-logo">
-                <div class="header-title">
-                    <h1>Dashboard de Operaciones</h1>
-                    <p class="subtitle">Análisis transaccional y control de metas</p>
-                </div>
-            </div>
-            <div class="header-actions">
-                <div class="db-status">
-                    <span class="status-indicator" id="status-indicator"></span>
-                    <span class="status-text" id="status-text">Cargando conexión DB...</span>
-                </div>
-                <div class="last-update">
-                    <i class="fa-solid fa-arrows-rotate refresh-icon" id="btn-refresh"></i>
-                    <div>
-                        <span class="label">ÚLTIMA ACTUALIZACIÓN</span>
-                        <span class="value" id="update-timestamp">Sin actualizar</span>
-                    </div>
-                </div>
-            </div>
-    </header>
 
     <div class="container">
         <!-- TAB NAVIGATION + TOOLBAR ASISTENTE (misma fila) -->
@@ -85,14 +57,21 @@
                 </button>
             </nav>
 
-            <!-- Barra de estado + selector de modelo (solo visible en Asistente) -->
-            <div class="asistente-toolbar" id="asistente-conn" hidden>
-                <span class="status-indicator" id="asistente-conn-indicator"></span>
-                <span class="status-text" id="asistente-conn-text">Verificando conexión...</span>
-                <span class="asistente-toolbar-divider"></span>
-                <i class="fa-solid fa-brain"></i>
-                <select id="asistente-model-select" class="asistente-model-select"></select>
-                <span class="asistente-model-status" id="asistente-model-status" hidden></span>
+            <!-- Controles reubicados desde el header (estado DB + actualizar).
+                 Se pulen como componente sticky en el Punto 2. -->
+            <div class="nav-actions" id="nav-actions">
+                <div class="db-status" id="db-status" title="Estado de conexión a bases de datos">
+                    <i class="fa-solid fa-database db-icon"></i>
+                    <span class="status-indicator" id="status-indicator"></span>
+                    <span class="status-text" id="status-text" hidden></span>
+                </div>
+                <div class="last-update">
+                    <i class="fa-solid fa-arrows-rotate refresh-icon" id="btn-refresh"></i>
+                    <div>
+                        <span class="label">ÚLTIMA ACTUALIZACIÓN</span>
+                        <span class="value" id="update-timestamp">Sin actualizar</span>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -779,6 +758,14 @@
                 <div class="asistente-chat-head">
                     <h4 class="asistente-chat-title"><i class="fa-solid fa-comments"></i> Conversación</h4>
                     <div class="asistente-chat-actions">
+                        <!-- Conexión + selector de modelo (movido desde el sticky) -->
+                        <div class="asistente-conn-inline" id="asistente-conn" title="Estado de conexión del modelo">
+                            <span class="status-indicator" id="asistente-conn-indicator"></span>
+                            <span class="status-text" id="asistente-conn-text">Verificando...</span>
+                            <i class="fa-solid fa-brain"></i>
+                            <select id="asistente-model-select" class="asistente-model-select"></select>
+                            <span class="asistente-model-status" id="asistente-model-status" hidden></span>
+                        </div>
                         <button type="button" class="asistente-report-btn" id="asistente-report" title="Generar informe a partir de mensajes seleccionados">
                             <i class="fa-solid fa-file-lines"></i> Generar informe
                         </button>
@@ -803,7 +790,7 @@
                         <div class="chat-bubble">
                             ¡Hola! Soy tu asistente de datos de Betplay. Pregúntame cosas como
                             <em>"¿qué zona vendió más hoy?"</em> o <em>"compárame pagos vs recargas"</em>.
-                            Por ahora respondo en texto sobre los datos del día; los gráficos llegarán en el siguiente paso.
+                            Consulto la base de datos en vivo para responderte, y puedo generar gráficos y tablas.
                         </div>
                     </div>
                 </div>
@@ -822,7 +809,7 @@
                         <i class="fa-solid fa-paper-plane"></i> Enviar
                     </button>
                 </div>
-                <p class="asistente-input-hint">El asistente responde con base en los datos agregados del día actual.</p>
+                <p class="asistente-input-hint">El asistente consulta la base de datos en vivo (solo lectura) para responder.</p>
             </section>
 
             <!-- MODAL: VISTA PREVIA DEL INFORME -->
@@ -1100,6 +1087,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=3.7"></script>
+    <script src="app.js?v=4.1"></script>
 </body>
 </html>
