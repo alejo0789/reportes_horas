@@ -23,7 +23,7 @@
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
     <!-- leaflet-image: renderiza el mapa a canvas para el PDF (sin offset) -->
     <script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
-    <link rel="stylesheet" href="styles.css?v=3.9">
+    <link rel="stylesheet" href="styles.css?v=4.0">
 </head>
 <body>
     <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
@@ -65,8 +65,39 @@
                         <span class="value" id="update-timestamp">Sin actualizar</span>
                     </div>
                 </div>
+                <button class="auth-badge auth-missing" id="auth-badge" title="Cambiar token JWT" onclick="showTokenModal()">
+                    Sin token
+                </button>
             </div>
     </header>
+
+    <!-- Modal de autenticación JWT
+         En producción el Angular padre envía el token vía postMessage.
+         Este modal simula esa recepción durante el desarrollo. -->
+    <div id="modal-token" class="modal-token-overlay" style="display:none;">
+        <div class="modal-token-box">
+            <div class="modal-token-header">
+                <i class="fa-solid fa-shield-halved"></i>
+                <h2>Autenticación requerida</h2>
+            </div>
+            <p class="modal-token-desc" id="token-modal-msg">
+                Pega tu token JWT para acceder al dashboard.<br>
+                <small>En producción, el Angular padre enviará el token automáticamente vía <code>postMessage</code>.</small>
+            </p>
+            <textarea
+                id="token-input"
+                class="modal-token-input"
+                rows="5"
+                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                spellcheck="false"
+            ></textarea>
+            <div class="modal-token-actions">
+                <button class="btn-token-submit" onclick="submitToken()">
+                    <i class="fa-solid fa-right-to-bracket"></i> Acceder
+                </button>
+            </div>
+        </div>
+    </div>
 
     <div class="container">
         <!-- TAB NAVIGATION + TOOLBAR ASISTENTE (misma fila) -->
@@ -1100,6 +1131,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=3.7"></script>
+    <script src="app.js?v=4.1"></script>
 </body>
 </html>

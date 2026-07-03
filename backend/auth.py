@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timezone
-from fastapi import Depends, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from pydantic import BaseModel
@@ -21,10 +21,14 @@ class CurrentUser(BaseModel):
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+    device_id:   str | None = Cookie(default=None),
 ) -> CurrentUser:
     """
     Dependencia FastAPI — valida el JWT emitido por api-gestion-usuarios.
     No hace consultas a BD; toda la validación es local con SECRET_KEY.
+
+    Valida device_id (cookie HttpOnly) contra el claim del JWT para asegurar
+    que el token se usa desde el mismo navegador donde se hizo el login.
 
     Uso: current_user: CurrentUser = Depends(get_current_user)
     """
@@ -58,6 +62,16 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token con payload incompleto",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # device binding: solo valida si el JWT tiene device_id (tokens emitidos con la nueva versión)
+    # tokens anteriores sin device_id pasan sin validación — compatibilidad hacia atrás
+    jwt_device_id = payload.get("device_id")
+    if jwt_device_id and device_id != jwt_device_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token no válido para este dispositivo",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
