@@ -1940,8 +1940,8 @@ def get_betplay_resumen(
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://10.0.29.27:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemma-4-e4b-it-qat")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
-LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "2"))
-LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "50"))
+LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "3"))
+LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "200"))
 
 # Topes del CONTEXTO agregado que se inyecta al modelo en cada mensaje.
 # Ajustables por variable de entorno para reducir el tamaño del prompt sin
@@ -2167,6 +2167,174 @@ def _betplay_historial_diario(dias=28):
     return {"desde": desde, "hasta": hasta, "dias": dias, "por_dia": series}
 
 
+# ==================================================================
+#  ASISTENTE IA — HERRAMIENTAS DE DATOS (SQL solo-lectura + RESUMEN)
+# ==================================================================
+import re as _re
+
+# Catálogo de esquema ACOTADO que se inyecta al modelo para que genere SQL
+# aterrizado. Solo tablas de Betplay + maestros (no todo el diccionario de la BD).
+ASSISTANT_SCHEMA_CATALOG = """ESQUEMA DISPONIBLE (Oracle). Solo puedes consultar estas tablas y columnas.
+El mismo SELECT se ejecuta automáticamente en las dos bases (CAUCA y FORTUNA) y
+sus filas se combinan agregando una columna "Fuente"; NO tienes que elegir base.
+
+-- Betplay: PAGOS (retiros) --
+GANA_SIGA.SIGT_PAGOS (alias P)
+  IDE_PRODUCTO   number   -- Betplay pago = 17288
+  IDE_SITIOVENTA number   -- FK a MAET_SITIOSVENTA.IDE_SITIOVENTA
+  IDE_USUARIO    number   -- FK a MAET_USUARIOS.IDE_USUARIO
+  FEC_PAGO       date     -- fecha/hora de la transacción
+  VALOR_PAGO     number   -- monto en COP
+  IDE_ESTADO     number   -- transacción válida = 264
+  Filtro Betplay: IDE_PRODUCTO = 17288 AND IDE_ESTADO = 264
+
+-- Betplay: RECARGAS --
+GANA_SIGA.SIGT_RECARGAS (alias R)
+  IDE_PRODUCTO   number   -- Betplay recarga = 17287
+  IDE_SITIOVENTA number
+  IDE_USUARIO    number
+  FEC_VENTA      date
+  VLR_RECARGA    number   -- monto en COP
+  IDE_ESTADO     number   -- transacción válida = 48
+  Filtro Betplay: IDE_PRODUCTO = 17287 AND IDE_ESTADO = 48
+
+-- Maestros --
+GANA_MAESTROS.MAET_USUARIOS (alias U)
+  IDE_USUARIO number, NUM_IDENTIFICACION varchar  -- identificación del cliente
+GANA_MAESTROS.MAET_SITIOSVENTA (alias SV)
+  IDE_SITIOVENTA number, NOM_SITIOVENTA varchar, IDE_CIUDAD number,
+  IDE_OFICINA number, IDE_TIPO_SITIO number, DIRECCION varchar,
+  ACTIVO varchar, CX number, CY number
+GANA_MAESTROS.MAET_CIUDADES (alias CIUDAD)
+  IDE_CIUDAD number, NOM_CIUDAD varchar
+GANA_MAESTROS.MAET_OFICINAS (alias OFICINA)
+  IDE_OFICINA number, NOM_OFICINA varchar, IDE_SUBZONA number
+GANA_MAESTROS.MAET_SUBZONAS (alias SUBZONA)
+  IDE_SUBZONA number, NOM_SUBZONA varchar, IDE_ZONA number
+GANA_MAESTROS.MAET_ZONAS (alias ZONA)
+  IDE_ZONA number, NOM_ZONA varchar
+GANA_MAESTROS.MAET_TIPOS_SITIOVENTA (alias TSV)
+  IDE_TIPO_SITIO number, DES_TIPO_SITIO varchar
+
+-- Joins geográficos habituales --
+P.IDE_SITIOVENTA = SV.IDE_SITIOVENTA
+SV.IDE_CIUDAD    = CIUDAD.IDE_CIUDAD
+SV.IDE_OFICINA   = OFICINA.IDE_OFICINA
+OFICINA.IDE_SUBZONA = SUBZONA.IDE_SUBZONA
+SUBZONA.IDE_ZONA = ZONA.IDE_ZONA
+SV.IDE_TIPO_SITIO = TSV.IDE_TIPO_SITIO
+P.IDE_USUARIO    = U.IDE_USUARIO   (igual para R.IDE_USUARIO)
+
+REGLAS SQL:
+- Oracle. Fechas con TO_DATE('YYYY-MM-DD HH24:MI:SS','YYYY-MM-DD HH24:MI:SS') o TRUNC(SYSDATE) para hoy.
+- Solo SELECT/WITH; una sola sentencia; sin punto y coma final.
+- Limita SIEMPRE el resultado (FETCH FIRST N ROWS ONLY); si no lo pones, se acota automáticamente.
+- No consultes tablas fuera de este catálogo."""
+
+# Términos de escritura/DDL/DCL/PLSQL prohibidos (límites de palabra, case-insensitive)
+_SQL_FORBIDDEN = _re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|"
+    r"EXEC|EXECUTE|BEGIN|DECLARE|CALL|COMMIT|ROLLBACK|RENAME|INTO|SAVEPOINT|"
+    r"LOCK|FLASHBACK|PURGE)\b",
+    _re.IGNORECASE,
+)
+_ALLOWED_SQL_SCHEMAS = {"GANA_SIGA", "GANA_MAESTROS"}
+
+
+def _validate_readonly_sql(sql):
+    """
+    Valida que `sql` sea una única sentencia de solo lectura sobre los esquemas
+    permitidos. Devuelve (ok: bool, sql_saneado: str|None, error: str|None).
+    Si falta un límite de filas, lo agrega (FETCH FIRST N ROWS ONLY).
+    """
+    if not sql or not sql.strip():
+        return False, None, "SQL vacío."
+    s = sql.strip()
+    # Quitar un único ';' final si viene; múltiples sentencias => rechazo.
+    if s.endswith(";"):
+        s = s[:-1].rstrip()
+    if ";" in s:
+        return False, None, "Solo se permite una sentencia (sin ';' múltiples)."
+    # Debe empezar por SELECT o WITH (permitiendo paréntesis iniciales).
+    head = s.lstrip("( \t\r\n")
+    if not _re.match(r"(?is)^(select|with)\b", head):
+        return False, None, "La consulta debe empezar por SELECT o WITH."
+    # Bloqueo de operaciones no-lectura.
+    if _SQL_FORBIDDEN.search(s):
+        return False, None, "La consulta contiene una operación no permitida (solo lectura)."
+    # Whitelist de esquemas: toda tabla calificada tras FROM/JOIN debe estar en un
+    # esquema permitido. Solo miramos FROM/JOIN para no confundir un esquema con un
+    # alias de columna (p.ej. P.IDE_USUARIO en el SELECT).
+    for m in _re.finditer(r"(?is)\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*[A-Za-z_]", s):
+        schema = m.group(1).upper()
+        if schema not in _ALLOWED_SQL_SCHEMAS:
+            return False, None, f"Esquema no permitido: {schema}."
+    # Forzar límite de filas si el modelo no lo puso.
+    if not _re.search(r"(?is)\bfetch\s+first\b", s) and not _re.search(r"(?is)\brownum\b", s):
+        s = f"{s}\nFETCH FIRST {LLM_SQL_ROW_LIMIT} ROWS ONLY"
+    return True, s, None
+
+
+def _run_assistant_sql(sql):
+    """
+    Valida y ejecuta el SELECT en CAUCA y FORTUNA (solo lectura), combina las
+    filas etiquetando "Fuente" y recorta al tope de filas. Devuelve un dict
+    apto para reinyectar como observación al modelo.
+    """
+    ok, clean, err = _validate_readonly_sql(sql)
+    if not ok:
+        return {"error": err, "sql": sql}
+
+    rows_all = []
+    per_source = {}
+    errors = []
+    for source, get_conn in (
+        ("CAUCA", db_manager.get_cauca_connection),
+        ("FORTUNA", db_manager.get_fortuna_connection),
+    ):
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(clean)
+                    rows = rows_to_dicts(cur)
+                    for r in rows:
+                        r["Fuente"] = source
+                    rows_all.extend(rows)
+                    per_source[source] = len(rows)
+        except Exception as e:
+            logger.error(f"Assistant SQL failed on {source}: {e}")
+            errors.append(f"{source}: {e}")
+
+    total = len(rows_all)
+    capped = rows_all[: LLM_SQL_ROW_LIMIT]
+    return {
+        "sql": clean,
+        "columns": list(capped[0].keys()) if capped else [],
+        "rows": capped,
+        "row_count": total,
+        "truncated": total > LLM_SQL_ROW_LIMIT,
+        "per_source": per_source,
+        "errors": errors,
+    }
+
+
+def _run_assistant_resumen(desde=None, hasta=None, tipo="ambos"):
+    """
+    Resumen agregado bajo demanda (pagos y/o recargas). Reutiliza el cálculo
+    compacto existente. Se usa cuando la pregunta es genérica o al iniciar el
+    chat, para dar una visión rápida del periodo (por defecto, el día actual).
+    """
+    today = date.today()
+    desde = desde or f"{today.isoformat()} 00:00:00"
+    hasta = hasta or f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
+    tipos = ["pagos", "recargas"] if (tipo or "ambos").lower() in ("ambos", "both", "todo") else [tipo.lower()]
+    out = {"periodo": {"desde": desde, "hasta": hasta}}
+    for t in tipos:
+        if t in ("pagos", "recargas"):
+            out[t] = _compact_resumen_for_context(t, desde, hasta)
+    return out
+
+
 @app.post("/api/assistant/upload")
 async def assistant_upload(file: UploadFile = File(...)):
     """
@@ -2215,14 +2383,32 @@ ASSISTANT_SYSTEM_PROMPT = """Eres un asistente de análisis de datos para el pro
 Respondes y piensas/razonas SIEMPRE en español, de forma clara y concisa, orientado a la toma de decisiones.
 Puedes usar Markdown (negritas con **texto**, listas con guiones, etc.).
 
-Se te entrega un CONTEXTO con datos AGREGADOS del día (pagos y recargas): totales, ventas por hora, por zona,
-por CIUDAD, por tipo de sitio de venta, por oficina, top sitios y top usuarios (por número de identificación), y por canal.
-Además, se incluye "historial_diario" con los totales por día (monto y cantidad) de pagos y recargas de los últimos días disponibles.
-- "monto" está en pesos colombianos (COP). "cantidad" es número de transacciones.
-- Hay datos por ZONA y por CIUDAD; úsalos según lo que pregunten.
-- Básate en los datos del contexto para las cifras. Si te piden algo que no está en el contexto, dilo con honestidad.
-- No inventes cifras. Cuando des números, sé preciso con los del contexto.
-- Aún NO ejecutas consultas SQL.
+NO tienes datos precargados. Para conocer cifras DEBES pedirlas usando una de estas dos HERRAMIENTAS.
+Cuando emitas un bloque de herramienta, DETENTE inmediatamente y espera: el sistema lo ejecuta y te
+devuelve el resultado en el siguiente turno; entonces continúas. Un solo bloque de herramienta por mensaje,
+y no escribas nada importante después del bloque (se ignora).
+
+HERRAMIENTA 1 — Consulta SQL (datos exactos / detalle). Emite un bloque ```sql con UN SOLO SELECT de solo lectura
+sobre el ESQUEMA DISPONIBLE (ver más abajo). Ejemplo:
+```sql
+SELECT SUM(VALOR_PAGO) AS total FROM GANA_SIGA.SIGT_PAGOS
+WHERE IDE_PRODUCTO = 17288 AND IDE_ESTADO = 264 AND TRUNC(FEC_PAGO) = TRUNC(SYSDATE)
+```
+El mismo SELECT se ejecuta en las dos bases (CAUCA y FORTUNA) y las filas se combinan con una columna "Fuente".
+
+HERRAMIENTA 2 — Resumen agregado (visión rápida). Úsala cuando la pregunta sea GENÉRICA ("¿cómo va el día?",
+"dame un resumen") o al INICIO de la conversación para un panorama. Emite un bloque ```resumen (vacío = día actual,
+pagos y recargas). Opcionalmente un JSON con {"tipo":"pagos|recargas|ambos","desde":"YYYY-MM-DD HH:MM:SS","hasta":"..."}:
+```resumen
+{"tipo":"ambos"}
+```
+Devuelve totales, por hora, por zona, por ciudad, por oficina, top sitios y top usuarios del periodo.
+
+REGLAS DE DATOS:
+- "monto" está en pesos colombianos (COP). Las cantidades son número de transacciones.
+- No inventes cifras: si no tienes el dato, pídelo con una herramienta. Si tras consultarlo no aparece, dilo con honestidad.
+- Máximo {MAX_ITERS} consultas por respuesta; sé eficiente (una consulta bien pensada mejor que muchas).
+- Si un SQL devuelve error, corrígelo y reinténtalo respetando el esquema.
 
 FORMA DE RESPONDER (importante):
 - No sobrepienses. Para preguntas simples, directas o de un solo dato (por ejemplo "¿cuánto se vendió hoy?",
@@ -2230,14 +2416,15 @@ FORMA DE RESPONDER (importante):
   Reserva el análisis más elaborado para preguntas analíticas, comparativas o de proyección.
 - Tienes LIBERTAD para enriquecer tus respuestas: cuando aporte valor, puedes agregar datos de apoyo,
   observaciones y conclusiones que ayuden a la toma de decisiones. Etiqueta claramente lo que es interpretación
-  tuya (por ejemplo con "Observación:" o "Conclusión:") y no lo mezcles con las cifras exactas del contexto.
+  tuya (por ejemplo con "Observación:" o "Conclusión:") y no lo mezcles con las cifras exactas consultadas.
 - EXCEPCIÓN: si el usuario pide EXPLÍCITAMENTE solo un dato o solo cierta información
   (por ejemplo "dame solo el total", "únicamente el número", "sin análisis"), entrega solo eso,
   sin observaciones ni conclusiones añadidas.
 
 PROYECCIONES:
-Si te piden un estimado/proyección de ventas del día, PUEDES hacerlo usando "historial_diario"
-(por ejemplo, promediando los mismos días de la semana o la tendencia reciente). SIEMPRE que proyectes:
+Si te piden un estimado/proyección de ventas del día, primero consulta el historial reciente con SQL
+(por ejemplo, totales por día de los últimos días) y proyecta con base en eso (promedio de los mismos
+días de la semana o tendencia). SIEMPRE que proyectes:
 - Explica brevemente el método usado.
 - Añade una nota clara: "Esta es una proyección estimada y subjetiva, no un valor garantizado."
 - Ten en cuenta que el día actual puede estar incompleto (parcial hasta la hora actual).
@@ -2268,6 +2455,75 @@ Reglas:
 """
 
 
+# --- Loop ReAct: detección de bloques de herramienta en el stream ---
+
+# Bloque de herramienta COMPLETO: ```sql ... ``` o ```resumen ... ```
+_TOOL_FENCE_RE = _re.compile(r"```(sql|resumen)[ \t]*\r?\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
+
+# Marcadores de chip que el frontend interpreta (estado de las herramientas).
+def _tool_chip(kind, estado, **meta):
+    payload = {"kind": kind, "estado": estado}
+    payload.update(meta)
+    return "[[TOOL]]" + json.dumps(payload, ensure_ascii=False, default=str) + "[[/TOOL]]"
+
+
+def _safe_flush_len(buf):
+    """
+    Índice hasta el que es seguro emitir `buf` como texto normal sin cortar por
+    la mitad la apertura de un bloque de herramienta (```sql / ```resumen). Los
+    bloques ```chart / ```table SÍ se dejan pasar (los renderiza el frontend).
+    """
+    idx = buf.rfind("```")
+    if idx == -1:
+        # Retener un run final de 1-2 backticks (posible inicio de ```).
+        t = len(buf)
+        while t > 0 and buf[t - 1] == "`" and (len(buf) - t) < 2:
+            t -= 1
+        return t
+    nl = buf.find("\n", idx)
+    if nl != -1:
+        tag = buf[idx + 3:nl].strip().lower()
+        # Herramienta abierta pero aún sin cerrar: retener hasta el cierre.
+        return idx if tag in ("sql", "resumen") else len(buf)
+    # Etiqueta aún llegando: retener si puede convertirse en sql/resumen.
+    tag = buf[idx + 3:].strip().lower()
+    if tag == "" or "sql".startswith(tag) or "resumen".startswith(tag):
+        return idx
+    return len(buf)
+
+
+def _observation_text_sql(sql, result):
+    """Texto de observación (resultado del SQL) que se reinyecta al modelo."""
+    if result.get("error"):
+        return f"ERROR al ejecutar el SQL (corrígelo y vuelve a intentar): {result['error']}"
+    payload = {
+        "columns": result.get("columns"),
+        "rows": result.get("rows"),
+        "per_source": result.get("per_source"),
+    }
+    header = f"RESULTADO SQL: {result.get('row_count', 0)} filas (mostrando {len(result.get('rows', []))})."
+    if result.get("truncated"):
+        header += f" Recortado a {LLM_SQL_ROW_LIMIT}."
+    if result.get("errors"):
+        header += " Advertencias: " + "; ".join(result["errors"])
+    return header + "\n" + json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _parse_resumen_params(body, def_desde, def_hasta):
+    params = {"desde": def_desde, "hasta": def_hasta, "tipo": "ambos"}
+    body = (body or "").strip()
+    if body:
+        try:
+            j = json.loads(body)
+            if isinstance(j, dict):
+                params["tipo"] = j.get("tipo", params["tipo"])
+                params["desde"] = j.get("desde", params["desde"])
+                params["hasta"] = j.get("hasta", params["hasta"])
+        except Exception:
+            pass
+    return params
+
+
 class AssistantChatRequest(BaseModel):
     pregunta: str
     historial: Optional[List[dict]] = None  # [{role, content}, ...]
@@ -2283,21 +2539,16 @@ class AssistantChatRequest(BaseModel):
 @app.post("/api/assistant/chat")
 def assistant_chat(req: AssistantChatRequest):
     """
-    Chat del asistente con streaming. Inyecta como contexto el resumen agregado
-    de pagos y recargas del periodo (por defecto, el día actual) y transmite la
-    respuesta del modelo token a token (text/plain).
+    Chat del asistente con streaming y loop ReAct: el modelo pide datos mediante
+    bloques ```sql (SELECT solo-lectura, ejecutado en CAUCA+FORTUNA) o ```resumen
+    (agregado del periodo). No se inyecta ningún resumen por defecto: el contexto
+    es solo el catálogo de esquema y el periodo. La respuesta se transmite token a
+    token (text/plain), pausando en cada herramienta para ejecutarla y continuar.
     """
     # Rango por defecto: día actual [hoy 00:00, mañana 00:00)
     today = date.today()
     desde = req.desde or f"{today.isoformat()} 00:00:00"
     hasta = req.hasta or f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
-
-    contexto = {
-        "periodo": {"desde": desde, "hasta": hasta},
-        "pagos": _compact_resumen_for_context("pagos", desde, hasta),
-        "recargas": _compact_resumen_for_context("recargas", desde, hasta),
-        "historial_diario": _betplay_historial_diario(CTX_HISTORIAL_DIAS),
-    }
 
     # Resolución del modelo (se hace antes de armar el mensaje porque las
     # imágenes solo se envían a modelos con visión):
@@ -2315,9 +2566,12 @@ def assistant_chat(req: AssistantChatRequest):
 
     tiene_vision = model_id in VISION_MODEL_IDS
 
+    contexto = {"periodo_por_defecto": {"desde": desde, "hasta": hasta}, "hoy": today.isoformat()}
+    system_prompt = ASSISTANT_SYSTEM_PROMPT.replace("{MAX_ITERS}", str(LLM_MAX_SQL_ITERS))
     messages = [
-        {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
-        {"role": "system", "content": "CONTEXTO (datos agregados del periodo):\n" + json.dumps(contexto, ensure_ascii=False)},
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": ASSISTANT_SCHEMA_CATALOG},
+        {"role": "system", "content": "CONTEXTO: " + json.dumps(contexto, ensure_ascii=False)},
     ]
     if req.historial:
         for m in req.historial[-8:]:  # limitar historial
@@ -2359,43 +2613,104 @@ def assistant_chat(req: AssistantChatRequest):
         messages.append({"role": "user", "content": texto_usuario})
 
     def token_stream():
-        # El razonamiento llega en un campo aparte (reasoning_content en LM Studio
-        # 0.4.x). Lo envolvemos token a token en las etiquetas que el frontend ya
-        # sabe parsear, para mostrarlo en vivo como bloque colapsable separado de
-        # la respuesta (se preserva el streaming completo, sin bufferizar).
-        in_reasoning = False
+        # Loop ReAct con streaming. En cada turno:
+        #  - El razonamiento (reasoning_content) se transmite en vivo, envuelto en
+        #    las etiquetas que el frontend ya sabe colapsar.
+        #  - El contenido se transmite en vivo salvo cuando aparece un bloque de
+        #    herramienta (```sql / ```resumen): al completarse se ejecuta, se emite
+        #    un chip de estado, se reinyecta el resultado y se hace otro turno.
+        #  Los bloques ```chart / ```table NO son herramientas: pasan tal cual.
+        convo = list(messages)
+        client = get_llm_client()
         try:
-            client = get_llm_client()
-            stream = client.chat.completions.create(
-                model=model_id,
-                messages=messages,
-                temperature=0.4,
-                stream=True,
-            )
-            for chunk in stream:
+            for turn in range(LLM_MAX_SQL_ITERS + 1):
+                allow_tools = turn < LLM_MAX_SQL_ITERS
+                in_reasoning = False
+                content_buf = ""
+                sent = 0
+                tool = None  # (kind, body, end_index)
+
+                stream = client.chat.completions.create(
+                    model=model_id, messages=convo, temperature=0.4, stream=True,
+                )
+                for chunk in stream:
+                    try:
+                        delta = chunk.choices[0].delta
+                    except (AttributeError, IndexError):
+                        continue
+                    reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                    content = getattr(delta, "content", None)
+                    if reasoning:
+                        if not in_reasoning:
+                            in_reasoning = True
+                            yield "<|channel>thought"
+                        yield reasoning
+                    if content:
+                        if in_reasoning:
+                            in_reasoning = False
+                            yield "<channel|>"
+                        content_buf += content
+                        if allow_tools:
+                            m = _TOOL_FENCE_RE.search(content_buf)
+                            if m:
+                                # Emitir el texto previo al bloque y capturar la herramienta.
+                                if m.start() > sent:
+                                    yield content_buf[sent:m.start()]
+                                    sent = m.start()
+                                tool = (m.group(1).lower(), m.group(2), m.end())
+                                break
+                            flush = _safe_flush_len(content_buf)
+                            if flush > sent:
+                                yield content_buf[sent:flush]
+                                sent = flush
+                        else:
+                            # Sin más herramientas permitidas: transmitir todo en vivo.
+                            yield content
+                            sent = len(content_buf)
+                if in_reasoning:
+                    yield "<channel|>"
                 try:
-                    delta = chunk.choices[0].delta
-                except (AttributeError, IndexError):
-                    continue
-                # reasoning_content (0.4.x) o reasoning (0.3.x), por robustez.
-                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                content = getattr(delta, "content", None)
-                if reasoning:
-                    if not in_reasoning:
-                        in_reasoning = True
-                        yield "<|channel>thought"
-                    yield reasoning
-                if content:
-                    if in_reasoning:
-                        in_reasoning = False
-                        yield "<channel|>"
-                    yield content
-            if in_reasoning:
-                yield "<channel|>"
+                    stream.close()
+                except Exception:
+                    pass
+
+                if tool is None:
+                    # Respuesta final: volcar lo que quede en el buffer.
+                    if len(content_buf) > sent:
+                        yield content_buf[sent:]
+                    return
+
+                kind, body, end_idx = tool
+                # Registrar lo que produjo el modelo (incluido el bloque) en la conversación.
+                convo.append({"role": "assistant", "content": content_buf[:end_idx]})
+
+                if kind == "sql":
+                    sql = body.strip()
+                    yield _tool_chip("sql", "run")
+                    result = _run_assistant_sql(sql)
+                    yield _tool_chip("sql", "done",
+                                     sql=result.get("sql", sql),
+                                     rows=result.get("row_count", 0),
+                                     error=result.get("error"))
+                    obs = _observation_text_sql(sql, result)
+                else:  # resumen
+                    yield _tool_chip("resumen", "run")
+                    params = _parse_resumen_params(body, desde, hasta)
+                    try:
+                        result = _run_assistant_resumen(**params)
+                        obs = "RESULTADO RESUMEN (JSON):\n" + json.dumps(result, ensure_ascii=False, default=str)
+                    except Exception as e:
+                        logger.error(f"Assistant resumen failed: {e}")
+                        obs = f"ERROR al calcular el resumen: {e}"
+                    yield _tool_chip("resumen", "done")
+
+                convo.append({"role": "user", "content": obs})
+                # Si es el último turno permitido, empujar al modelo a responder ya.
+                if not (turn + 1 < LLM_MAX_SQL_ITERS):
+                    convo.append({"role": "system",
+                                  "content": "Ya no puedes pedir más datos. Responde ahora con la información disponible."})
         except Exception as e:
             logger.error(f"Assistant chat streaming failed: {e}")
-            if in_reasoning:
-                yield "<channel|>"
             yield f"\n\n[Error al contactar el modelo: {e}]"
 
     return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")

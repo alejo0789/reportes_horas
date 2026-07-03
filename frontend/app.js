@@ -314,10 +314,6 @@ function setupTabs() {
             // Toggle visible view
             views.forEach(v => { v.hidden = (v.id !== targetId); });
 
-            // El toolbar del asistente (selector + estado) solo se ve en su vista.
-            const asistToolbar = document.getElementById('asistente-conn');
-            if (asistToolbar) asistToolbar.hidden = (targetId !== 'view-asistente');
-
             // Al abrir Betplay por primera vez, consultar automáticamente el día actual.
             if (targetId === 'view-betplay' && !State.betplay.loaded) {
                 fetchBetplay();
@@ -359,7 +355,7 @@ async function checkAssistantHealth() {
                 const loaded = (mjson.models || []).find(m => m.loaded);
                 if (loaded) modelName = loaded.id || loaded.label;
             } catch (_) { /* si falla, se queda el configurado */ }
-            text.textContent = `Modelo conectado (${modelName})`;
+            text.textContent = modelName;
         } else {
             indicator.classList.add('offline');
             text.textContent = 'Sin conexión con el modelo (Mac inaccesible)';
@@ -791,6 +787,90 @@ function parseAssistantSegments(raw) {
     return segs;
 }
 
+// --- CHIPS DE HERRAMIENTA ([[TOOL]]{...}[[/TOOL]]) que emite el backend ---
+// Quita los marcadores de herramienta de un texto (para guardar historial /
+// generar informes sin ese ruido de estado).
+function stripToolMarkers(s) {
+    return (s || '')
+        .replace(/\[\[TOOL\]\][\s\S]*?\[\[\/TOOL\]\]/g, '')
+        .replace(/\[\[TOOL\]\][\s\S]*$/g, '');
+}
+
+// Divide la respuesta en partes de texto y marcadores de herramienta, en orden.
+// Colapsa el par run+done de la misma herramienta en un solo chip.
+function splitToolMarkers(raw) {
+    const parts = [];
+    const re = /\[\[TOOL\]\]([\s\S]*?)\[\[\/TOOL\]\]/g;
+    let last = 0, m;
+    while ((m = re.exec(raw)) !== null) {
+        if (m.index > last) parts.push({ type: 'text', content: raw.slice(last, m.index) });
+        let payload = null;
+        try { payload = JSON.parse(m[1]); } catch (_) { payload = null; }
+        parts.push({ type: 'tool', payload: payload || {} });
+        last = re.lastIndex;
+    }
+    const tail = raw.slice(last);
+    const openIdx = tail.indexOf('[[TOOL]]');
+    if (openIdx !== -1) {
+        const before = tail.slice(0, openIdx);
+        if (before) parts.push({ type: 'text', content: before });
+        // Marcador aún llegando por el stream: chip en curso.
+        let payload = null;
+        try { payload = JSON.parse(tail.slice(openIdx + 8)); } catch (_) { payload = null; }
+        parts.push({ type: 'tool', payload: payload || { estado: 'run' } });
+    } else if (tail) {
+        parts.push({ type: 'text', content: tail });
+    }
+    // Colapsar: un 'done' elimina el 'run' previo de la misma herramienta.
+    const out = [];
+    for (const p of parts) {
+        if (p.type === 'tool' && p.payload && p.payload.estado === 'done') {
+            for (let i = out.length - 1; i >= 0; i--) {
+                const q = out[i];
+                if (q.type === 'text' && !q.content.trim()) continue;
+                if (q.type === 'tool' && q.payload && q.payload.estado === 'run'
+                    && q.payload.kind === p.payload.kind) {
+                    out.splice(i, 1);
+                }
+                break;
+            }
+        }
+        out.push(p);
+    }
+    return out;
+}
+
+function buildToolChip(payload) {
+    const p = payload || {};
+    const kind = p.kind || 'sql';
+    const done = p.estado === 'done';
+    const hasError = done && p.error;
+    const el = document.createElement('div');
+    el.className = 'chat-tool-chip' + (done ? (hasError ? ' error' : ' done') : ' run');
+
+    let label;
+    if (!done) {
+        label = kind === 'resumen' ? 'Calculando resumen…' : 'Consultando base de datos…';
+    } else if (kind === 'resumen') {
+        label = 'Resumen listo';
+    } else if (hasError) {
+        label = 'Consulta con error';
+    } else {
+        const n = (p.rows != null) ? p.rows : 0;
+        label = `Consulta lista · ${n} ${n === 1 ? 'fila' : 'filas'}`;
+    }
+    const icon = !done ? 'fa-spinner fa-spin' : (hasError ? 'fa-triangle-exclamation' : 'fa-database');
+
+    let html = `<div class="tool-chip-head"><i class="fa-solid ${icon}"></i><span>${escapeHtml(label)}</span></div>`;
+    if (done && kind === 'sql' && p.sql) {
+        html += `<details class="tool-chip-sql"><summary>Ver consulta SQL</summary><pre>${escapeHtml(p.sql)}</pre>`;
+        if (hasError) html += `<div class="tool-chip-error">${escapeHtml(p.error)}</div>`;
+        html += `</details>`;
+    }
+    el.innerHTML = html;
+    return el;
+}
+
 // Separa el razonamiento (entre <|channel>thought y <channel|>) de la respuesta.
 // Devuelve { reasoning, answer, thinking } donde thinking=true si el bloque de
 // razonamiento aún no se ha cerrado (sigue llegando por el stream).
@@ -811,6 +891,52 @@ function splitReasoning(raw) {
     return { reasoning: reasoning.trim(), answer, thinking: false };
 }
 
+// Con el loop SQL puede haber VARIAS trazas de razonamiento (una por turno).
+// Divide el stream en partes ordenadas: {type:'reasoning'|'content'}.
+function splitReasoningParts(raw) {
+    const parts = [];
+    let i = 0;
+    while (i < raw.length) {
+        const start = raw.indexOf(REASON_START, i);
+        if (start === -1) {
+            if (i < raw.length) parts.push({ type: 'content', content: raw.slice(i) });
+            break;
+        }
+        if (start > i) parts.push({ type: 'content', content: raw.slice(i, start) });
+        const afterStart = start + REASON_START.length;
+        const end = raw.indexOf(REASON_END, afterStart);
+        if (end === -1) {
+            // Razonamiento en curso (sigue llegando por el stream).
+            parts.push({ type: 'reasoning', content: raw.slice(afterStart), thinking: true });
+            return parts;
+        }
+        parts.push({ type: 'reasoning', content: raw.slice(afterStart, end).trim(), thinking: false });
+        i = end + REASON_END.length;
+    }
+    return parts;
+}
+
+// Quita TODAS las trazas de razonamiento (para guardar historial / informe).
+function stripAllReasoning(raw) {
+    return (raw || '')
+        .replace(new RegExp(REASON_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + REASON_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '')
+        .replace(new RegExp(REASON_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*$'), '');
+}
+
+function buildReasoningPanel(reasoning, thinking) {
+    const det = document.createElement('details');
+    det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
+    if (thinking) det.open = true;
+    const label = thinking ? 'Razonando…' : 'Razonamiento';
+    const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
+    det.innerHTML = `
+        <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> ${label}</summary>
+        <div class="chat-reasoning-body"></div>
+    `;
+    det.querySelector('.chat-reasoning-body').textContent = (reasoning || '').trim();
+    return det;
+}
+
 // Re-renderiza el contenido del asistente. Durante el stream (isFinal=false) los
 // bloques de visualización se muestran como placeholder; al finalizar se renderizan.
 function renderAssistantMessage(contentEl, raw, isFinal) {
@@ -820,44 +946,40 @@ function renderAssistantMessage(contentEl, raw, isFinal) {
         ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 80
         : true;
 
-    const { reasoning, answer, thinking } = splitReasoning(raw);
     contentEl.innerHTML = '';
 
-    // Panel de razonamiento (plegable). Se mantiene abierto mientras "piensa".
-    if (reasoning.trim() || thinking) {
-        const det = document.createElement('details');
-        det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
-        if (thinking) det.open = true;
-        const label = thinking ? 'Razonando…' : 'Razonamiento';
-        const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
-        det.innerHTML = `
-            <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> ${label}</summary>
-            <div class="chat-reasoning-body"></div>
-        `;
-        det.querySelector('.chat-reasoning-body').textContent = reasoning.trim();
-        contentEl.appendChild(det);
-    }
-
-    const segments = parseAssistantSegments(answer);
-
-    for (const seg of segments) {
-        if (seg.type === 'text' || seg.type === 'code') {
-            if (!seg.content.trim()) continue;
-            const bubble = document.createElement('div');
-            bubble.className = 'chat-bubble';
-            bubble.innerHTML = mdToHtml(seg.content);
-            contentEl.appendChild(bubble);
-        } else if (seg.type === 'pending') {
-            contentEl.appendChild(buildIslandPlaceholder(seg.lang));
-        } else if (seg.type === 'chart' || seg.type === 'table') {
-            if (!isFinal) {
-                contentEl.appendChild(buildIslandPlaceholder(seg.type));
+    // El stream puede intercalar (en orden) varias trazas de razonamiento, chips
+    // de herramienta y contenido con texto/visualizaciones.
+    for (const rp of splitReasoningParts(raw)) {
+        if (rp.type === 'reasoning') {
+            if (rp.content.trim() || rp.thinking) contentEl.appendChild(buildReasoningPanel(rp.content, rp.thinking));
+            continue;
+        }
+        for (const part of splitToolMarkers(rp.content)) {
+            if (part.type === 'tool') {
+                contentEl.appendChild(buildToolChip(part.payload));
                 continue;
             }
-            const island = (seg.type === 'chart')
-                ? buildChartIsland(seg.content)
-                : buildTableIsland(seg.content);
-            contentEl.appendChild(island);
+            for (const seg of parseAssistantSegments(part.content)) {
+                if (seg.type === 'text' || seg.type === 'code') {
+                    if (!seg.content.trim()) continue;
+                    const bubble = document.createElement('div');
+                    bubble.className = 'chat-bubble';
+                    bubble.innerHTML = mdToHtml(seg.content);
+                    contentEl.appendChild(bubble);
+                } else if (seg.type === 'pending') {
+                    contentEl.appendChild(buildIslandPlaceholder(seg.lang));
+                } else if (seg.type === 'chart' || seg.type === 'table') {
+                    if (!isFinal) {
+                        contentEl.appendChild(buildIslandPlaceholder(seg.type));
+                        continue;
+                    }
+                    const island = (seg.type === 'chart')
+                        ? buildChartIsland(seg.content)
+                        : buildTableIsland(seg.content);
+                    contentEl.appendChild(island);
+                }
+            }
         }
     }
 
@@ -1116,8 +1238,9 @@ async function sendAssistantMessage() {
         } else {
             renderAssistantMessage(contentEl, acumulado, true);
         }
-        // Guardamos solo la respuesta (sin el razonamiento) para no reenviarlo.
-        State.assistant.history.push({ role: 'assistant', content: splitReasoning(acumulado).answer.trim() });
+        // Guardamos solo la respuesta (sin razonamiento ni chips de herramienta)
+        // para no reenviar ese ruido como contexto al modelo.
+        State.assistant.history.push({ role: 'assistant', content: stripToolMarkers(stripAllReasoning(acumulado)).trim() });
         if (assistantMsgEl) assistantMsgEl.dataset.hi = State.assistant.history.length - 1;
         saveAssistantHistory();
         stopTimer('Respondió en');
@@ -2557,14 +2680,17 @@ async function checkStatus() {
         
         const isOnline = status.cauca_connected || status.fortuna_connected;
         elements.statusIndicator.className = 'status-indicator ' + (isOnline ? 'online' : 'offline');
-        
+
+        // Solo indicador + icono de BD en la barra; el detalle va al tooltip.
         let text = [];
         if (status.cauca_connected) text.push('CAUCA OK');
         if (status.fortuna_connected) text.push('FORTUNA OK');
-        
-        elements.statusText.textContent = text.length > 0 
-            ? `Conectado a Oracle (${text.join(', ')})` 
-            : 'Sin conexión a bases de datos (Modo Demo)';
+        const dbStatusEl = document.getElementById('db-status');
+        if (dbStatusEl) {
+            dbStatusEl.title = text.length > 0
+                ? `Conectado a Oracle (${text.join(', ')})`
+                : 'Sin conexión a bases de datos (Modo Demo)';
+        }
             
         // Render badges according to uploaded lists
         const goalsContainer = document.getElementById('goals-management-link-container');
@@ -2589,7 +2715,8 @@ async function checkStatus() {
     } catch (e) {
         console.error("Error checking system status:", e);
         elements.statusIndicator.className = 'status-indicator offline';
-        elements.statusText.textContent = 'Servidor Backend desconectado';
+        const dbStatusEl = document.getElementById('db-status');
+        if (dbStatusEl) dbStatusEl.title = 'Servidor Backend desconectado';
     }
 }
 

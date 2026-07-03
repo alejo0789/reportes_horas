@@ -112,8 +112,8 @@ body {
         inset -1px -1px 1px rgba(255, 255, 255, 0.35),
         inset 0 0 24px rgba(255, 255, 255, 0.10),
         0 10px 30px rgba(13, 38, 89, 0.14);
-    backdrop-filter: blur(6px) saturate(160%) brightness(1.03);
-    -webkit-backdrop-filter: blur(6px) saturate(160%) brightness(1.03);
+    backdrop-filter: blur(3px) saturate(160%) brightness(1.03);
+    -webkit-backdrop-filter: blur(3px) saturate(160%) brightness(1.03);
 }
 
 /* Capa de refracción (curva el fondo como una lente). z-index -1 = detrás
@@ -126,8 +126,8 @@ body {
     z-index: -1;
     border-radius: inherit;
     pointer-events: none;
-    backdrop-filter: blur(1.6px) saturate(160%) brightness(1.04);
-    -webkit-backdrop-filter: blur(1.6px) saturate(160%) brightness(1.04);
+    backdrop-filter: blur(1px) saturate(160%) brightness(1.04);
+    -webkit-backdrop-filter: blur(1px) saturate(160%) brightness(1.04);
     filter: url(#lensRefraction);
     -webkit-mask: radial-gradient(125% 125% at 50% 50%, #000 68%, transparent 100%);
     mask: radial-gradient(125% 125% at 50% 50%, #000 68%, transparent 100%);
@@ -150,78 +150,32 @@ body {
     z-index: 0;
 }
 
-/* HEADER STYLE (barra azul de marca, compacta) */
-.main-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 20px;
-    /* Full-width: cancela el padding del body para pegarse arriba y a los lados */
-    margin: -24px -24px 24px;
-    padding: 14px 32px;
-    border-radius: 0 0 18px 18px;   /* solo esquinas inferiores redondeadas */
-    background: linear-gradient(135deg, var(--brand-blue-deep) 0%, var(--brand-blue) 100%);
-    border-bottom: 3px solid var(--brand-yellow);
-    box-shadow: var(--shadow-premium);
-    /* Fijo al hacer scroll */
-    position: sticky;
-    top: 0;
-    z-index: 100;
-}
+/* NOTA: el header de marca fue eliminado (el front se embebe en un iframe).
+   Su identidad visual (azul + línea amarilla) se hereda ahora en la tira de
+   KPIs de cada pestaña. Los controles de estado DB + actualizar viven en
+   .nav-actions dentro de la fila de pestañas (.nav-row). */
 
-.header-logo {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-}
-
-/* Logos blancos sobre la barra azul */
-.brand-logo {
-    height: 44px;
-    display: block;
-    filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.25));
-}
-
-.brand-divider {
-    width: 1px;
-    height: 38px;
-    background: rgba(255, 255, 255, 0.28);
-}
-
-.header-title {
-    margin-left: 6px;
-    padding-left: 16px;
-    border-left: 1px solid rgba(255, 255, 255, 0.18);
-}
-
-.main-header h1 {
-    font-size: 17px;
-    font-weight: 700;
-    letter-spacing: 0.3px;
-    color: #ffffff;
-}
-
-.main-header .subtitle {
-    font-size: 11.5px;
-    color: rgba(255, 255, 255, 0.72);
-    font-weight: 400;
-    margin-top: 1px;
-}
-
-.header-actions {
+/* Controles reubicados en la fila de pestañas */
+.nav-actions {
     display: flex;
     align-items: center;
     gap: 18px;
+    margin-left: auto;
 }
 
 .db-status {
     display: flex;
     align-items: center;
     gap: 8px;
-    background: rgba(255, 255, 255, 0.12);
-    padding: 7px 14px;
+    background: rgba(255, 255, 255, 0.62);
+    padding: 7px 12px;
     border-radius: 30px;
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    border: 1px solid var(--panel-border);
+}
+
+.db-icon {
+    font-size: 14px;
+    color: var(--brand-blue);
 }
 
 .status-indicator {
@@ -248,31 +202,31 @@ body {
     color: var(--text-secondary);
 }
 
-/* En el header azul el texto de estado va en blanco */
-.main-header .status-text {
-    color: rgba(255, 255, 255, 0.88);
-}
-
 .last-update {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
+    /* Placa de fondo para mantener legibilidad sobre fondos oscuros */
+    background: rgba(255, 255, 255, 0.62);
+    padding: 5px 12px 5px 8px;
+    border-radius: 30px;
+    border: 1px solid var(--panel-border);
 }
 
 .refresh-icon {
     font-size: 16px;
-    color: #ffffff;
+    color: var(--brand-blue);
     cursor: pointer;
     transition: transform 0.4s ease;
     padding: 8px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.12);
-    border: 1px solid rgba(255, 255, 255, 0.20);
+    background: rgba(255, 255, 255, 0.62);
+    border: 1px solid var(--panel-border);
 }
 
 .refresh-icon:hover {
     transform: rotate(180deg);
-    background: rgba(255, 255, 255, 0.22);
+    background: var(--brand-blue-soft);
 }
 
 .refresh-icon.spinning {
@@ -286,7 +240,7 @@ body {
 
 .last-update .label {
     font-size: 9px;
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--text-muted);
     font-weight: 600;
     letter-spacing: 1px;
     display: block;
@@ -294,7 +248,7 @@ body {
 
 .last-update .value {
     font-size: 13px;
-    color: #ffffff;
+    color: var(--text-primary);
     font-weight: 500;
 }
 
@@ -307,17 +261,13 @@ body {
     overflow: hidden;
     display: flex;
     flex-wrap: wrap;
-    padding: 6px;
+    padding: 8px 6px;
     border-radius: 18px;
-    /* Superficie de vidrio */
-    background: linear-gradient(135deg, rgba(255, 255, 255, 0.60) 0%, rgba(236, 242, 251, 0.52) 100%);
-    border: 1px solid rgba(255, 255, 255, 0.6);
-    backdrop-filter: blur(10px) saturate(165%);
-    -webkit-backdrop-filter: blur(10px) saturate(165%);
-    box-shadow:
-        inset 1.5px 1.5px 1px rgba(255, 255, 255, 0.85),
-        inset -1px -1px 1px rgba(255, 255, 255, 0.30),
-        0 12px 34px rgba(13, 38, 89, 0.14);
+    /* Identidad de marca heredada del header: barra azul con línea amarilla.
+       Presente en los KPIs de todas las pestañas. */
+    background: linear-gradient(135deg, var(--brand-blue-deep) 0%, var(--brand-blue) 100%);
+    border-bottom: 3px solid var(--brand-yellow);
+    box-shadow: var(--shadow-premium);
 }
 
 /* Reflejo de cristal POR ENCIMA del contenido (pointer-events:none) */
@@ -330,11 +280,37 @@ body {
     border-radius: inherit;
     background: linear-gradient(
         180deg,
-        rgba(255, 255, 255, 0.38) 0%,
-        rgba(255, 255, 255, 0.08) 26%,
+        rgba(255, 255, 255, 0.16) 0%,
+        rgba(255, 255, 255, 0.04) 26%,
         rgba(255, 255, 255, 0) 52%
     );
 }
+
+/* --- Texto e iconos sobre el fondo azul del header heredado --- */
+.kpi-strip .kpi-card + .kpi-card {
+    border-left: 1px solid rgba(255, 255, 255, 0.16);
+}
+.kpi-strip .kpi-title {
+    color: rgba(255, 255, 255, 0.72);
+}
+.kpi-strip .kpi-value {
+    color: #ffffff;
+}
+.kpi-strip .kpi-trend.trend-neutral {
+    color: rgba(255, 255, 255, 0.62);
+}
+.kpi-strip .progress-bar-container {
+    background: rgba(255, 255, 255, 0.18);
+}
+/* Iconos: fondo translúcido claro para resaltar sobre el azul */
+.kpi-strip .kpi-icon {
+    background: rgba(255, 255, 255, 0.14) !important;
+    border: 1px solid rgba(255, 255, 255, 0.28) !important;
+}
+.kpi-strip .icon-sales { color: #bcd4ff; }
+.kpi-strip .icon-goal { color: var(--brand-yellow); }
+.kpi-strip .icon-compliance { color: #7ee2b8; }
+.kpi-strip .icon-sites { color: #ffd27a; }
 
 .kpi-card {
     position: relative;
@@ -1855,13 +1831,65 @@ input:checked + .slider:before {
    fija al hacer scroll. */
 .nav-row {
     position: sticky;
-    top: 84px;
+    top: 0;
     z-index: 90;
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
     gap: 16px;
-    margin-bottom: 24px;
+    /* Full-width, pegado arriba como barra sticky */
+    margin: -24px -24px 24px;
+    padding: 14px 24px;
+    border-radius: 0 0 18px 18px;
+    /* Superficie liquid glass: tinte muy translúcido para ver lo que pasa
+       por debajo, bisel de luz en los bordes y línea amarilla de marca. */
+    isolation: isolate;
+    background-color: rgba(255, 255, 255, 0.30);
+    border-bottom: 3px solid var(--brand-yellow);
+    box-shadow:
+        inset 1.5px 1.5px 1px rgba(255, 255, 255, 0.85),
+        inset -1px -1px 1px rgba(255, 255, 255, 0.30),
+        0 10px 30px rgba(13, 38, 89, 0.12);
+    backdrop-filter: blur(3px) saturate(165%) brightness(1.03);
+    -webkit-backdrop-filter: blur(3px) saturate(165%) brightness(1.03);
+}
+
+/* Capa de refracción de lente (curva el fondo bajo el sticky) */
+.nav-row::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    backdrop-filter: blur(1px) saturate(160%) brightness(1.04);
+    -webkit-backdrop-filter: blur(1px) saturate(160%) brightness(1.04);
+    filter: url(#lensRefraction);
+    -webkit-mask: radial-gradient(140% 140% at 50% 40%, #000 66%, transparent 100%);
+    mask: radial-gradient(140% 140% at 50% 40%, #000 66%, transparent 100%);
+}
+
+/* Brillo especular superior */
+.nav-row::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 60%;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 0;
+    background: linear-gradient(
+        to bottom,
+        rgba(255, 255, 255, 0.45) 0%,
+        rgba(255, 255, 255, 0.08) 48%,
+        rgba(255, 255, 255, 0) 100%
+    );
+}
+
+/* El contenido del sticky va por encima del brillo/refracción */
+.nav-row > * {
+    position: relative;
+    z-index: 1;
 }
 
 /* El toolbar se empuja al extremo derecho de la fila */
@@ -2278,13 +2306,17 @@ input:checked + .slider:before {
     box-shadow: 0 0 8px var(--danger);
 }
 
-/* KPIs Pagos / Recargas (compacto, con vidrio glossy encima) */
+/* KPIs Pagos / Recargas — hereda el estilo del header (azul + línea amarilla) */
 .asistente-kpis {
     position: relative;
     isolation: isolate;
     overflow: hidden;
     margin-bottom: 0;
     padding: 14px 18px;
+    background: linear-gradient(135deg, var(--brand-blue-deep) 0%, var(--brand-blue) 100%);
+    border: 1px solid var(--brand-blue);
+    border-bottom: 3px solid var(--brand-yellow);
+    box-shadow: var(--shadow-premium);
 }
 
 .asistente-kpis::after {
@@ -2296,11 +2328,25 @@ input:checked + .slider:before {
     border-radius: inherit;
     background: linear-gradient(
         180deg,
-        rgba(255, 255, 255, 0.35) 0%,
-        rgba(255, 255, 255, 0.07) 24%,
+        rgba(255, 255, 255, 0.16) 0%,
+        rgba(255, 255, 255, 0.04) 24%,
         rgba(255, 255, 255, 0) 50%
     );
 }
+
+/* Texto sobre el fondo azul del "Resumen del día" */
+.asistente-kpis .asistente-kpis-title { color: #ffffff; }
+.asistente-kpis .asistente-kpis-date {
+    color: rgba(255, 255, 255, 0.85);
+    background: rgba(255, 255, 255, 0.14);
+}
+.asistente-kpis .asistente-kpi-row + .asistente-kpi-row {
+    border-left: 1px solid rgba(255, 255, 255, 0.18);
+}
+.asistente-kpis .asistente-kpi-rowlabel { color: #bcd4ff; }
+.asistente-kpis .asistente-kpi-rowlabel.recargas { color: #7ee2b8; }
+.asistente-kpis .ak-label { color: rgba(255, 255, 255, 0.6); }
+.asistente-kpis .ak-value { color: #ffffff; }
 
 .asistente-kpis > * {
     position: relative;
@@ -2376,26 +2422,75 @@ input:checked + .slider:before {
     color: var(--text-primary);
 }
 
-/* Chat */
+/* Chat: cuerpo blanco con borde azul; la cabecera hereda el estilo del header */
 .asistente-chat {
     display: flex;
     flex-direction: column;
     min-height: 520px;
+    overflow: hidden;
+    background: #ffffff;
+    border: 3px solid var(--brand-blue);
 }
 .asistente-chat-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 0 4px 10px;
-    border-bottom: 1px solid rgba(15, 37, 64, 0.08);
-    margin-bottom: 6px;
+    gap: 10px 12px;
+    flex-wrap: wrap;
+    /* Bleed a los bordes del panel para formar una barra de marca superior */
+    margin: -20px -20px 14px;
+    padding: 13px 18px;
+    background: linear-gradient(135deg, var(--brand-blue-deep) 0%, var(--brand-blue) 100%);
+    /* Línea amarilla y, justo debajo, una línea azul */
+    border-bottom: 3px solid var(--brand-yellow);
+    box-shadow: 0 3px 0 0 var(--brand-blue);
 }
+
+/* Grupo de conexión + modelo (movido desde el sticky) dentro de la cabecera */
+.asistente-conn-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    font-size: 12.5px;
+}
+.asistente-conn-inline .status-text {
+    color: #ffffff;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.asistente-conn-inline > i {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 13px;
+}
+.asistente-conn-inline .status-indicator {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--warning);
+    box-shadow: 0 0 8px var(--warning);
+}
+.asistente-conn-inline .status-indicator.online {
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+}
+.asistente-conn-inline .status-indicator.offline {
+    background: var(--danger);
+    box-shadow: 0 0 8px var(--danger);
+}
+.asistente-conn-inline .asistente-model-status.loading { color: #cfe0ff; }
+.asistente-conn-inline .asistente-model-status.ok { color: #9af0c8; }
+.asistente-conn-inline .asistente-model-status.error { color: #ffc7c2; }
 .asistente-chat-title {
     margin: 0;
     font-size: 14px;
     font-weight: 600;
-    color: var(--brand-blue, #1257d1);
+    color: #ffffff;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -2436,6 +2531,26 @@ input:checked + .slider:before {
 .asistente-report-btn:hover {
     background: rgba(18, 87, 209, 0.16);
     border-color: rgba(18, 87, 209, 0.4);
+}
+
+/* Botones de la cabecera sobre el fondo azul: variante clara translúcida */
+.asistente-chat-head .asistente-report-btn {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.30);
+}
+.asistente-chat-head .asistente-report-btn:hover {
+    background: rgba(255, 255, 255, 0.24);
+    border-color: rgba(255, 255, 255, 0.45);
+}
+.asistente-chat-head .asistente-clear-btn {
+    color: #ffd9d5;
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 180, 174, 0.45);
+}
+.asistente-chat-head .asistente-clear-btn:hover {
+    background: rgba(255, 120, 110, 0.22);
+    border-color: rgba(255, 180, 174, 0.7);
 }
 
 /* Barra de selección (modo informe) */
@@ -2704,6 +2819,61 @@ input:checked + .slider:before {
     border: 1px solid rgba(18, 87, 209, 0.28);
     border-radius: 14px;
     overflow: hidden;
+}
+
+/* Chip de estado de herramienta (SQL / resumen) dentro del chat */
+.chat-tool-chip {
+    align-self: flex-start;
+    max-width: 100%;
+    background: var(--brand-blue-soft, rgba(18, 87, 209, 0.08));
+    border: 1px solid rgba(18, 87, 209, 0.22);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12.5px;
+    color: var(--brand-blue-deep, #0a2e73);
+}
+.chat-tool-chip.done {
+    background: rgba(16, 163, 74, 0.08);
+    border-color: rgba(16, 163, 74, 0.28);
+    color: #14663a;
+}
+.chat-tool-chip.error {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.30);
+    color: #b42318;
+}
+.chat-tool-chip .tool-chip-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+}
+.chat-tool-chip .tool-chip-sql {
+    margin-top: 8px;
+    font-weight: 400;
+}
+.chat-tool-chip .tool-chip-sql summary {
+    cursor: pointer;
+    color: var(--brand-blue, #1257d1);
+    font-size: 12px;
+}
+.chat-tool-chip .tool-chip-sql pre {
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    background: rgba(15, 37, 64, 0.05);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 12px;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-x: auto;
+}
+.chat-tool-chip .tool-chip-error {
+    margin-top: 8px;
+    color: #b42318;
+    font-size: 12px;
 }
 .chat-island-header {
     padding: 10px 16px;
