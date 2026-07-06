@@ -103,7 +103,7 @@
     </style>
 </head>
 <body>
-    <form class="login-card" id="login-form" autocomplete="on">
+    <form class="login-card" id="login-form" autocomplete="off">
         <div class="login-logos">
             <img src="assets/logos/acertemos.png" alt="Acertemos">
             <span class="divider"></span>
@@ -118,8 +118,8 @@
             <label for="email">Usuario</label>
             <div class="input-wrap">
                 <i class="fa-solid fa-user"></i>
-                <input type="text" id="email" name="email" placeholder="juan.ramirez" required autofocus
-                       autocapitalize="none" autocorrect="off" spellcheck="false">
+                <input type="text" id="email" name="email" placeholder="Usuario" required autofocus
+                       autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
             </div>
         </div>
 
@@ -127,7 +127,8 @@
             <label for="password">Contraseña</label>
             <div class="input-wrap">
                 <i class="fa-solid fa-lock"></i>
-                <input type="password" id="password" name="password" placeholder="••••••••" required>
+                <input type="password" id="password" name="password" placeholder="••••••••" required
+                       autocomplete="new-password">
             </div>
         </div>
 

@@ -79,7 +79,7 @@ app.add_middleware(
 
 # ---------------------------------------------------------------------------
 # Login local (solución temporal — sin micro de autenticación externo).
-# Valida contra per_users (MariaDB) y emite el JWT que valida backend/auth.py.
+# Valida contra un usuario quemado y emite el JWT que valida backend/auth.py.
 # ---------------------------------------------------------------------------
 @app.post("/api/login")
 def login(response: Response, email: str = Form(...), password: str = Form(...)):
