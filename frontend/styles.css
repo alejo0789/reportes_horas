@@ -898,6 +898,25 @@ body {
 .matrix-site-name { display: block; font-weight: 500; color: var(--text-primary); white-space: normal; }
 .matrix-site-meta { display: block; font-size: 10.5px; color: var(--text-muted); }
 
+/* Árbol colapsable Zona › Municipio › Oficina › Sitio */
+.matrix-tree-cell { display: flex; align-items: baseline; gap: 6px; }
+.matrix-tree-row[data-path] { cursor: pointer; }
+.matrix-tree-row[data-path]:hover td { background: rgba(18, 87, 209, 0.05); }
+.matrix-tree-chevron {
+    flex: 0 0 auto;
+    width: 14px;
+    color: var(--brand-blue-deep);
+    font-size: 10px;
+    transition: transform 0.15s ease;
+    align-self: center;
+}
+.matrix-tree-chevron.expanded { transform: rotate(90deg); }
+.matrix-tree-leaf { flex: 0 0 auto; width: 14px; color: var(--text-muted); text-align: center; align-self: center; }
+.matrix-lvl-0 .matrix-site-name { font-weight: 700; color: var(--brand-blue-deep); }
+.matrix-lvl-1 .matrix-site-name { font-weight: 600; }
+.matrix-lvl-2 .matrix-site-name { font-weight: 500; }
+.matrix-leaf-row .matrix-site-name { font-weight: 400; }
+
 .matrix-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); }
 .matrix-empty { color: rgba(15, 37, 64, 0.25); text-align: center; }
 
@@ -1419,6 +1438,28 @@ body {
     color: var(--text-muted);
     font-size: 10px;
 }
+
+/* Árbol jerárquico Zona › Municipio › Oficina › Sitio (Detalle de Ventas) */
+.tr-tree-parent { cursor: pointer; transition: background 0.15s ease; }
+.tr-tree-parent:hover .sticky-col,
+.tr-tree-parent:hover td { background: #eef4fd !important; }
+.tr-tree-parent .sticky-col { background: #f4f8ff; }
+.tr-tree-lvl-0 { border-left: 4px solid var(--primary); }
+.tr-tree-lvl-0 .sticky-col { background: #eef3fc; }
+.tr-tree-lvl-1 { border-left: 4px solid rgba(18, 87, 209, 0.55); }
+.tr-tree-lvl-2 { border-left: 4px solid rgba(18, 87, 209, 0.30); }
+.tr-tree-leaf { border-left: 4px solid transparent; }
+.tr-tree-leaf:hover .sticky-col,
+.tr-tree-leaf:hover td { background: rgba(18, 87, 209, 0.04) !important; }
+
+.tree-node-cell { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+.tree-node-name { color: var(--text-primary); white-space: nowrap; }
+.tree-node-name.tree-lvl-0 { font-weight: 700; color: var(--brand-blue-deep); }
+.tree-node-name.tree-lvl-1 { font-weight: 600; }
+.tree-node-name.tree-lvl-2 { font-weight: 600; }
+.tr-tree-leaf .tree-node-name { font-weight: 400; }
+.tree-node-code { font-size: 10px; color: var(--text-muted); font-family: monospace; }
+.tree-leaf-dot { flex: 0 0 14px; text-align: center; color: var(--text-muted); }
 
 /* Subtle cell borders for multi-columns alignment */
 .data-table td.product-cell {
@@ -3449,6 +3490,74 @@ input:checked + .slider:before {
 .btn-token-submit:hover {
     background: var(--brand-blue-deep, #0a2e73);
     transform: translateY(-1px);
+}
+
+/* ── Candado del Asistente IA: pantalla "Sitio en construcción" ───────────── */
+/* Cuando la vista está bloqueada, se ocultan todas sus secciones y solo se ve
+   el overlay del candado. */
+#view-asistente.is-locked > :not(#asistente-lock) { display: none !important; }
+
+.asistente-lock {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    padding: 40px 20px;
+}
+.asistente-lock-card {
+    max-width: 440px;
+    width: 100%;
+    text-align: center;
+    background: rgba(255, 255, 255, 0.75);
+    border: 1px solid var(--panel-border, rgba(18, 87, 209, 0.14));
+    border-radius: 18px;
+    padding: 40px 32px;
+    box-shadow: 0 12px 40px -12px rgba(15, 37, 64, 0.25);
+    backdrop-filter: blur(8px);
+}
+.asistente-lock-icon {
+    font-size: 42px;
+    color: var(--brand-blue, #1257d1);
+    margin-bottom: 16px;
+}
+.asistente-lock-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--brand-blue-deep, #0a2e73);
+    margin: 0 0 10px;
+}
+.asistente-lock-desc {
+    font-size: 14px;
+    color: var(--text-muted, #5b6b82);
+    margin: 0 0 24px;
+    line-height: 1.5;
+}
+.asistente-lock-form { display: flex; flex-direction: column; gap: 12px; }
+.asistente-lock-input {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid var(--panel-border, rgba(18, 87, 209, 0.2));
+    border-radius: 10px;
+    padding: 10px 14px;
+}
+.asistente-lock-input i { color: var(--text-muted, #5b6b82); }
+.asistente-lock-input input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    outline: none;
+    font-size: 14px;
+    color: var(--text-primary, #0f2540);
+}
+.asistente-lock-form .action-btn-primary { justify-content: center; padding: 11px; }
+.asistente-lock-error {
+    display: block;
+    margin-top: 14px;
+    color: var(--danger, #d9364c);
+    font-size: 13px;
+    font-weight: 500;
 }
 
 

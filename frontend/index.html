@@ -49,9 +49,6 @@
                 <button type="button" class="tab-btn active" data-view="view-ventas">
                     <i class="fa-solid fa-chart-line"></i> <span>Ventas por Hora</span>
                 </button>
-                <button type="button" class="tab-btn" data-view="view-productos">
-                    <i class="fa-solid fa-table-cells-large"></i> <span>Productos</span>
-                </button>
                 <button type="button" class="tab-btn" data-view="view-betplay">
                     <img src="assets/logos/betplay.jpg" alt="Betplay" class="tab-logo">
                 </button>
@@ -368,7 +365,7 @@
 
             <!-- CONTROLES DE LA ESTRUCTURA EN ARBOL (EXPANDIR/COLAPSAR) -->
             <div class="table-controls-row">
-                <span class="table-info-msg"><i class="fa-solid fa-circle-info"></i> Haz clic en una <strong>Oficina</strong> para expandir/colapsar sus sitios de venta.</span>
+                <span class="table-info-msg"><i class="fa-solid fa-circle-info"></i> Haz clic en una fila para desplegar el siguiente nivel: <strong>Zona › Municipio › Oficina › Sitio de venta</strong>.</span>
                 <div class="table-actions-buttons">
                     <button type="button" class="btn-table-action" id="btn-expand-all">
                         <i class="fa-solid fa-folder-open"></i> Expandir Todo
@@ -394,39 +391,6 @@
         </section>
 
         </div><!-- /#view-ventas -->
-
-        <!-- ===================== VISTA: PRODUCTOS POR SITIO ===================== -->
-        <div class="tab-view" id="view-productos" hidden>
-            <section class="glass-panel matrix-panel">
-                <div class="matrix-head">
-                    <div>
-                        <h3 class="section-title"><i class="fa-solid fa-table-cells-large"></i> Productos por Sitio de Venta</h3>
-                        <p class="section-desc">Venta de cada producto por punto. El color indica la intensidad dentro de cada producto (columna).</p>
-                    </div>
-                    <div class="matrix-legend">
-                        <span>Menos</span>
-                        <span class="matrix-legend-gradient"></span>
-                        <span>Más</span>
-                    </div>
-                </div>
-                <div class="matrix-toolbar">
-                    <div class="matrix-filters">
-                        <select id="matrix-filter-municipio" class="matrix-select"><option value="">Todos los municipios</option></select>
-                        <select id="matrix-filter-tipo" class="matrix-select"><option value="">Todos los tipos de SV</option></select>
-                        <button type="button" class="matrix-clear" id="matrix-filter-clear" title="Limpiar filtros"><i class="fa-solid fa-eraser"></i> Limpiar</button>
-                    </div>
-                    <button type="button" class="action-btn-primary matrix-export" id="matrix-export-pdf">
-                        <i class="fa-solid fa-file-pdf"></i> Exportar PDF
-                    </button>
-                </div>
-                <div class="matrix-scroll" id="matrix-scroll">
-                    <table class="data-table matrix-table" id="matrix-table">
-                        <thead id="matrix-thead"></thead>
-                        <tbody id="matrix-tbody"></tbody>
-                    </table>
-                </div>
-            </section>
-        </div><!-- /#view-productos -->
 
         <!-- ===================== VISTA: BETPLAY ===================== -->
         <div class="tab-view" id="view-betplay" hidden>
@@ -759,6 +723,25 @@
 
         <!-- ===================== VISTA: ASISTENTE IA ===================== -->
         <div class="tab-view" id="view-asistente" hidden>
+
+            <!-- PANTALLA DE CANDADO: "SITIO EN CONSTRUCCIÓN" -->
+            <div id="asistente-lock" class="asistente-lock" hidden>
+                <div class="asistente-lock-card">
+                    <i class="fa-solid fa-helmet-safety asistente-lock-icon"></i>
+                    <h2 class="asistente-lock-title">Sitio en construcción</h2>
+                    <p class="asistente-lock-desc">Esta sección del Asistente IA está temporalmente restringida. Ingresa la contraseña de acceso para continuar.</p>
+                    <form id="asistente-lock-form" class="asistente-lock-form" autocomplete="off">
+                        <div class="asistente-lock-input">
+                            <i class="fa-solid fa-lock"></i>
+                            <input type="password" id="asistente-lock-password" placeholder="Contraseña de acceso" autocomplete="new-password" required>
+                        </div>
+                        <button type="submit" class="action-btn-primary" id="asistente-lock-submit">
+                            <i class="fa-solid fa-unlock-keyhole"></i> Desbloquear
+                        </button>
+                    </form>
+                    <span id="asistente-lock-error" class="asistente-lock-error" hidden></span>
+                </div>
+            </div>
 
             <!-- KPIs GENERALES: PAGOS Y RECARGAS (DIA ACTUAL) -->
             <section class="glass-panel asistente-kpis">
