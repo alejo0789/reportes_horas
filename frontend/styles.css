@@ -3313,4 +3313,142 @@ input:checked + .slider:before {
     line-height: 1.5;
 }
 
+/* ─────────────────────────────────────────────────────────────────
+   AUTH BADGE (header)
+   ───────────────────────────────────────────────────────────────── */
+.auth-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    border: none;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.15s;
+    white-space: nowrap;
+}
+.auth-badge:hover { opacity: 0.85; transform: scale(1.03); }
+.auth-ok {
+    background: rgba(22, 163, 74, 0.15);
+    color: #16a34a;
+    border: 1px solid rgba(22, 163, 74, 0.35);
+}
+.auth-missing {
+    background: rgba(220, 38, 38, 0.12);
+    color: #dc2626;
+    border: 1px solid rgba(220, 38, 38, 0.30);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   MODAL TOKEN JWT
+   ───────────────────────────────────────────────────────────────── */
+.modal-token-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(10, 18, 40, 0.72);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.modal-token-box {
+    background: var(--panel-bg, #fff);
+    border: 1px solid var(--panel-border, rgba(0,0,0,0.1));
+    border-radius: 16px;
+    padding: 36px 40px 32px;
+    width: 100%;
+    max-width: 480px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.22);
+    animation: tokenBoxIn 0.25s cubic-bezier(0.34,1.56,0.64,1);
+}
+
+@keyframes tokenBoxIn {
+    from { opacity: 0; transform: scale(0.92) translateY(10px); }
+    to   { opacity: 1; transform: scale(1)    translateY(0); }
+}
+
+.modal-token-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.modal-token-header i {
+    font-size: 22px;
+    color: var(--brand-blue, #1257d1);
+}
+
+.modal-token-header h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary, #0f2540);
+}
+
+.modal-token-desc {
+    font-size: 14px;
+    color: var(--text-secondary, #52627a);
+    line-height: 1.55;
+    margin-bottom: 18px;
+}
+
+.modal-token-desc code {
+    background: rgba(18,87,209,0.1);
+    color: var(--brand-blue, #1257d1);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.modal-token-input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--panel-border, rgba(0,0,0,0.15));
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 12px;
+    font-family: 'Courier New', monospace;
+    background: rgba(238,242,250,0.6);
+    color: var(--text-primary, #0f2540);
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.modal-token-input:focus {
+    border-color: var(--brand-blue, #1257d1);
+    box-shadow: 0 0 0 3px rgba(18,87,209,0.12);
+}
+
+.modal-token-actions {
+    margin-top: 18px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.btn-token-submit {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 24px;
+    border-radius: 10px;
+    background: var(--brand-blue, #1257d1);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s;
+}
+.btn-token-submit:hover {
+    background: var(--brand-blue-deep, #0a2e73);
+    transform: translateY(-1px);
+}
+
 

@@ -146,6 +146,115 @@ const getApiBase = () => {
 };
 const API_BASE = getApiBase();
 
+// ─────────────────────────────────────────────────────────────────
+//  TokenManager — gestiona el JWT compartido por el Angular padre
+//
+//  Flujo de producción:  Angular padre  →  postMessage({ type: 'AUTH_TOKEN', token })
+//  Flujo de simulación:  el usuario pega el token en el modal al abrir la app
+// ─────────────────────────────────────────────────────────────────
+const TokenManager = {
+    _token: null,
+
+    init() {
+        // 1. Restaurar token de sessionStorage (persiste dentro de la misma pestaña)
+        const stored = sessionStorage.getItem('auth_token');
+        if (stored) this._token = stored;
+
+        // 2. Escuchar mensajes del Angular padre (integración real con microfronts)
+        window.addEventListener('message', (event) => {
+            const msg = event.data;
+            if (msg && msg.type === 'AUTH_TOKEN' && msg.token) {
+                this.setToken(msg.token);
+                document.getElementById('modal-token')?.style.setProperty('display', 'none');
+                console.info('[Auth] Token recibido desde el Angular padre vía postMessage.');
+            }
+        });
+
+        // 3. Si está embebido en un iframe, solicitarle el token al padre
+        if (window.self !== window.top) {
+            window.parent.postMessage({ type: 'REQUEST_TOKEN' }, '*');
+        }
+
+        this._updateBadge();
+    },
+
+    setToken(token) {
+        this._token = token;
+        sessionStorage.setItem('auth_token', token);
+        this._updateBadge();
+    },
+
+    getToken() {
+        return this._token;
+    },
+
+    clearToken() {
+        this._token = null;
+        sessionStorage.removeItem('auth_token');
+        this._updateBadge();
+    },
+
+    hasToken() {
+        return !!this._token;
+    },
+
+    _updateBadge() {
+        const badge = document.getElementById('auth-badge');
+        if (!badge) return;
+        if (this._token) {
+            badge.textContent = 'Autenticado';
+            badge.className = 'auth-badge auth-ok';
+        } else {
+            badge.textContent = 'Sin token';
+            badge.className = 'auth-badge auth-missing';
+        }
+    }
+};
+
+// authFetch: wrapper de fetch que inyecta el Bearer token en cada request
+async function authFetch(url, options = {}) {
+    const token = TokenManager.getToken();
+    if (token) {
+        options.headers = {
+            ...options.headers,
+            'Authorization': `Bearer ${token}`
+        };
+    }
+    const res = await fetch(url, options);
+    if (res.status === 401) {
+        TokenManager.clearToken();
+        showTokenModal('Tu sesión expiró o el token es inválido. Vuelve a ingresar tu token JWT.');
+    }
+    return res;
+}
+
+function showTokenModal(mensaje) {
+    const modal = document.getElementById('modal-token');
+    if (!modal) return;
+    if (mensaje) {
+        const msg = document.getElementById('token-modal-msg');
+        if (msg) msg.textContent = mensaje;
+    }
+    modal.style.display = 'flex';
+}
+
+async function submitToken() {
+    const input = document.getElementById('token-input');
+    const token = (input?.value || '').trim();
+    if (!token) {
+        alert('Pega un token JWT válido antes de continuar.');
+        return;
+    }
+    TokenManager.setToken(token);
+    document.getElementById('modal-token').style.display = 'none';
+    if (input) input.value = '';
+
+    // Iniciar carga de datos ahora que tenemos token
+    await checkStatus();
+    await loadInitialCatalogues();
+    await loadUploadedState();
+}
+
 // DOM Elements
 const elements = {
     btnRefresh: document.getElementById('btn-refresh'),
@@ -263,6 +372,9 @@ const elements = {
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', async () => {
+    // Inicializar gestor de tokens antes que cualquier otra cosa
+    TokenManager.init();
+
     setupTabs();
     setupBetplayControls();
     setupMatrixControls();
@@ -275,7 +387,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupCoordinatorManagement();
     setupAdministratorManagement();
     setupGoalsManagement();
-    
+
+    // Si no hay token, mostrar modal y diferir la carga de datos
+    if (!TokenManager.hasToken()) {
+        showTokenModal();
+        return;
+    }
+
     // Load initial data
     await checkStatus();
     await loadInitialCatalogues();
@@ -356,14 +474,14 @@ async function checkAssistantHealth() {
     text.textContent = 'Verificando conexión con el modelo...';
 
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/health?t=${new Date().getTime()}`);
+        const res = await authFetch(`${API_BASE}/api/assistant/health?t=${new Date().getTime()}`);
         const json = await res.json();
         if (json.online) {
             indicator.classList.add('online');
             // Mostrar el modelo realmente CARGADO (no el configurado por defecto).
             let modelName = json.configured_model || 'local';
             try {
-                const mres = await fetch(`${API_BASE}/api/assistant/models?t=${Date.now()}`);
+                const mres = await authFetch(`${API_BASE}/api/assistant/models?t=${Date.now()}`);
                 const mjson = await mres.json();
                 const loaded = (mjson.models || []).find(m => m.loaded);
                 if (loaded) modelName = loaded.id || loaded.label;
@@ -386,7 +504,7 @@ async function loadAssistantModels() {
     const select = document.getElementById('asistente-model-select');
     if (!select) return;
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/models?t=${new Date().getTime()}`);
+        const res = await authFetch(`${API_BASE}/api/assistant/models?t=${new Date().getTime()}`);
         const json = await res.json();
         const models = json.models || [];
         _assistantVisionModels.clear();
@@ -428,7 +546,7 @@ async function selectAssistantModel(modelId) {
         status.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cargando modelo…';
     }
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/model/select`, {
+        const res = await authFetch(`${API_BASE}/api/assistant/model/select`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: modelId })
@@ -478,7 +596,7 @@ async function loadAssistantKpis() {
         try {
             const url = `${API_BASE}/api/betplay/resumen?tipo=${tipo}&desde=${encodeURIComponent(desde)}`
                 + `&hasta=${encodeURIComponent(hasta)}&force_refresh=true&t=${new Date().getTime()}`;
-            const res = await fetch(url);
+            const res = await authFetch(url);
             const json = await res.json();
             fill(tipo, (json.data && json.data.totales) ? json.data.totales : {});
         } catch (err) {
@@ -1162,7 +1280,7 @@ async function handleAssistantFiles(fileList) {
             try {
                 const fd = new FormData();
                 fd.append('file', file);
-                const res = await fetch(`${API_BASE}/api/assistant/upload`, { method: 'POST', body: fd });
+                const res = await authFetch(`${API_BASE}/api/assistant/upload`, { method: 'POST', body: fd });
                 if (!res.ok) {
                     const err = await res.json().catch(() => ({}));
                     throw new Error(err.detail || `HTTP ${res.status}`);
@@ -1223,7 +1341,7 @@ async function sendAssistantMessage() {
     let acumulado = '';
 
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/chat`, {
+        const res = await authFetch(`${API_BASE}/api/assistant/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1370,7 +1488,7 @@ async function createReport() {
 
     let acumulado = '';
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/report`, {
+        const res = await authFetch(`${API_BASE}/api/assistant/report`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ fuentes, figuras, model: State.assistant.model })
@@ -1711,7 +1829,7 @@ async function fetchBetplay() {
             + `&desde=${encodeURIComponent(range.desde)}&hasta=${encodeURIComponent(range.hasta)}`
             + (forceRefresh ? '&force_refresh=true' : '')
             + `&t=${new Date().getTime()}`;
-        const res = await fetch(url);
+        const res = await authFetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
 
@@ -2686,7 +2804,7 @@ function setupTreeControls() {
 
 async function checkStatus() {
     try {
-        const res = await fetch(`${API_BASE}/api/status?t=${new Date().getTime()}`);
+        const res = await authFetch(`${API_BASE}/api/status?t=${new Date().getTime()}`);
         const status = await res.json();
         
         State.uploadedProducts = status.goals_uploaded_products || [];
@@ -2736,8 +2854,8 @@ async function checkStatus() {
 async function loadInitialCatalogues() {
     try {
         const [resSitios, resProds] = await Promise.all([
-            fetch(`${API_BASE}/api/sitios`),
-            fetch(`${API_BASE}/api/productos`)
+            authFetch(`${API_BASE}/api/sitios`),
+            authFetch(`${API_BASE}/api/productos`)
         ]);
         
         const sitiosData = await resSitios.json();
@@ -2764,8 +2882,8 @@ async function loadUploadedState() {
         State.selectedDate = todayStr;
 
         const [resMetas, resDist] = await Promise.all([
-            fetch(`${API_BASE}/api/metas?fecha=${todayStr}&t=${new Date().getTime()}`),
-            fetch(`${API_BASE}/api/distribucion?t=${new Date().getTime()}`)
+            authFetch(`${API_BASE}/api/metas?fecha=${todayStr}&t=${new Date().getTime()}`),
+            authFetch(`${API_BASE}/api/distribucion?t=${new Date().getTime()}`)
         ]);
         
         State.goals = await resMetas.json();
@@ -2819,7 +2937,7 @@ function setupUploadHandlers() {
     elements.btnClearData.addEventListener('click', async () => {
         if (confirm("¿Estás seguro de que quieres limpiar todos los excels cargados en el servidor?")) {
             try {
-                await fetch(`${API_BASE}/api/clear`, { method: 'POST' });
+                await authFetch(`${API_BASE}/api/clear`, { method: 'POST' });
                 State.goals = [];
                 State.distribution = [];
                 State.sales = [];
@@ -2847,7 +2965,7 @@ async function uploadMetasFiles(files) {
     elements.badgeMetas.textContent = 'Procesando...';
     
     try {
-        const res = await fetch(`${API_BASE}/api/upload/metas`, {
+        const res = await authFetch(`${API_BASE}/api/upload/metas`, {
             method: 'POST',
             body: formData
         });
@@ -2876,7 +2994,7 @@ async function uploadDistFile(file) {
     elements.badgeDist.textContent = 'Procesando...';
     
     try {
-        const res = await fetch(`${API_BASE}/api/upload/distribucion`, {
+        const res = await authFetch(`${API_BASE}/api/upload/distribucion`, {
             method: 'POST',
             body: formData
         });
@@ -2923,8 +3041,8 @@ async function fetchAndRenderData(forceRefresh = false) {
         
         const url = `${API_BASE}/api/ventas?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}${forceRefresh ? '&force_refresh=true' : ''}`;
         const [resSales, resMetas] = await Promise.all([
-            fetch(url),
-            fetch(`${API_BASE}/api/metas?fecha=${State.selectedDate}&t=${new Date().getTime()}`)
+            authFetch(url),
+            authFetch(`${API_BASE}/api/metas?fecha=${State.selectedDate}&t=${new Date().getTime()}`)
         ]);
         
         if (!resSales.ok) {
@@ -4656,7 +4774,7 @@ function logger(msg) {
 
 async function loadWhatsAppPromoters() {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-promoters`);
+        const res = await authFetch(`${API_BASE}/api/whatsapp-promoters`);
         if (!res.ok) throw new Error("Error al obtener promotores");
         State.whatsappPromoters = await res.json();
         renderPromotersList();
@@ -4681,7 +4799,7 @@ function updatePersonnelSidebarCount() {
 
 async function loadWhatsAppCoordinators() {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators`);
+        const res = await authFetch(`${API_BASE}/api/whatsapp-coordinators`);
         if (!res.ok) throw new Error("Error al obtener coordinadores");
         State.whatsappCoordinators = await res.json();
         renderCoordinatorsList();
@@ -4800,7 +4918,7 @@ function resetCoordinatorForm() {
 
 async function saveCoordinatorStatus(cid, coordinatorData) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(coordinatorData)
@@ -4818,7 +4936,7 @@ async function saveCoordinatorStatus(cid, coordinatorData) {
 
 async function deleteCoordinatorRequest(cid) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
             method: 'DELETE'
         });
         if (!res.ok) throw new Error("Error al eliminar");
@@ -4885,7 +5003,7 @@ function setupCoordinatorManagement() {
                 method = 'PUT';
             }
             
-            const res = await fetch(url, {
+            const res = await authFetch(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -4918,7 +5036,7 @@ function setupCoordinatorManagement() {
 
 async function loadWhatsAppAdministrators() {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-administrators`);
+        const res = await authFetch(`${API_BASE}/api/whatsapp-administrators`);
         if (!res.ok) throw new Error("Error al obtener administradores");
         State.whatsappAdministrators = await res.json();
         renderAdministratorsList();
@@ -5030,7 +5148,7 @@ function resetAdministratorForm() {
 
 async function saveAdministratorStatus(aid, administratorData) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(administratorData)
@@ -5048,7 +5166,7 @@ async function saveAdministratorStatus(aid, administratorData) {
 
 async function deleteAdministratorRequest(aid) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
             method: 'DELETE'
         });
         if (!res.ok) throw new Error("Error al eliminar");
@@ -5112,7 +5230,7 @@ function setupAdministratorManagement() {
                 method = 'PUT';
             }
             
-            const res = await fetch(url, {
+            const res = await authFetch(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -5244,7 +5362,7 @@ function resetPromoterForm() {
 
 async function savePromoterStatus(pid, promoterData) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-promoters/${pid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-promoters/${pid}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(promoterData)
@@ -5262,7 +5380,7 @@ async function savePromoterStatus(pid, promoterData) {
 
 async function deletePromoterRequest(pid) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-promoters/${pid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-promoters/${pid}`, {
             method: 'DELETE'
         });
         if (!res.ok) throw new Error("Error al eliminar");
@@ -5326,7 +5444,7 @@ function setupPromoterManagement() {
                 method = 'PUT';
             }
             
-            const res = await fetch(url, {
+            const res = await authFetch(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -5386,7 +5504,7 @@ async function openGoalsModal() {
 
 async function loadModalGoalsList() {
     try {
-        const res = await fetch(`${API_BASE}/api/metas/products?t=${new Date().getTime()}`);
+        const res = await authFetch(`${API_BASE}/api/metas/products?t=${new Date().getTime()}`);
         if (!res.ok) throw new Error("No se pudo cargar la lista de productos");
         const products = await res.json();
         
@@ -5455,7 +5573,7 @@ function renderModalGoalsList(products) {
             
             console.log("Toggle clicked for:", p.producto, "current status:", p.activo);
             try {
-                const res = await fetch(`${API_BASE}/api/metas/toggle`, {
+                const res = await authFetch(`${API_BASE}/api/metas/toggle`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ producto: p.producto, activo: !p.activo })
@@ -5515,7 +5633,7 @@ function renderModalGoalsList(products) {
                 btnDelete.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
                 
                 try {
-                    const res = await fetch(`${API_BASE}/api/metas/product/${encodeURIComponent(p.producto)}`, {
+                    const res = await authFetch(`${API_BASE}/api/metas/product/${encodeURIComponent(p.producto)}`, {
                         method: 'DELETE'
                     });
                     if (!res.ok) throw new Error("Error al eliminar");

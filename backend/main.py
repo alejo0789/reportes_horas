@@ -3,11 +3,15 @@ import json
 import logging
 from datetime import datetime, date, timedelta
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request
+from dotenv import load_dotenv
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from backend.auth import get_current_user, CurrentUser
+
+load_dotenv()
 
 from backend.db import db_manager
 from backend.queries import (
@@ -228,7 +232,8 @@ def get_status():
 def get_ventas(
     desde: str = Query(..., description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
     hasta: str = Query(..., description="Fecha fin YYYY-MM-DD HH:MM:SS"),
-    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar caché")
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar caché"),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     Executes the main hourly sales query on CAUCAMED and FORTUMED.
@@ -404,14 +409,14 @@ class PromoterSchema(BaseModel):
     active: int = 1
 
 @app.get("/api/whatsapp-promoters")
-def get_whatsapp_promoters_endpoint():
+def get_whatsapp_promoters_endpoint(current_user: CurrentUser = Depends(get_current_user)):
     """
     Returns list of all promoters in the whatsapp_promoters table.
     """
     return get_all_promoters()
 
 @app.post("/api/whatsapp-promoters")
-def create_whatsapp_promoter(p: PromoterSchema):
+def create_whatsapp_promoter(p: PromoterSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Adds a new promoter to the database.
     """
@@ -424,7 +429,7 @@ def create_whatsapp_promoter(p: PromoterSchema):
         raise HTTPException(status_code=500, detail="Error interno al agregar promotor.")
 
 @app.put("/api/whatsapp-promoters/{pid}")
-def update_whatsapp_promoter(pid: int, p: PromoterSchema):
+def update_whatsapp_promoter(pid: int, p: PromoterSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Updates an existing promoter in the database.
     """
@@ -439,7 +444,7 @@ def update_whatsapp_promoter(pid: int, p: PromoterSchema):
         raise HTTPException(status_code=500, detail="Error interno al actualizar promotor.")
 
 @app.delete("/api/whatsapp-promoters/{pid}")
-def delete_whatsapp_promoter(pid: int):
+def delete_whatsapp_promoter(pid: int, current_user: CurrentUser = Depends(get_current_user)):
     """
     Deletes a promoter from the database.
     """
@@ -465,14 +470,14 @@ class AdministratorSchema(BaseModel):
     active: int = 1
 
 @app.get("/api/whatsapp-administrators")
-def get_whatsapp_administrators_endpoint():
+def get_whatsapp_administrators_endpoint(current_user: CurrentUser = Depends(get_current_user)):
     """
     Returns list of all administrators in the whatsapp_administrators table.
     """
     return get_all_administrators()
 
 @app.post("/api/whatsapp-administrators")
-def create_whatsapp_administrator(a: AdministratorSchema):
+def create_whatsapp_administrator(a: AdministratorSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Adds a new administrator to the database.
     """
@@ -485,7 +490,7 @@ def create_whatsapp_administrator(a: AdministratorSchema):
         raise HTTPException(status_code=500, detail="Error interno al agregar administrador.")
 
 @app.put("/api/whatsapp-administrators/{aid}")
-def update_whatsapp_administrator(aid: int, a: AdministratorSchema):
+def update_whatsapp_administrator(aid: int, a: AdministratorSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Updates an existing administrator in the database.
     """
@@ -500,7 +505,7 @@ def update_whatsapp_administrator(aid: int, a: AdministratorSchema):
         raise HTTPException(status_code=500, detail="Error interno al actualizar administrador.")
 
 @app.delete("/api/whatsapp-administrators/{aid}")
-def delete_whatsapp_administrator(aid: int):
+def delete_whatsapp_administrator(aid: int, current_user: CurrentUser = Depends(get_current_user)):
     """
     Deletes an administrator from the database.
     """
@@ -510,14 +515,14 @@ def delete_whatsapp_administrator(aid: int):
     return {"status": "success", "message": "Administrador eliminado."}
 
 @app.get("/api/whatsapp-coordinators")
-def get_whatsapp_coordinators_endpoint():
+def get_whatsapp_coordinators_endpoint(current_user: CurrentUser = Depends(get_current_user)):
     """
     Returns list of all coordinators in the whatsapp_coordinators table.
     """
     return get_all_coordinators()
 
 @app.post("/api/whatsapp-coordinators")
-def create_whatsapp_coordinator(c: CoordinatorSchema):
+def create_whatsapp_coordinator(c: CoordinatorSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Adds a new coordinator to the database.
     """
@@ -530,7 +535,7 @@ def create_whatsapp_coordinator(c: CoordinatorSchema):
         raise HTTPException(status_code=500, detail="Error interno al agregar coordinador.")
 
 @app.put("/api/whatsapp-coordinators/{cid}")
-def update_whatsapp_coordinator(cid: int, c: CoordinatorSchema):
+def update_whatsapp_coordinator(cid: int, c: CoordinatorSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Updates an existing coordinator in the database.
     """
@@ -545,7 +550,7 @@ def update_whatsapp_coordinator(cid: int, c: CoordinatorSchema):
         raise HTTPException(status_code=500, detail="Error interno al actualizar coordinador.")
 
 @app.delete("/api/whatsapp-coordinators/{cid}")
-def delete_whatsapp_coordinator(cid: int):
+def delete_whatsapp_coordinator(cid: int, current_user: CurrentUser = Depends(get_current_user)):
     """
     Deletes a coordinator from the database.
     """
@@ -683,7 +688,8 @@ def get_whatsapp_query(
     report_type: str = Query("products", description="Tipo de reporte: 'products', 'offices', 'prompt_product', o 'product_office'"),
     selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina"),
     override_promoter_name: Optional[str] = Query(None, description="Nombre de promotor para consulta por coordinador"),
-    override_coordinator_name: Optional[str] = Query(None, description="Nombre de coordinador para consulta por administrador")
+    override_coordinator_name: Optional[str] = Query(None, description="Nombre de coordinador para consulta por administrador"),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     # Resolve FastAPI Query defaults if called directly in Python
     if not isinstance(selected_product, str):
@@ -1527,7 +1533,10 @@ def get_whatsapp_query(
     return ret
 
 @app.get("/api/sitios")
-def get_sitios(force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de sitios")):
+def get_sitios(
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de sitios"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     Returns the list of sales offices and sites.
     Caches the results in SQLite to allow instant loading of filters.
@@ -1593,7 +1602,10 @@ def get_sitios(force_refresh: bool = Query(False, description="Forzar consulta a
     }
 
 @app.get("/api/productos")
-def get_productos(force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de productos")):
+def get_productos(
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de productos"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     Returns catalogue of products.
     Caches the results in SQLite to allow instant loading of filters.
@@ -2839,7 +2851,10 @@ def assistant_report(req: AssistantReportRequest):
 # ============================ ASISTENTE IA ============================
 
 @app.post("/api/upload/metas")
-async def upload_metas(files: List[UploadFile] = File(...)):
+async def upload_metas(
+    files: List[UploadFile] = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     Saves and parses multiple Excel files of daily goals.
     Uses filename or header content to distinguish between products.
@@ -2888,7 +2903,7 @@ async def upload_metas(files: List[UploadFile] = File(...)):
     }
 
 @app.post("/api/upload/distribucion")
-async def upload_distribucion(file: UploadFile = File(...)):
+async def upload_distribucion(file: UploadFile = File(...), current_user: CurrentUser = Depends(get_current_user)):
     """
     Saves and parses the promoter distribution Excel file.
     """
@@ -2917,7 +2932,10 @@ async def upload_distribucion(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Error parsing promoters file: {str(e)}")
 
 @app.get("/api/metas")
-def get_metas(fecha: Optional[str] = Query(None, description="Filtrar por fecha YYYY-MM-DD")):
+def get_metas(
+    fecha: Optional[str] = Query(None, description="Filtrar por fecha YYYY-MM-DD"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     flat_goals = []
     for prod, records in goals_store.items():
         if records and not records[0].get("activo", True):
@@ -2933,7 +2951,7 @@ class ToggleProductSchema(BaseModel):
     activo: bool
 
 @app.get("/api/metas/products")
-def get_metas_products():
+def get_metas_products(current_user: CurrentUser = Depends(get_current_user)):
     result = []
     for prod, records in goals_store.items():
         active = True
@@ -2947,7 +2965,7 @@ def get_metas_products():
     return result
 
 @app.post("/api/metas/toggle")
-def toggle_product_goals(data: ToggleProductSchema):
+def toggle_product_goals(data: ToggleProductSchema, current_user: CurrentUser = Depends(get_current_user)):
     if data.producto in goals_store:
         for rec in goals_store[data.producto]:
             rec["activo"] = data.activo
@@ -2961,7 +2979,7 @@ def toggle_product_goals(data: ToggleProductSchema):
     raise HTTPException(status_code=404, detail="Producto no encontrado")
 
 @app.delete("/api/metas/product/{product_name}")
-def delete_product_goals(product_name: str):
+def delete_product_goals(product_name: str, current_user: CurrentUser = Depends(get_current_user)):
     if product_name in goals_store:
         goals_store.pop(product_name)
         # Persist
@@ -2974,11 +2992,11 @@ def delete_product_goals(product_name: str):
     raise HTTPException(status_code=404, detail="Producto no encontrado")
 
 @app.get("/api/distribucion")
-def get_distribucion():
+def get_distribucion(current_user: CurrentUser = Depends(get_current_user)):
     return distribution_store
 
 @app.post("/api/clear")
-def clear_data():
+def clear_data(current_user: CurrentUser = Depends(get_current_user)):
     """Clears uploaded excels, saved JSONs, and local cache"""
     global goals_store, distribution_store
     goals_store = {}
