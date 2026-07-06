@@ -4,12 +4,13 @@ import logging
 from datetime import datetime, date, timedelta
 from typing import List, Optional
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from backend.auth import get_current_user, CurrentUser
+from backend.login import service as login_service
 
 load_dotenv()
 
@@ -75,6 +76,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Login local (solución temporal — sin micro de autenticación externo).
+# Valida contra per_users (MariaDB) y emite el JWT que valida backend/auth.py.
+# ---------------------------------------------------------------------------
+@app.post("/api/login")
+def login(response: Response, email: str = Form(...), password: str = Form(...)):
+    return login_service.login(email=email, password=password, response=response)
+
+@app.post("/api/logout")
+def logout(response: Response):
+    # Borra la cookie HttpOnly device_id. El JWT es stateless: el cliente lo
+    # descarta de sessionStorage; al no haber refresh token no hay nada que revocar.
+    response.delete_cookie("device_id", path="/")
+    return {"message": "Sesión cerrada correctamente"}
 
 # Helper: Convert oracle rows to dict list
 def rows_to_dicts(cursor):

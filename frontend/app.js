@@ -202,14 +202,26 @@ const TokenManager = {
         const badge = document.getElementById('auth-badge');
         if (!badge) return;
         if (this._token) {
-            badge.textContent = 'Autenticado';
+            badge.innerHTML = '<i class="fa-solid fa-right-from-bracket"></i> Cerrar sesión';
             badge.className = 'auth-badge auth-ok';
+            badge.title = 'Cerrar sesión';
         } else {
-            badge.textContent = 'Sin token';
+            badge.textContent = 'Sin sesión';
             badge.className = 'auth-badge auth-missing';
         }
     }
 };
+
+// Cierra la sesión: borra la cookie device_id en el servidor, limpia el token
+// local y vuelve a la pantalla de login.
+async function logout() {
+    if (!confirm('¿Cerrar sesión?')) return;
+    try {
+        await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+    } catch (_) { /* aunque falle el server, limpiamos localmente igual */ }
+    TokenManager.clearToken();
+    window.location.replace('login.html');
+}
 
 // authFetch: wrapper de fetch que inyecta el Bearer token en cada request
 async function authFetch(url, options = {}) {
@@ -220,10 +232,11 @@ async function authFetch(url, options = {}) {
             'Authorization': `Bearer ${token}`
         };
     }
-    const res = await fetch(url, options);
+    const res = await fetch(url, { credentials: 'same-origin', ...options });
     if (res.status === 401) {
         TokenManager.clearToken();
-        showTokenModal('Tu sesión expiró o el token es inválido. Vuelve a ingresar tu token JWT.');
+        // Sesión expirada o token inválido → volver a la pantalla de login.
+        window.location.replace('login.html');
     }
     return res;
 }
@@ -388,9 +401,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupAdministratorManagement();
     setupGoalsManagement();
 
-    // Si no hay token, mostrar modal y diferir la carga de datos
+    // Guarda de acceso: sin token válido → redirigir a la pantalla de login.
+    // (Los datos ya están protegidos por JWT en el backend; esto evita mostrar
+    //  el dashboard vacío y fuerza el ingreso.)
     if (!TokenManager.hasToken()) {
-        showTokenModal();
+        window.location.replace('login.html');
         return;
     }
 
