@@ -265,6 +265,7 @@ const elements = {
 document.addEventListener('DOMContentLoaded', async () => {
     setupTabs();
     setupBetplayControls();
+    setupMatrixControls();
     setupAssistantChat();
     setupUploadHandlers();
     setupFilterListeners();
@@ -328,6 +329,18 @@ function setupTabs() {
                 checkAssistantHealth();
                 loadAssistantModels();
                 loadAssistantKpis();
+            }
+
+            // Al abrir Productos por Sitio: construir la matriz. Si aún no hay
+            // ventas cargadas, dispara la consulta (antes tocaba pasar por la
+            // pestaña de Ventas para que cargaran los datos).
+            if (targetId === 'view-productos') {
+                if (!State.sales || State.sales.length === 0) {
+                    renderProductMatrixLoading();
+                    if (State.selectedDate) fetchAndRenderData();
+                } else {
+                    renderProductMatrix();
+                }
             }
         });
     });
@@ -3468,6 +3481,215 @@ function renderDashboard() {
     
     // 3. Render detailed report table
     renderTable(joined);
+
+    // 4. Si la pestaña de Productos por Sitio está visible, refrescar su matriz.
+    const vProd = document.getElementById('view-productos');
+    if (vProd && !vProd.hidden) renderProductMatrix();
+}
+
+// --- MATRIZ PRODUCTOS x SITIO (heatmap + totales) ---
+// Productos que vienen en CANTIDAD (no en pesos): se muestran, pero no se suman
+// en los totales de pesos (fila/gran total) para no mezclar unidades.
+const MATRIX_COUNT_PRODUCTS = ["RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"];
+
+function matrixHeatClass(t) {
+    if (t >= 0.8) return 'heat-5';
+    if (t >= 0.6) return 'heat-4';
+    if (t >= 0.4) return 'heat-3';
+    if (t >= 0.2) return 'heat-2';
+    return 'heat-1';
+}
+
+// Estado de carga mientras llegan las ventas.
+function renderProductMatrixLoading() {
+    const thead = document.getElementById('matrix-thead');
+    const tbody = document.getElementById('matrix-tbody');
+    if (!thead || !tbody) return;
+    thead.innerHTML = '';
+    tbody.innerHTML = `<tr><td class="empty-table"><i class="fa-solid fa-spinner fa-spin"></i> Cargando ventas…</td></tr>`;
+}
+
+// Mapa cod_sitio -> {ciudad, tipo} desde el catálogo de sitios.
+function buildSiteMeta() {
+    const map = {};
+    (State.sites || []).forEach(s => {
+        map[String(s.Cod_Sitio)] = {
+            ciudad: s.Ciudad || 'Sin Municipio',
+            tipo: s.Tipo_SV || 'Sin Tipo'
+        };
+    });
+    return map;
+}
+
+// Rellena los selectores de municipio y tipo preservando la selección actual.
+function populateMatrixFilters(ciudades, tipos) {
+    const fill = (id, values, placeholder) => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        const prev = sel.value;
+        sel.innerHTML = `<option value="">${placeholder}</option>` +
+            values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+        if (values.includes(prev)) sel.value = prev;
+    };
+    fill('matrix-filter-municipio', ciudades, 'Todos los municipios');
+    fill('matrix-filter-tipo', tipos, 'Todos los tipos de SV');
+}
+
+function renderProductMatrix() {
+    const thead = document.getElementById('matrix-thead');
+    const tbody = document.getElementById('matrix-tbody');
+    if (!thead || !tbody) return;
+
+    const { joined } = getFilteredCombinedData();
+    const siteMeta = buildSiteMeta();
+
+    // Filtros activos (municipio / tipo de sitio).
+    const fMuni = (document.getElementById('matrix-filter-municipio') || {}).value || '';
+    const fTipo = (document.getElementById('matrix-filter-tipo') || {}).value || '';
+
+    // Pivotar: sitio (fila) x producto (columna) = venta.
+    const siteMap = {};
+    const prodTotals = {};
+    const ciudadesSet = new Set();
+    const tiposSet = new Set();
+    joined.forEach(it => {
+        if (!it.venta) return; // solo celdas con venta real
+        const meta = siteMeta[String(it.cod_sitio)] || { ciudad: 'Sin Municipio', tipo: 'Sin Tipo' };
+        ciudadesSet.add(meta.ciudad);
+        tiposSet.add(meta.tipo);
+        // Aplicar filtros
+        if (fMuni && meta.ciudad !== fMuni) return;
+        if (fTipo && meta.tipo !== fTipo) return;
+
+        const s = siteMap[it.cod_sitio] || (siteMap[it.cod_sitio] = {
+            cod_sitio: it.cod_sitio, sitio_venta: it.sitio_venta,
+            zona: it.zona, oficina: it.oficina, ciudad: meta.ciudad, tipo: meta.tipo,
+            byProd: {}, total: 0
+        });
+        s.byProd[it.producto] = (s.byProd[it.producto] || 0) + it.venta;
+        prodTotals[it.producto] = (prodTotals[it.producto] || 0) + it.venta;
+        if (!MATRIX_COUNT_PRODUCTS.includes(it.producto)) s.total += it.venta;
+    });
+
+    // Poblar selectores con TODAS las opciones presentes (antes de filtrar).
+    populateMatrixFilters([...ciudadesSet].sort(), [...tiposSet].sort());
+
+    const products = Object.keys(prodTotals).sort((a, b) => prodTotals[b] - prodTotals[a]);
+    const sites = Object.values(siteMap).sort((a, b) => b.total - a.total);
+
+    if (sites.length === 0 || products.length === 0) {
+        thead.innerHTML = '';
+        tbody.innerHTML = `<tr><td class="empty-table">No hay ventas para mostrar con los datos/filtros actuales.</td></tr>`;
+        return;
+    }
+
+    // Máximo por columna para escalar el heatmap dentro de cada producto.
+    const colMax = {};
+    products.forEach(p => {
+        let mx = 0;
+        sites.forEach(s => { mx = Math.max(mx, s.byProd[p] || 0); });
+        colMax[p] = mx || 1;
+    });
+
+    const grandTotal = sites.reduce((a, s) => a + s.total, 0);
+
+    // Cabecera
+    thead.innerHTML = `<tr>
+        <th class="matrix-sticky-col matrix-site-col">Sitio de venta</th>
+        ${products.map(p => `<th class="matrix-num">${escapeHtml(p)}</th>`).join('')}
+        <th class="matrix-num matrix-total-col">Total $</th>
+    </tr>`;
+
+    // Fila de totales por producto (fijada arriba, como primera fila del tbody).
+    const totalRow = `<tr class="matrix-total-row">
+        <td class="matrix-sticky-col matrix-site-col">TOTAL · ${sites.length} sitios</td>
+        ${products.map(p => `<td class="matrix-num">${formatProductValue(prodTotals[p], p)}</td>`).join('')}
+        <td class="matrix-num matrix-total-col">${formatCurrency(grandTotal)}</td>
+    </tr>`;
+
+    const rows = sites.map(s => {
+        const cells = products.map(p => {
+            const v = s.byProd[p] || 0;
+            if (!v) return `<td class="matrix-num matrix-empty">·</td>`;
+            const cls = matrixHeatClass(v / colMax[p]);
+            return `<td class="matrix-num ${cls}">${formatProductValue(v, p)}</td>`;
+        }).join('');
+        return `<tr>
+            <td class="matrix-sticky-col matrix-site-col">
+                <span class="matrix-site-name">${escapeHtml(s.sitio_venta)}</span>
+                <span class="matrix-site-meta">${escapeHtml(s.oficina || '')}</span>
+            </td>
+            ${cells}
+            <td class="matrix-num matrix-total-col">${formatCurrency(s.total)}</td>
+        </tr>`;
+    }).join('');
+
+    tbody.innerHTML = totalRow + rows;
+}
+
+// Listeners de filtros y export (se llama una vez al iniciar).
+function setupMatrixControls() {
+    ['matrix-filter-municipio', 'matrix-filter-tipo'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', renderProductMatrix);
+    });
+    const clear = document.getElementById('matrix-filter-clear');
+    if (clear) clear.addEventListener('click', () => {
+        ['matrix-filter-municipio', 'matrix-filter-tipo'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+        });
+        renderProductMatrix();
+    });
+    const exp = document.getElementById('matrix-export-pdf');
+    if (exp) exp.addEventListener('click', exportMatrixPDF);
+}
+
+// Exporta la matriz visible a PDF (landscape, paginado verticalmente).
+async function exportMatrixPDF() {
+    const table = document.getElementById('matrix-table');
+    const btn = document.getElementById('matrix-export-pdf');
+    if (!table || !window.jspdf || typeof html2canvas === 'undefined') return;
+    const original = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generando…'; }
+    try {
+        const canvas = await html2canvas(table, { scale: 2, backgroundColor: '#ffffff' });
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('l', 'mm', 'a4');
+        const pageW = doc.internal.pageSize.getWidth();
+        const pageH = doc.internal.pageSize.getHeight();
+        const margin = 8;
+        const titleH = 12;
+
+        // Título
+        doc.setFontSize(13);
+        doc.setTextColor(10, 46, 115);
+        doc.text('Productos por Sitio de Venta', margin, margin + 5);
+        doc.setFontSize(9);
+        doc.setTextColor(120, 120, 120);
+        doc.text(`Fecha: ${State.selectedDate || ''}`, pageW - margin, margin + 5, { align: 'right' });
+
+        const imgW = pageW - margin * 2;
+        const imgH = canvas.height * imgW / canvas.width;
+        const usable = pageH - margin * 2 - titleH;
+        let rendered = 0;
+        let page = 0;
+        while (rendered < imgH) {
+            if (page > 0) doc.addPage();
+            const y = margin + titleH - rendered;
+            doc.addImage(imgData, 'PNG', margin, y, imgW, imgH);
+            rendered += usable;
+            page++;
+        }
+        const stamp = (State.selectedDate || new Date().toISOString().slice(0, 10));
+        doc.save(`productos_por_sitio_${stamp}.pdf`);
+    } catch (e) {
+        console.error('[Matriz] Error exportando PDF:', e);
+        alert('No se pudo generar el PDF de la matriz.');
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    }
 }
 
 // --- CHARTS DRAWING ---
@@ -4052,9 +4274,9 @@ function renderTable(prejoinedData) {
     if (elements.tableThead) {
         elements.tableThead.innerHTML = `
             <tr>
-                <th rowspan="2" style="width: 80px;">Zona</th>
-                <th rowspan="2" style="min-width: 280px; text-align: left;">Oficina / Sitio de Venta</th>
-                <th rowspan="2" style="min-width: 140px; text-align: left;">Promotor</th>
+                <th rowspan="2" class="sticky-col sticky-col-1" style="width: 70px; min-width: 70px;">Zona</th>
+                <th rowspan="2" class="sticky-col sticky-col-2" style="width: 260px; min-width: 260px; text-align: left;">Oficina / Sitio de Venta</th>
+                <th rowspan="2" class="sticky-col sticky-col-3" style="width: 150px; min-width: 150px; text-align: left;">Promotor</th>
                 ${displayedProducts.map(prod => `
                     <th colspan="3" class="product-col-group-header">${prod}</th>
                 `).join('')}
@@ -4162,8 +4384,8 @@ function renderTable(prejoinedData) {
         });
         
         let officeRowHtml = `
-            <td>${office.zona}</td>
-            <td>
+            <td class="sticky-col sticky-col-1">${office.zona}</td>
+            <td class="sticky-col sticky-col-2">
                 <div class="office-name-container">
                     <span class="office-chevron ${!isCollapsed ? 'expanded' : ''}">
                         <i class="fa-solid fa-chevron-right"></i>
@@ -4172,7 +4394,7 @@ function renderTable(prejoinedData) {
                     <span class="office-sites-count">${officeSitesCount} sitios</span>
                 </div>
             </td>
-            <td>${Array.from(office.promotores).join(', ') || 'Varios'}</td>
+            <td class="sticky-col sticky-col-3">${Array.from(office.promotores).join(', ') || 'Varios'}</td>
         `;
         
         // Horizontal columns for each product on Office level
@@ -4189,7 +4411,7 @@ function renderTable(prejoinedData) {
             
             officeRowHtml += `
                 <td class="num-col ${cellClasses}">${formatProductValue(prodData.venta, prod)}</td>
-                <td class="num-col ${cellClasses}" style="color:rgba(255,255,255,0.45);">${formatProductValue(prodData.meta, prod)}</td>
+                <td class="num-col ${cellClasses}" style="color:var(--text-muted);">${formatProductValue(prodData.meta, prod)}</td>
                 <td class="num-col ${cellClasses}" style="color: ${cumpColor} !important; font-weight: 600 !important;">${compliance}%</td>
             `;
         });
@@ -4207,15 +4429,15 @@ function renderTable(prejoinedData) {
             trSite.className = `tr-site-child ${isCollapsed ? 'collapsed-row' : ''}`;
             
             let siteRowHtml = `
-                <td style="color:var(--text-muted);">${site.zona}</td>
-                <td>
+                <td class="sticky-col sticky-col-1" style="color:var(--text-muted);">${site.zona}</td>
+                <td class="sticky-col sticky-col-2">
                     <div class="indent-site-container">
                         <span class="tree-branch-icon">└─</span>
                         <span style="color:var(--text-primary); font-weight: 500;">${site.sitio_venta}</span>
                         <span style="font-size: 10px; color: var(--text-muted); font-family: monospace;">(${site.cod_sitio})</span>
                     </div>
                 </td>
-                <td>${site.promotor || 'Sin Promotor'}</td>
+                <td class="sticky-col sticky-col-3">${site.promotor || 'Sin Promotor'}</td>
             `;
             
             // Horizontal columns for each product on Site level
@@ -4241,7 +4463,36 @@ function renderTable(prejoinedData) {
             elements.tableBody.appendChild(trSite);
         });
     });
+
+    // 6. Ajustar los offsets 'left' de las columnas fijas segun su ancho real,
+    //    para que Zona/Oficina/Promotor queden pegadas sin huecos ni solapes.
+    syncStickyColumnOffsets();
 }
+
+// Recalcula los offsets horizontales de las columnas sticky a partir del ancho
+// real renderizado de las dos primeras columnas de la cabecera.
+function syncStickyColumnOffsets() {
+    const scroll = document.querySelector('.detalle-sitios-scroll');
+    if (!scroll || !elements.tableThead) return;
+    const headerCells = elements.tableThead.querySelectorAll('tr:first-child .sticky-col');
+    if (headerCells.length < 3) return;
+    const zonaW = headerCells[0].getBoundingClientRect().width;
+    const oficinaW = headerCells[1].getBoundingClientRect().width;
+    scroll.style.setProperty('--sticky-left-2', `${zonaW}px`);
+    scroll.style.setProperty('--sticky-left-3', `${zonaW + oficinaW}px`);
+
+    // Alto real de la primera fila de cabecera, para fijar la segunda fila
+    // (Venta/Meta/% Cump.) justo debajo y evitar que se solapen al hacer scroll.
+    const row1 = elements.tableThead.querySelector('tr:first-child');
+    if (row1) {
+        scroll.style.setProperty('--thead-row1-h', `${row1.getBoundingClientRect().height}px`);
+    }
+}
+
+// Reajusta las columnas fijas cuando cambia el tamano de la ventana.
+window.addEventListener('resize', () => {
+    if (document.querySelector('.detalle-sitios-scroll .sticky-col')) syncStickyColumnOffsets();
+});
 
 // --- DYNAMIC TABLE FILTERS POPULATOR ---
 

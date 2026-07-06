@@ -23,7 +23,7 @@
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
     <!-- leaflet-image: renderiza el mapa a canvas para el PDF (sin offset) -->
     <script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
-    <link rel="stylesheet" href="styles.css?v=4.9">
+    <link rel="stylesheet" href="styles.css?v=5.5">
 </head>
 <body>
     <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
@@ -48,6 +48,9 @@
                 <span class="tab-indicator lg-refract" id="tab-indicator" aria-hidden="true"></span>
                 <button type="button" class="tab-btn active" data-view="view-ventas">
                     <i class="fa-solid fa-chart-line"></i> <span>Ventas por Hora</span>
+                </button>
+                <button type="button" class="tab-btn" data-view="view-productos">
+                    <i class="fa-solid fa-table-cells-large"></i> <span>Productos</span>
                 </button>
                 <button type="button" class="tab-btn" data-view="view-betplay">
                     <img src="assets/logos/betplay.jpg" alt="Betplay" class="tab-logo">
@@ -388,6 +391,39 @@
         </section>
 
         </div><!-- /#view-ventas -->
+
+        <!-- ===================== VISTA: PRODUCTOS POR SITIO ===================== -->
+        <div class="tab-view" id="view-productos" hidden>
+            <section class="glass-panel matrix-panel">
+                <div class="matrix-head">
+                    <div>
+                        <h3 class="section-title"><i class="fa-solid fa-table-cells-large"></i> Productos por Sitio de Venta</h3>
+                        <p class="section-desc">Venta de cada producto por punto. El color indica la intensidad dentro de cada producto (columna).</p>
+                    </div>
+                    <div class="matrix-legend">
+                        <span>Menos</span>
+                        <span class="matrix-legend-gradient"></span>
+                        <span>Más</span>
+                    </div>
+                </div>
+                <div class="matrix-toolbar">
+                    <div class="matrix-filters">
+                        <select id="matrix-filter-municipio" class="matrix-select"><option value="">Todos los municipios</option></select>
+                        <select id="matrix-filter-tipo" class="matrix-select"><option value="">Todos los tipos de SV</option></select>
+                        <button type="button" class="matrix-clear" id="matrix-filter-clear" title="Limpiar filtros"><i class="fa-solid fa-eraser"></i> Limpiar</button>
+                    </div>
+                    <button type="button" class="action-btn-primary matrix-export" id="matrix-export-pdf">
+                        <i class="fa-solid fa-file-pdf"></i> Exportar PDF
+                    </button>
+                </div>
+                <div class="matrix-scroll" id="matrix-scroll">
+                    <table class="data-table matrix-table" id="matrix-table">
+                        <thead id="matrix-thead"></thead>
+                        <tbody id="matrix-tbody"></tbody>
+                    </table>
+                </div>
+            </section>
+        </div><!-- /#view-productos -->
 
         <!-- ===================== VISTA: BETPLAY ===================== -->
         <div class="tab-view" id="view-betplay" hidden>
@@ -1087,6 +1123,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=4.1"></script>
+    <script src="app.js?v=4.6"></script>
 </body>
 </html>
