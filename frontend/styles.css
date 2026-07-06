@@ -3492,4 +3492,72 @@ input:checked + .slider:before {
     transform: translateY(-1px);
 }
 
+/* ── Candado del Asistente IA: pantalla "Sitio en construcción" ───────────── */
+/* Cuando la vista está bloqueada, se ocultan todas sus secciones y solo se ve
+   el overlay del candado. */
+#view-asistente.is-locked > :not(#asistente-lock) { display: none !important; }
+
+.asistente-lock {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    padding: 40px 20px;
+}
+.asistente-lock-card {
+    max-width: 440px;
+    width: 100%;
+    text-align: center;
+    background: rgba(255, 255, 255, 0.75);
+    border: 1px solid var(--panel-border, rgba(18, 87, 209, 0.14));
+    border-radius: 18px;
+    padding: 40px 32px;
+    box-shadow: 0 12px 40px -12px rgba(15, 37, 64, 0.25);
+    backdrop-filter: blur(8px);
+}
+.asistente-lock-icon {
+    font-size: 42px;
+    color: var(--brand-blue, #1257d1);
+    margin-bottom: 16px;
+}
+.asistente-lock-title {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--brand-blue-deep, #0a2e73);
+    margin: 0 0 10px;
+}
+.asistente-lock-desc {
+    font-size: 14px;
+    color: var(--text-muted, #5b6b82);
+    margin: 0 0 24px;
+    line-height: 1.5;
+}
+.asistente-lock-form { display: flex; flex-direction: column; gap: 12px; }
+.asistente-lock-input {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid var(--panel-border, rgba(18, 87, 209, 0.2));
+    border-radius: 10px;
+    padding: 10px 14px;
+}
+.asistente-lock-input i { color: var(--text-muted, #5b6b82); }
+.asistente-lock-input input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    outline: none;
+    font-size: 14px;
+    color: var(--text-primary, #0f2540);
+}
+.asistente-lock-form .action-btn-primary { justify-content: center; padding: 11px; }
+.asistente-lock-error {
+    display: block;
+    margin-top: 14px;
+    color: var(--danger, #d9364c);
+    font-size: 13px;
+    font-weight: 500;
+}
+
 

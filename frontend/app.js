@@ -17,6 +17,7 @@ const State = {
     selectedOffice: '',
     selectedSeller: '',
     selectedProduct: '',
+    assistantLockEnabled: false, // Candado del Asistente IA (flag del backend)
 
     // Table-specific filter values
     tableFilters: {
@@ -319,6 +320,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     setupTabs();
     setupBetplayControls();
+    setupAssistantLock();
     setupAssistantChat();
     setupUploadHandlers();
     setupFilterListeners();
@@ -385,13 +387,80 @@ function setupTabs() {
                 setTimeout(() => State.betplay.map.invalidateSize(), 200);
             }
 
-            // Al abrir el Asistente: verificar conexión, modelos y KPIs del día.
+            // Al abrir el Asistente: aplicar candado si corresponde y, si está
+            // desbloqueado, verificar conexión, modelos y KPIs del día.
             if (targetId === 'view-asistente') {
-                checkAssistantHealth();
-                loadAssistantModels();
-                loadAssistantKpis();
+                openAssistant();
             }
         });
+    });
+}
+
+// --- ASISTENTE IA: CANDADO "SITIO EN CONSTRUCCIÓN" ---
+// La contraseña se valida en el backend; aquí solo se gestiona la UI y una
+// bandera de desbloqueo por sesión.
+function isAssistantUnlocked() {
+    return sessionStorage.getItem('asistente_unlocked') === '1';
+}
+
+// Muestra u oculta el overlay según el flag del backend y el estado de sesión.
+// Devuelve true si la vista quedó bloqueada.
+function applyAssistantLockUI() {
+    const view = document.getElementById('view-asistente');
+    const lock = document.getElementById('asistente-lock');
+    if (!view || !lock) return false;
+    const locked = !!State.assistantLockEnabled && !isAssistantUnlocked();
+    view.classList.toggle('is-locked', locked);
+    lock.hidden = !locked;
+    return locked;
+}
+
+// Punto de entrada al abrir la pestaña: si está bloqueada, enfoca el campo de
+// contraseña; si no, carga el contenido normal del Asistente.
+function openAssistant() {
+    if (applyAssistantLockUI()) {
+        const inp = document.getElementById('asistente-lock-password');
+        if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 50); }
+        return;
+    }
+    checkAssistantHealth();
+    loadAssistantModels();
+    loadAssistantKpis();
+}
+
+// Registra el formulario de desbloqueo (una sola vez al iniciar).
+function setupAssistantLock() {
+    const form = document.getElementById('asistente-lock-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const inp = document.getElementById('asistente-lock-password');
+        const err = document.getElementById('asistente-lock-error');
+        const btn = document.getElementById('asistente-lock-submit');
+        const pwd = (inp && inp.value || '').trim();
+        if (!pwd) return;
+        if (err) err.hidden = true;
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Verificando…'; }
+        try {
+            const res = await authFetch(`${API_BASE}/api/assistant/unlock`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pwd })
+            });
+            if (res.ok) {
+                sessionStorage.setItem('asistente_unlocked', '1');
+                openAssistant();
+            } else if (err) {
+                err.textContent = res.status === 401
+                    ? 'Contraseña incorrecta.'
+                    : 'No se pudo verificar. Intenta de nuevo.';
+                err.hidden = false;
+            }
+        } catch (e2) {
+            if (err) { err.textContent = 'Error de conexión con el servidor.'; err.hidden = false; }
+        } finally {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-unlock-keyhole"></i> Desbloquear'; }
+        }
     });
 }
 
@@ -2754,7 +2823,11 @@ async function checkStatus() {
         const status = await res.json();
         
         State.uploadedProducts = status.goals_uploaded_products || [];
-        
+        State.assistantLockEnabled = !!status.assistant_lock_enabled;
+        // Si la vista del Asistente está visible, refrescar su estado de bloqueo.
+        const vAsis = document.getElementById('view-asistente');
+        if (vAsis && !vAsis.hidden) applyAssistantLockUI();
+
         const isOnline = status.cauca_connected || status.fortuna_connected;
         elements.statusIndicator.className = 'status-indicator ' + (isOnline ? 'online' : 'offline');
 

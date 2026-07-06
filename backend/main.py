@@ -14,6 +14,13 @@ from backend.login import service as login_service
 
 load_dotenv()
 
+# ── Candado del Asistente IA ──────────────────────────────────────────────
+# Bloqueo opcional con pantalla de "Sitio en construcción". La contraseña se
+# valida SIEMPRE en el backend (nunca viaja al JS del navegador). Activable con
+# ASSISTANT_LOCK_ENABLED en el .env.
+ASSISTANT_LOCK_ENABLED = os.getenv("ASSISTANT_LOCK_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+ASSISTANT_LOCK_PASSWORD = os.getenv("ASSISTANT_LOCK_PASSWORD", "AcertemosLLM")
+
 from backend.db import db_manager
 from backend.queries import (
     VENTAS_POR_HORA_QUERY, SITIOS_VENTA_QUERY, PRODUCTOS_QUERY,
@@ -239,8 +246,27 @@ def get_status():
         "fortuna_connected": fortuna_ok,
         "goals_uploaded_products": [p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)],
         "all_goals_products": list(goals_store.keys()),
-        "distribution_records_count": len(distribution_store)
+        "distribution_records_count": len(distribution_store),
+        "assistant_lock_enabled": ASSISTANT_LOCK_ENABLED,
     }
+
+
+class AssistantUnlockRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/assistant/unlock")
+def assistant_unlock(req: AssistantUnlockRequest, current_user: CurrentUser = Depends(get_current_user)):
+    """Valida la contraseña del candado del Asistente contra el .env.
+
+    La comparación ocurre solo en el servidor; el JS del navegador nunca conoce
+    la clave. Si el candado está desactivado, se considera desbloqueado.
+    """
+    if not ASSISTANT_LOCK_ENABLED:
+        return {"ok": True, "locked": False}
+    if req.password == ASSISTANT_LOCK_PASSWORD:
+        return {"ok": True, "locked": False}
+    raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
 @app.get("/api/ventas")
 def get_ventas(

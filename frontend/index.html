@@ -724,6 +724,25 @@
         <!-- ===================== VISTA: ASISTENTE IA ===================== -->
         <div class="tab-view" id="view-asistente" hidden>
 
+            <!-- PANTALLA DE CANDADO: "SITIO EN CONSTRUCCIÓN" -->
+            <div id="asistente-lock" class="asistente-lock" hidden>
+                <div class="asistente-lock-card">
+                    <i class="fa-solid fa-helmet-safety asistente-lock-icon"></i>
+                    <h2 class="asistente-lock-title">Sitio en construcción</h2>
+                    <p class="asistente-lock-desc">Esta sección del Asistente IA está temporalmente restringida. Ingresa la contraseña de acceso para continuar.</p>
+                    <form id="asistente-lock-form" class="asistente-lock-form" autocomplete="off">
+                        <div class="asistente-lock-input">
+                            <i class="fa-solid fa-lock"></i>
+                            <input type="password" id="asistente-lock-password" placeholder="Contraseña de acceso" autocomplete="new-password" required>
+                        </div>
+                        <button type="submit" class="action-btn-primary" id="asistente-lock-submit">
+                            <i class="fa-solid fa-unlock-keyhole"></i> Desbloquear
+                        </button>
+                    </form>
+                    <span id="asistente-lock-error" class="asistente-lock-error" hidden></span>
+                </div>
+            </div>
+
             <!-- KPIs GENERALES: PAGOS Y RECARGAS (DIA ACTUAL) -->
             <section class="glass-panel asistente-kpis">
                 <div class="asistente-kpis-head">
