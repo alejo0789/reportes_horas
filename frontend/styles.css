@@ -898,6 +898,25 @@ body {
 .matrix-site-name { display: block; font-weight: 500; color: var(--text-primary); white-space: normal; }
 .matrix-site-meta { display: block; font-size: 10.5px; color: var(--text-muted); }
 
+/* Árbol colapsable Zona › Municipio › Oficina › Sitio */
+.matrix-tree-cell { display: flex; align-items: baseline; gap: 6px; }
+.matrix-tree-row[data-path] { cursor: pointer; }
+.matrix-tree-row[data-path]:hover td { background: rgba(18, 87, 209, 0.05); }
+.matrix-tree-chevron {
+    flex: 0 0 auto;
+    width: 14px;
+    color: var(--brand-blue-deep);
+    font-size: 10px;
+    transition: transform 0.15s ease;
+    align-self: center;
+}
+.matrix-tree-chevron.expanded { transform: rotate(90deg); }
+.matrix-tree-leaf { flex: 0 0 auto; width: 14px; color: var(--text-muted); text-align: center; align-self: center; }
+.matrix-lvl-0 .matrix-site-name { font-weight: 700; color: var(--brand-blue-deep); }
+.matrix-lvl-1 .matrix-site-name { font-weight: 600; }
+.matrix-lvl-2 .matrix-site-name { font-weight: 500; }
+.matrix-leaf-row .matrix-site-name { font-weight: 400; }
+
 .matrix-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-primary); }
 .matrix-empty { color: rgba(15, 37, 64, 0.25); text-align: center; }
 
@@ -1419,6 +1438,28 @@ body {
     color: var(--text-muted);
     font-size: 10px;
 }
+
+/* Árbol jerárquico Zona › Municipio › Oficina › Sitio (Detalle de Ventas) */
+.tr-tree-parent { cursor: pointer; transition: background 0.15s ease; }
+.tr-tree-parent:hover .sticky-col,
+.tr-tree-parent:hover td { background: #eef4fd !important; }
+.tr-tree-parent .sticky-col { background: #f4f8ff; }
+.tr-tree-lvl-0 { border-left: 4px solid var(--primary); }
+.tr-tree-lvl-0 .sticky-col { background: #eef3fc; }
+.tr-tree-lvl-1 { border-left: 4px solid rgba(18, 87, 209, 0.55); }
+.tr-tree-lvl-2 { border-left: 4px solid rgba(18, 87, 209, 0.30); }
+.tr-tree-leaf { border-left: 4px solid transparent; }
+.tr-tree-leaf:hover .sticky-col,
+.tr-tree-leaf:hover td { background: rgba(18, 87, 209, 0.04) !important; }
+
+.tree-node-cell { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+.tree-node-name { color: var(--text-primary); white-space: nowrap; }
+.tree-node-name.tree-lvl-0 { font-weight: 700; color: var(--brand-blue-deep); }
+.tree-node-name.tree-lvl-1 { font-weight: 600; }
+.tree-node-name.tree-lvl-2 { font-weight: 600; }
+.tr-tree-leaf .tree-node-name { font-weight: 400; }
+.tree-node-code { font-size: 10px; color: var(--text-muted); font-family: monospace; }
+.tree-leaf-dot { flex: 0 0 14px; text-align: center; color: var(--text-muted); }
 
 /* Subtle cell borders for multi-columns alignment */
 .data-table td.product-cell {
