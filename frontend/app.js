@@ -147,61 +147,32 @@ const getApiBase = () => {
 const API_BASE = getApiBase();
 
 // ─────────────────────────────────────────────────────────────────
-//  TokenManager — gestiona el JWT compartido por el Angular padre
-//
-//  Flujo de producción:  Angular padre  →  postMessage({ type: 'AUTH_TOKEN', token })
-//  Flujo de simulación:  el usuario pega el token en el modal al abrir la app
+//  Sesión simple — sin JWT ni cookies.
+//  El acceso se controla con el login de usuario/contraseña quemados;
+//  tras un login exitoso se guarda una bandera en sessionStorage.
 // ─────────────────────────────────────────────────────────────────
 const TokenManager = {
-    _token: null,
-
     init() {
-        // 1. Restaurar token de sessionStorage (persiste dentro de la misma pestaña)
-        const stored = sessionStorage.getItem('auth_token');
-        if (stored) this._token = stored;
-
-        // 2. Escuchar mensajes del Angular padre (integración real con microfronts)
-        window.addEventListener('message', (event) => {
-            const msg = event.data;
-            if (msg && msg.type === 'AUTH_TOKEN' && msg.token) {
-                this.setToken(msg.token);
-                document.getElementById('modal-token')?.style.setProperty('display', 'none');
-                console.info('[Auth] Token recibido desde el Angular padre vía postMessage.');
-            }
-        });
-
-        // 3. Si está embebido en un iframe, solicitarle el token al padre
-        if (window.self !== window.top) {
-            window.parent.postMessage({ type: 'REQUEST_TOKEN' }, '*');
-        }
-
         this._updateBadge();
     },
 
-    setToken(token) {
-        this._token = token;
-        sessionStorage.setItem('auth_token', token);
-        this._updateBadge();
-    },
-
-    getToken() {
-        return this._token;
-    },
-
-    clearToken() {
-        this._token = null;
-        sessionStorage.removeItem('auth_token');
-        this._updateBadge();
+    isLoggedIn() {
+        return sessionStorage.getItem('logged_in') === '1';
     },
 
     hasToken() {
-        return !!this._token;
+        return this.isLoggedIn();
+    },
+
+    clearToken() {
+        sessionStorage.removeItem('logged_in');
+        this._updateBadge();
     },
 
     _updateBadge() {
         const badge = document.getElementById('auth-badge');
         if (!badge) return;
-        if (this._token) {
+        if (this.isLoggedIn()) {
             badge.innerHTML = '<i class="fa-solid fa-right-from-bracket"></i> Cerrar sesión';
             badge.className = 'auth-badge auth-ok';
             badge.title = 'Cerrar sesión';
@@ -212,60 +183,17 @@ const TokenManager = {
     }
 };
 
-// Cierra la sesión: borra la cookie device_id en el servidor, limpia el token
-// local y vuelve a la pantalla de login.
+// Cierra la sesión: limpia la bandera local y vuelve a la pantalla de login.
 async function logout() {
     if (!confirm('¿Cerrar sesión?')) return;
-    try {
-        await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
-    } catch (_) { /* aunque falle el server, limpiamos localmente igual */ }
     TokenManager.clearToken();
     window.location.replace('login.html');
 }
 
-// authFetch: wrapper de fetch que inyecta el Bearer token en cada request
+// authFetch: wrapper de fetch (se conserva el nombre para no tocar los llamados).
+// Ya no inyecta token: el backend no requiere autenticación por request.
 async function authFetch(url, options = {}) {
-    const token = TokenManager.getToken();
-    if (token) {
-        options.headers = {
-            ...options.headers,
-            'Authorization': `Bearer ${token}`
-        };
-    }
-    const res = await fetch(url, { credentials: 'same-origin', ...options });
-    if (res.status === 401) {
-        TokenManager.clearToken();
-        // Sesión expirada o token inválido → volver a la pantalla de login.
-        window.location.replace('login.html');
-    }
-    return res;
-}
-
-function showTokenModal(mensaje) {
-    const modal = document.getElementById('modal-token');
-    if (!modal) return;
-    if (mensaje) {
-        const msg = document.getElementById('token-modal-msg');
-        if (msg) msg.textContent = mensaje;
-    }
-    modal.style.display = 'flex';
-}
-
-async function submitToken() {
-    const input = document.getElementById('token-input');
-    const token = (input?.value || '').trim();
-    if (!token) {
-        alert('Pega un token JWT válido antes de continuar.');
-        return;
-    }
-    TokenManager.setToken(token);
-    document.getElementById('modal-token').style.display = 'none';
-    if (input) input.value = '';
-
-    // Iniciar carga de datos ahora que tenemos token
-    await checkStatus();
-    await loadInitialCatalogues();
-    await loadUploadedState();
+    return fetch(url, options);
 }
 
 // DOM Elements

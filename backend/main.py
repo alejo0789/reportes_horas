@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, date, timedelta
 from typing import List, Optional
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends, Form, Response
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
@@ -78,18 +78,16 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# Login local (solución temporal — sin micro de autenticación externo).
-# Valida contra un usuario quemado y emite el JWT que valida backend/auth.py.
+# Login local (solución temporal — sin JWT, cookies ni micro de autenticación).
+# Solo valida el usuario y contraseña quemados en backend/login/service.py.
 # ---------------------------------------------------------------------------
 @app.post("/api/login")
-def login(response: Response, email: str = Form(...), password: str = Form(...)):
-    return login_service.login(email=email, password=password, response=response)
+def login(email: str = Form(...), password: str = Form(...)):
+    return login_service.login(email=email, password=password)
 
 @app.post("/api/logout")
-def logout(response: Response):
-    # Borra la cookie HttpOnly device_id. El JWT es stateless: el cliente lo
-    # descarta de sessionStorage; al no haber refresh token no hay nada que revocar.
-    response.delete_cookie("device_id", path="/")
+def logout():
+    # Sin token ni cookies: el cliente limpia su bandera de sesión localmente.
     return {"message": "Sesión cerrada correctamente"}
 
 # Helper: Convert oracle rows to dict list

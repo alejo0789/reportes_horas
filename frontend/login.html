@@ -140,8 +140,8 @@
     </form>
 
     <script>
-        // Si ya hay un token en la sesión, saltar directo al dashboard.
-        if (sessionStorage.getItem('auth_token')) {
+        // Si ya hay sesión activa, saltar directo al dashboard.
+        if (sessionStorage.getItem('logged_in') === '1') {
             window.location.replace('index.html');
         }
 
@@ -168,8 +168,7 @@
                 const res = await fetch('api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body,
-                    credentials: 'same-origin'  // permite recibir la cookie device_id
+                    body
                 });
 
                 if (!res.ok) {
@@ -179,8 +178,7 @@
                     return;
                 }
 
-                const data = await res.json();
-                sessionStorage.setItem('auth_token', data.access_token);
+                sessionStorage.setItem('logged_in', '1');
                 window.location.replace('index.html');
             } catch (err) {
                 showError('Error de conexión con el servidor. Inténtalo de nuevo.');
