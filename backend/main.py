@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, date, timedelta
 from typing import List, Optional
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends, Form
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
@@ -3288,24 +3288,43 @@ def verify_whatsapp_webhook(
 
 
 @app.post("/api/whatsapp/webhook")
-async def receive_whatsapp_webhook(request: Request):
+async def receive_whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """
-    Receives incoming WhatsApp messages from Meta, queries the sales cache,
-    and replies back using Meta's Cloud API.
+    Receives incoming WhatsApp messages from Meta.
+
+    Responde 200 de inmediato y procesa/envia la respuesta en segundo plano.
+    Esto evita que Meta reintente la entrega del mismo mensaje (lo que causaba
+    respuestas duplicadas cuando el procesamiento tardaba en responder).
     """
     try:
         body = await request.json()
     except Exception as e:
         logger.error(f"Error parsing Webhook JSON body: {e}")
         return {"status": "error", "message": "Invalid JSON"}
-        
+
     logger.info(f"Received WhatsApp webhook notification: {json.dumps(body)}")
 
     # Modo simulacion: con ?dry_run=1 se ejecuta toda la logica real
     # (deteccion de primer contacto, ruteo por rol, recopilatorio de ayer,
     # botones) pero NO se envia nada por Meta; se devuelven los mensajes
-    # compuestos para inspeccionarlos localmente.
+    # compuestos para inspeccionarlos localmente. Debe ser sincrono para
+    # poder devolver los mensajes compuestos en la respuesta.
     dry_run = str(request.query_params.get("dry_run", "")).lower() in {"1", "true", "yes"}
+    if dry_run:
+        return _process_whatsapp_message(body, dry_run=True)
+
+    # Ruta real: responder 200 ya y enviar en segundo plano.
+    background_tasks.add_task(_process_whatsapp_message, body, False)
+    return {"status": "received"}
+
+
+def _process_whatsapp_message(body: dict, dry_run: bool = False):
+    """
+    Procesa un mensaje entrante de WhatsApp: consulta la cache de ventas,
+    compone la respuesta segun el rol y la envia via Meta's Cloud API.
+
+    En dry_run no envia nada; devuelve los mensajes compuestos.
+    """
     dry_messages = []
 
     # 1. Parse incoming message structures
