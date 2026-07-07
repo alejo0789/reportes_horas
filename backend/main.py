@@ -34,7 +34,8 @@ from backend.cache import (
     seed_coordinators, get_all_coordinators, add_coordinator, update_coordinator, delete_coordinator,
     find_active_coordinator_by_phone,
     get_all_administrators, add_administrator, update_administrator, delete_administrator,
-    find_active_administrator_by_phone
+    find_active_administrator_by_phone,
+    is_first_session_of_day
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -729,6 +730,7 @@ def get_whatsapp_query(
     selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina"),
     override_promoter_name: Optional[str] = Query(None, description="Nombre de promotor para consulta por coordinador"),
     override_coordinator_name: Optional[str] = Query(None, description="Nombre de coordinador para consulta por administrador"),
+    ref_date: Optional[str] = Query(None, description="Fecha de referencia YYYY-MM-DD; por defecto hoy. Usada para el reporte de 'ayer'."),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     # Resolve FastAPI Query defaults if called directly in Python
@@ -742,6 +744,14 @@ def get_whatsapp_query(
         phone = None
     if not isinstance(report_type, str):
         report_type = "products"
+
+    # Fecha de referencia del reporte: hoy por defecto, o la indicada (ej. ayer).
+    real_today = datetime.now().strftime("%Y-%m-%d")
+    if isinstance(ref_date, str) and ref_date.strip():
+        report_date = ref_date.strip()
+    else:
+        report_date = real_today
+    is_past_day = report_date != real_today
 
     # 1. Buscar promotor, coordinador o administrador por celular
     is_administrator = False
@@ -868,7 +878,7 @@ def get_whatsapp_query(
         site_to_office_local[333033] = 333
         site_to_office_local[334034] = 334
         
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = report_date
         sales_list_local = []
         try:
             sales_resp_local = get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=False)
@@ -1000,8 +1010,8 @@ def get_whatsapp_query(
                 cod = p.get("Cod_Producto")
                 if cod is not None:
                     products_by_code[str(cod)] = p
-                    
-        today_str = datetime.now().strftime("%Y-%m-%d")
+
+        today_str = report_date
         desde = f"{today_str} 00:00:00"
         hasta = f"{today_str} 23:59:59"
         
@@ -1066,7 +1076,7 @@ def get_whatsapp_query(
 
     # Early return for coordinators summary for administrator
     if is_administrator and report_type == "coordinators":
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = report_date
         db_update_time_str = "Desconocida"
         try:
             sales_resp = get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=False)
@@ -1203,8 +1213,8 @@ def get_whatsapp_query(
             if cod is not None:
                 products_by_code[str(cod)] = p
                 
-    # 4. Obtener ventas del día de hoy
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # 4. Obtener ventas del día de referencia (hoy o ayer)
+    today_str = report_date
     desde = f"{today_str} 00:00:00"
     hasta = f"{today_str} 23:59:59"
     
@@ -1233,6 +1243,9 @@ def get_whatsapp_query(
     now_colombia = datetime.now(colombia_tz)
     ref_hour = now_colombia.hour
     ref_hour = max(7, min(21, ref_hour))
+    # Si el reporte es de un día pasado (ej. ayer), el día está cerrado: usar hora tope.
+    if is_past_day:
+        ref_hour = 21
     ref_hour_str = f"{ref_hour:02d}:00"
     next_hour = ref_hour + 1 if ref_hour < 21 else 21
     next_hour_str = f"{next_hour:02d}:00"
@@ -1334,50 +1347,126 @@ def get_whatsapp_query(
     else:
         compliance = 100.0 if total_sales > 0 else 0.0
     emoji_overall = "🟢" if compliance >= 95 else "🔴"
-    
+
+    def compute_monthly_by_product():
+        """Devuelve, por producto y para las oficinas asignadas:
+        - venta_mes: ventas del día 1 del mes hasta hoy
+        - meta_parcial: meta del día 1 hasta hoy (proporcional)
+        - meta_full: meta de todo el mes (1 al último día)
+        """
+        count_based = {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+        current_month = report_date[:7]
+        month_start = f"{current_month}-01 00:00:00"
+        venta_mes = {}
+        try:
+            sales_mes_resp = get_ventas(desde=month_start, hasta=hasta, force_refresh=False)
+            for sale in sales_mes_resp.get("data", []):
+                if sale.get("Tabla_Origen") in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+                    continue
+                s_code_m = sale.get("Cod_Sitio")
+                if s_code_m is None:
+                    continue
+                try:
+                    off_code_m = site_to_office.get(int(s_code_m))
+                except:
+                    continue
+                if off_code_m in assigned_offices:
+                    pname = resolve_product_name(sale, products_by_code)
+                    venta_mes[pname] = venta_mes.get(pname, 0.0) + float(sale.get("Venta_Neta") or 0.0)
+        except Exception as e:
+            logger.error(f"Error fetching monthly sales for WhatsApp report: {e}")
+
+        meta_parcial = {}
+        meta_full = {}
+        for prod_name_m, records_m in goals_store.items():
+            if records_m and not records_m[0].get("activo", True):
+                continue
+            for rec_m in records_m:
+                fecha_m = rec_m.get("fecha")
+                if fecha_m and str(fecha_m).startswith(current_month):
+                    off_code_g = rec_m.get("cod_oficina")
+                    if off_code_g is not None:
+                        try:
+                            if int(off_code_g) in assigned_offices:
+                                val = float(rec_m.get("meta") or 0.0)
+                                if prod_name_m in count_based:
+                                    val = float(round(val))
+                                meta_full[prod_name_m] = meta_full.get(prod_name_m, 0.0) + val
+                                if str(fecha_m) <= today_str:
+                                    meta_parcial[prod_name_m] = meta_parcial.get(prod_name_m, 0.0) + val
+                        except:
+                            pass
+        return venta_mes, meta_parcial, meta_full
+
+    def month_fragment(p_name, is_count_based, venta_mes, meta_parcial, meta_full):
+        """Devuelve (fragmento_porcentajes, lineas_mes) en formato compacto.
+        - Parcial: venta del mes / meta del mes a hoy
+        - Mensual: venta del mes / meta del mes total
+        """
+        v = venta_mes.get(p_name, 0.0)
+        mp = meta_parcial.get(p_name, 0.0)
+        mf = meta_full.get(p_name, 0.0)
+        parcial = (v / mp * 100.0) if mp > 0 else (100.0 if v > 0 else 0.0)
+        mensual = (v / mf * 100.0) if mf > 0 else (100.0 if v > 0 else 0.0)
+        e = lambda p: "🟢" if p >= 95 else "🔴"
+        pref = "" if is_count_based else "$"
+        pct = f" · 📆 Parcial {e(parcial)}{parcial:.1f}% · Mensual {e(mensual)}{mensual:.1f}%"
+        lines = f"  ↳ Mes → Venta {pref}{round(v):,}\n"
+        lines += f"  ↳ Mes → Meta a hoy {pref}{round(mp):,} · total {pref}{round(mf):,}\n\n"
+        return pct, lines
+
+    def parcial_line(p_name, venta_mes, meta_parcial):
+        """Línea de % parcial (venta del mes / meta del mes a hoy) para el reporte de hoy."""
+        v = venta_mes.get(p_name, 0.0)
+        mp = meta_parcial.get(p_name, 0.0)
+        p = (v / mp * 100.0) if mp > 0 else (100.0 if v > 0 else 0.0)
+        e = "🟢" if p >= 95 else "🔴"
+        return f"  ↳ Parcial (mes a hoy): {e} {p:.1f}%\n\n"
+
     if is_administrator and report_type in {"products", "offices"}:
         total_faltante_meta = max(0.0, total_goals - total_sales)
+        venta_mes_p, meta_parcial_p, meta_full_p = compute_monthly_by_product()
         msg = f"📊 *REPORTE ADMINISTRADOR (GENERAL)*\n"
         msg += f"👤 *Administrador:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Ámbito:* Nacional\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"📊 *Cumplimiento General:* {emoji_overall} *{compliance:.1f}%*\n"
-        msg += f"📈 *Meta Total:* ${round(total_goals):,}\n"
-        msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
-        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
-        msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n\n"
-        
+
         all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
         for p_name in all_products:
             p_sales = sales_by_product.get(p_name, 0.0)
             p_goal = goals_by_product.get(p_name, 0.0)
-            
+
             if p_goal > 0:
                 p_compliance = (p_sales / p_goal * 100.0)
             else:
                 p_compliance = 100.0 if p_sales > 0 else 0.0
-                
-            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+
+            e_dia = "🟢" if p_compliance >= 95 else "🔴"
             p_faltante = max(0.0, p_goal - p_sales)
-            
+
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
-            if is_count_based:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Venta Acumulada: {round(p_sales):,}\n"
-                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            pref = "" if is_count_based else "$"
+            if is_past_day:
+                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
+                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                msg += f"• 📦 *{p_name}*\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  ↳ Día → Venta {pref}{round(p_sales):,} · Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
+                msg += mes_lines
             else:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Venta Acumulada: ${round(p_sales):,}\n"
-                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
-                
+                # Hoy: formato original + % parcial del mes.
+                msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Venta Acumulada: {pref}{round(p_sales):,}\n"
+                msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
+                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
+
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
-        
+
         return {
             "text": msg,
             "report_type": "administrator_general",
@@ -1395,42 +1484,43 @@ def get_whatsapp_query(
         msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"📊 *Cumplimiento Zona:* {emoji_overall} *{compliance:.1f}%*\n"
-        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
-        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
-        msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n\n"
-        
+
+        venta_mes_p, meta_parcial_p, meta_full_p = compute_monthly_by_product()
         all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
         for p_name in all_products:
             p_sales = sales_by_product.get(p_name, 0.0)
             p_goal = goals_by_product.get(p_name, 0.0)
-            
+
             if p_goal > 0:
                 p_compliance = (p_sales / p_goal * 100.0)
             else:
                 p_compliance = 100.0 if p_sales > 0 else 0.0
-                
-            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+
+            e_dia = "🟢" if p_compliance >= 95 else "🔴"
             p_next_hour_goal = p_goal * next_hour_ratio
             p_faltante = max(0.0, p_goal - p_sales)
-            
-            # Format according to count-based products
+
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
-            if is_count_based:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
-                msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            pref = "" if is_count_based else "$"
+            if is_past_day:
+                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
+                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                msg += f"• 📦 *{p_name}*\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  ↳ Día → Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
+                msg += mes_lines
             else:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
-                msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
-                
+                # Hoy: formato original + % parcial del mes.
+                msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
+                msg += f"  ↳ Meta Hora Sig: {pref}{round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
+                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
+
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
-        
+
         return {
             "text": msg,
             "report_type": "coordinator_general",
@@ -1449,40 +1539,42 @@ def get_whatsapp_query(
         msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
-        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
-        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
-        msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n"
-        
+
+        venta_mes_p, meta_parcial_p, meta_full_p = compute_monthly_by_product()
         all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
         for p_name in all_products:
             p_goal = goals_by_product.get(p_name, 0.0)
             p_sales_total = sales_by_product.get(p_name, 0.0)
-            
+
             if p_goal > 0:
                 p_compliance = (p_sales_total / p_goal * 100.0)
             else:
                 p_compliance = 100.0 if p_sales_total > 0 else 0.0
-                
-            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+
+            e_dia = "🟢" if p_compliance >= 95 else "🔴"
             p_next_hour_goal = p_goal * next_hour_ratio
             p_faltante = max(0.0, p_goal - p_sales_total)
-            
+
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
-            if is_count_based:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
-                msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            pref = "" if is_count_based else "$"
+            if is_past_day:
+                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
+                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                msg += f"• 📦 *{p_name}*\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  ↳ Día → Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
+                msg += mes_lines
             else:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
-                msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                # Hoy: formato original + % parcial del mes.
+                msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
+                msg += f"  ↳ Meta Hora Sig: {pref}{round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
+                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
-        
+
     elif report_type == "product_office":
         is_count_based = selected_product in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
         total_faltante_meta = max(0.0, total_goals - total_sales)
@@ -3090,7 +3182,14 @@ async def receive_whatsapp_webhook(request: Request):
         return {"status": "error", "message": "Invalid JSON"}
         
     logger.info(f"Received WhatsApp webhook notification: {json.dumps(body)}")
-    
+
+    # Modo simulacion: con ?dry_run=1 se ejecuta toda la logica real
+    # (deteccion de primer contacto, ruteo por rol, recopilatorio de ayer,
+    # botones) pero NO se envia nada por Meta; se devuelven los mensajes
+    # compuestos para inspeccionarlos localmente.
+    dry_run = str(request.query_params.get("dry_run", "")).lower() in {"1", "true", "yes"}
+    dry_messages = []
+
     # 1. Parse incoming message structures
     entry = body.get("entry", [])
     if not entry:
@@ -3120,11 +3219,16 @@ async def receive_whatsapp_webhook(request: Request):
         
     session_key = f"session_{sender_phone}"
     session_data, _ = get_cached_sales(session_key)
-    
+
     report_type = "products"
     selected_product = None
     query_result = None
-    
+
+    # Primer contacto del día: además del reporte de hoy, se adjunta un
+    # mensaje independiente con el recopilatorio de ayer.
+    first_session = is_first_session_of_day(sender_phone)
+    yesterday_date = (date.today() - timedelta(days=1)).isoformat() if first_session else None
+
     # 2. Check user role
     administrator = find_active_administrator_by_phone(sender_phone)
     promoter = None
@@ -3151,7 +3255,7 @@ async def receive_whatsapp_webhook(request: Request):
             report_type = "products"
         elif button_id == "view_coordinators_summary" or "coordinador" in user_msg_lower:
             report_type = "coordinators"
-            
+
         query_result = get_whatsapp_query(sender_phone, report_type=report_type)
     elif coordinator:
         # Coordinator Session Routing
@@ -3169,7 +3273,7 @@ async def receive_whatsapp_webhook(request: Request):
             report_type = "products"
         elif button_id == "view_promoter_summary" or "promotor" in user_msg_lower:
             report_type = "prompt_promoter"
-            
+
         query_result = get_whatsapp_query(sender_phone, report_type=report_type)
     else:
         # Promoter Session Routing
@@ -3218,19 +3322,19 @@ async def receive_whatsapp_webhook(request: Request):
                     
             if query_result is None:
                 query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
-        
+
     reply_text = query_result.get("text", "❌ Error al procesar consulta.")
-    
+
     # 3. Reply to sender via Meta's Graph API
     whatsapp_token = os.getenv("WHATSAPP_TOKEN")
     # Retrieve the phone number ID of the bot receiving the message
     phone_number_id = value.get("metadata", {}).get("phone_number_id")
     
-    if not whatsapp_token:
+    if not whatsapp_token and not dry_run:
         logger.error("WHATSAPP_TOKEN not configured in .env!")
         return {"status": "error", "message": "WHATSAPP_TOKEN not configured"}
-        
-    if not phone_number_id:
+
+    if not phone_number_id and not dry_run:
         logger.error("phone_number_id not found in webhook metadata!")
         return {"status": "error", "message": "phone_number_id not found"}
         
@@ -3238,8 +3342,41 @@ async def receive_whatsapp_webhook(request: Request):
     import urllib.error
     
     url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
-    
+
+    # 0. Primer contacto del día: enviar primero el recopilatorio de AYER como
+    #    mensaje independiente (reporte general del día anterior).
+    if first_session and yesterday_date:
+        try:
+            yesterday_result = get_whatsapp_query(sender_phone, report_type="products", ref_date=yesterday_date)
+            yesterday_text = yesterday_result.get("text")
+            if yesterday_text and dry_run:
+                dry_messages.append({"kind": "text", "label": "recopilatorio_ayer", "text": yesterday_text})
+            elif yesterday_text:
+                y_payload = {
+                    "messaging_product": "whatsapp",
+                    "recipient_type": "individual",
+                    "to": sender_phone,
+                    "type": "text",
+                    "text": {"body": yesterday_text}
+                }
+                y_req = urllib.request.Request(
+                    url,
+                    data=json.dumps(y_payload).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {whatsapp_token}",
+                        "Content-Type": "application/json"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(y_req) as y_resp:
+                    logger.info(f"WhatsApp yesterday recap sent to {sender_phone}: {y_resp.read().decode('utf-8')}")
+        except Exception as e:
+            logger.error(f"Error sending yesterday recap to {sender_phone}: {e}")
+
     # 1. Send the main report as a standard text message (limit 4096 characters, no error 400)
+    if dry_run:
+        dry_messages.append({"kind": "text", "label": "reporte_hoy", "text": reply_text})
+
     payload_text = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -3249,7 +3386,7 @@ async def receive_whatsapp_webhook(request: Request):
             "body": reply_text
         }
     }
-    
+
     req_data_text = json.dumps(payload_text).encode("utf-8")
     req_text = urllib.request.Request(
         url,
@@ -3261,17 +3398,18 @@ async def receive_whatsapp_webhook(request: Request):
         method="POST"
     )
     
-    try:
-        with urllib.request.urlopen(req_text) as response:
-            res_body = response.read().decode("utf-8")
-            logger.info(f"WhatsApp text report sent successfully to {sender_phone}: {res_body}")
-    except urllib.error.HTTPError as he:
-        err_msg = he.read().decode("utf-8")
-        logger.error(f"HTTPError sending text report to WhatsApp API: {he.code} - {err_msg}")
-        return {"status": "error", "code": he.code, "message": err_msg}
-    except Exception as e:
-        logger.error(f"Unexpected error sending text report to WhatsApp API: {e}")
-        return {"status": "error", "message": str(e)}
+    if not dry_run:
+        try:
+            with urllib.request.urlopen(req_text) as response:
+                res_body = response.read().decode("utf-8")
+                logger.info(f"WhatsApp text report sent successfully to {sender_phone}: {res_body}")
+        except urllib.error.HTTPError as he:
+            err_msg = he.read().decode("utf-8")
+            logger.error(f"HTTPError sending text report to WhatsApp API: {he.code} - {err_msg}")
+            return {"status": "error", "code": he.code, "message": err_msg}
+        except Exception as e:
+            logger.error(f"Unexpected error sending text report to WhatsApp API: {e}")
+            return {"status": "error", "message": str(e)}
 
     # 2. Send the interactive menu buttons as a separate short message (limit 1024 characters, completely safe)
     buttons = []
@@ -3340,7 +3478,14 @@ async def receive_whatsapp_webhook(request: Request):
             })
             button_prompt = "📦 Seleccione una opción:"
             
-    if buttons:
+    if buttons and dry_run:
+        dry_messages.append({
+            "kind": "interactive",
+            "label": "menu_botones",
+            "text": button_prompt,
+            "buttons": [b["reply"]["title"] for b in buttons],
+        })
+    elif buttons:
         payload_buttons = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -3356,7 +3501,7 @@ async def receive_whatsapp_webhook(request: Request):
                 }
             }
         }
-        
+
         req_data_buttons = json.dumps(payload_buttons).encode("utf-8")
         req_buttons = urllib.request.Request(
             url,
@@ -3377,6 +3522,9 @@ async def receive_whatsapp_webhook(request: Request):
             logger.error(f"HTTPError sending interactive buttons to WhatsApp API: {he.code} - {err_msg}")
         except Exception as e:
             logger.error(f"Unexpected error sending interactive buttons to WhatsApp API: {e}")
+
+    if dry_run:
+        return {"status": "dry_run", "count": len(dry_messages), "messages": dry_messages}
 
     return {"status": "success", "message": "Reply and menus processed"}
 
