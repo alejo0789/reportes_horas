@@ -2087,15 +2087,13 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
 LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "3"))
 LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "200"))
 
-# Herramientas web del asistente (búsqueda en internet). Presupuesto de
+# Herramienta web del asistente (búsqueda en internet). Presupuesto de
 # iteraciones SEPARADO del de SQL: las búsquedas no consumen los turnos de datos.
-# WEB_SEARCH_ENABLED gobierna solo las herramientas de red (buscar/deporte); la
-# verificación de festivos es local y siempre está disponible.
+# WEB_SEARCH_ENABLED gobierna el acceso a internet (toggle del usuario).
 WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "1") not in ("0", "false", "False", "")
-LLM_MAX_WEB_ITERS = int(os.getenv("LLM_MAX_WEB_ITERS", "2"))
+LLM_MAX_WEB_ITERS = int(os.getenv("LLM_MAX_WEB_ITERS", "3"))
 WEB_SEARCH_TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
 WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
-HOLIDAYS_COUNTRY = os.getenv("HOLIDAYS_COUNTRY", "CO")
 
 # Topes del CONTEXTO agregado que se inyecta al modelo en cada mensaje.
 # Ajustables por variable de entorno para reducir el tamaño del prompt sin
@@ -2489,71 +2487,7 @@ def _run_assistant_resumen(desde=None, hasta=None, tipo="ambos"):
     return out
 
 
-# --- Herramientas externas del asistente (festivos y búsqueda web) ---
-
-_holidays_cache = {}
-
-
-def _get_co_holidays(year):
-    """Calendario de festivos de Colombia para un año (cacheado). Sin red."""
-    if year not in _holidays_cache:
-        import holidays as _holidays
-        _holidays_cache[year] = _holidays.country_holidays(HOLIDAYS_COUNTRY, years=year)
-    return _holidays_cache[year]
-
-
-def _parse_festivo_params(body, def_fecha):
-    """Parsea el cuerpo de ```festivo: JSON {"fecha":...} o {"desde":...,"hasta":...}.
-    Si el cuerpo es texto plano tipo 'YYYY-MM-DD', se toma como fecha única."""
-    params = {"fecha": def_fecha, "desde": None, "hasta": None}
-    body = (body or "").strip()
-    if not body:
-        return params
-    try:
-        j = json.loads(body)
-        if isinstance(j, dict):
-            params["fecha"] = j.get("fecha", params["fecha"])
-            params["desde"] = j.get("desde")
-            params["hasta"] = j.get("hasta")
-            return params
-    except Exception:
-        pass
-    # Texto plano: primera cosa que parezca fecha.
-    m = _re.search(r"\d{4}-\d{2}-\d{2}", body)
-    if m:
-        params["fecha"] = m.group(0)
-    return params
-
-
-def _run_holiday_check(fecha=None, desde=None, hasta=None):
-    """
-    Verifica festivos en Colombia (librería `holidays`, cálculo LOCAL sin red).
-    - Rango [desde, hasta]: devuelve la lista de festivos dentro del rango.
-    - Fecha única: indica si ese día es festivo y su nombre.
-    """
-    def _d(s):
-        return date.fromisoformat(str(s)[:10])
-
-    if desde and hasta:
-        d0, d1 = _d(desde), _d(hasta)
-        if d1 < d0:
-            d0, d1 = d1, d0
-        encontrados = []
-        for y in range(d0.year, d1.year + 1):
-            for dia, nombre in _get_co_holidays(y).items():
-                if d0 <= dia <= d1:
-                    encontrados.append({"fecha": dia.isoformat(), "nombre": nombre})
-        encontrados.sort(key=lambda x: x["fecha"])
-        return {"tipo": "rango", "desde": d0.isoformat(), "hasta": d1.isoformat(),
-                "festivos": encontrados, "total": len(encontrados)}
-
-    dia = _d(fecha or date.today().isoformat())
-    cal = _get_co_holidays(dia.year)
-    nombre = cal.get(dia)
-    return {"tipo": "fecha", "fecha": dia.isoformat(),
-            "es_festivo": nombre is not None,
-            "nombre": nombre,
-            "dia_semana": dia.strftime("%A")}
+# --- Herramienta web del asistente (búsqueda en internet) ---
 
 
 def _run_web_search(query, max_results=None):
@@ -2651,29 +2585,29 @@ pagos y recargas). Opcionalmente un JSON con {"tipo":"pagos|recargas|ambos","des
 ```
 Devuelve totales, por hora, por zona, por ciudad, por oficina, top sitios y top usuarios del periodo.
 
-HERRAMIENTA 3 — Verificar festivos en Colombia (cálculo local, sin internet). Úsala para saber si una
-fecha fue festivo (los festivos suelen explicar picos altos o valles de actividad). Emite un bloque ```festivo
-con un JSON. Fecha única {"fecha":"YYYY-MM-DD"} o rango {"desde":"YYYY-MM-DD","hasta":"YYYY-MM-DD"}:
-```festivo
-{"fecha":"2026-07-20"}
-```
-
-HERRAMIENTA 4 — Búsqueda web (internet). Úsala SOLO cuando la pregunta requiera información externa que
-NO está en la base de datos: causa de un comportamiento atípico, eventos deportivos (p. ej. partidos de
-Colombia), noticias o contexto. Para preguntas de puro dato interno NO la uses. Emite un bloque ```buscar
-con el texto de búsqueda (una línea):
+HERRAMIENTA 3 — Búsqueda web (internet). Herramienta COMPLEMENTARIA y OPCIONAL. Es tu fuente para lo que
+no está en la base de datos: sobre todo, qué partido de fútbol hubo en una fecha concreta.
+Emite un bloque ```buscar con el texto de búsqueda (una línea):
 ```buscar
-partidos seleccion Colombia 5 julio 2026 resultado
+partidos de futbol 17 de junio de 2026 resultados
 ```
-Devuelve una lista de resultados (título, extracto y URL). Cita la fuente cuando uses un dato web y
-distínguelo claramente de las cifras de la base de datos. Si la búsqueda está deshabilitada, dilo y sigue
-con los datos internos.
+Devuelve una lista de resultados (título, extracto y URL). Cita la fuente cuando uses un dato web.
 
-ANÁLISIS DE PICOS Y VALLES (comportamientos atípicos):
-Si detectas un día u hora con monto atípico (muy alto o muy bajo) y te preguntan la causa, antes de concluir:
-(1) verifica si esa fecha fue festivo con ```festivo; (2) revisa si hubo un evento deportivo relevante con
-```buscar. Correlaciona los hallazgos con el pico, pero NO afirmes causalidad como certeza absoluta
-(usa "coincide con", "posiblemente por"). No inventes eventos: si la búsqueda no arroja nada, dilo.
+CUÁNDO usar la búsqueda web (sé conservador, NO abuses):
+- Úsala cuando el USUARIO pida explícitamente la causa de un pico/valle o preguntes por eventos deportivos.
+- Úsala también, de forma puntual, si al analizar una anomalía aporta valor saber qué fútbol hubo ese día.
+- NO la uses para preguntas de puro dato interno (cuánto se vendió, top zona, etc.).
+- Haz como MÁXIMO una búsqueda por fecha relevante y NO repitas búsquedas equivalentes. Si ya buscaste algo,
+  no lo vuelvas a buscar con otras palabras: usa lo que ya obtuviste.
+
+CÓMO buscar (para que traiga partidos y no páginas genéricas):
+- UNA FECHA CONCRETA por consulta; NO combines varias fechas ni rangos.
+- Usa la fórmula: "partidos de futbol <DÍA de MES de AÑO> resultados".
+- NO uses "eventos deportivos", "festivos" ni "calendario": IGNORA los festivos.
+- Fíjate en fútbol importante: Selección Colombia, clubes colombianos (Nacional, Millonarios, América,
+  Junior), Champions League, Libertadores, Mundial, Copa América. Reporta el partido concreto (equipos y torneo).
+- Correlaciona sin afirmar causalidad absoluta ("coincide con", "posiblemente por"). Si no hay partido claro,
+  dilo con honestidad; no inventes eventos.
 
 REGLAS DE DATOS:
 - "monto" está en pesos colombianos (COP). Las cantidades son número de transacciones.
@@ -2719,6 +2653,8 @@ Para una tabla, usa un bloque ```table con este formato exacto:
 Reglas:
 - Genera un gráfico o tabla SOLO si aporta valor; no abuses.
 - El JSON debe ser válido y completo (no lo cortes). Una sola visualización por bloque.
+- NO generes dos gráficos (ni dos tablas) que muestren los MISMOS datos o el mismo resultado. Si ya
+  visualizaste una serie, no la repitas con otro gráfico distinto: una sola visualización por idea.
 - Acompaña la visualización con una breve explicación en texto, pero NO repitas los mismos datos dos veces:
   si usas un bloque ```table o ```chart, NO vuelvas a escribir esos datos como tabla Markdown ni los enumeres todos en texto.
 - No generes em-dashes
@@ -2729,10 +2665,10 @@ Reglas:
 # --- Loop ReAct: detección de bloques de herramienta en el stream ---
 
 # Bloque de herramienta COMPLETO: ```sql ... ``` o ```resumen ... ```
-_TOOL_FENCE_RE = _re.compile(r"```(sql|resumen|festivo|buscar)[ \t]*\r?\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
+_TOOL_FENCE_RE = _re.compile(r"```(sql|resumen|buscar)[ \t]*\r?\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
 
 # Nombres de herramienta (para retención segura del stream y validación).
-_TOOL_KINDS = ("sql", "resumen", "festivo", "buscar")
+_TOOL_KINDS = ("sql", "resumen", "buscar")
 
 # Marcadores de chip que el frontend interpreta (estado de las herramientas).
 def _tool_chip(kind, estado, **meta):
@@ -2897,7 +2833,7 @@ def assistant_chat(req: AssistantChatRequest):
         #  Los bloques ```chart / ```table NO son herramientas: pasan tal cual.
         convo = list(messages)
         client = get_llm_client()
-        # Presupuestos separados: datos (sql/resumen) vs. externas (festivo/buscar).
+        # Presupuestos separados: datos (sql/resumen) vs. web (buscar).
         web_allowed = bool(WEB_SEARCH_ENABLED and req.web_enabled)
         sql_used = 0
         web_used = 0
@@ -2989,36 +2925,28 @@ def assistant_chat(req: AssistantChatRequest):
                             logger.error(f"Assistant resumen failed: {e}")
                             obs = f"ERROR al calcular el resumen: {e}"
                         yield _tool_chip("resumen", "done")
-                else:
-                    # Herramientas externas (festivo local / buscar web).
+                else:  # buscar (web)
                     if web_used >= LLM_MAX_WEB_ITERS:
-                        obs = "Límite de consultas externas alcanzado. Responde ahora con lo disponible."
-                    elif kind == "festivo":
+                        obs = "Límite de búsquedas web alcanzado. Responde ahora con lo disponible."
+                    else:
                         web_used += 1
-                        yield _tool_chip("festivo", "run")
-                        params = _parse_festivo_params(body, today.isoformat())
-                        try:
-                            result = _run_holiday_check(**params)
-                            obs = "RESULTADO FESTIVOS (JSON):\n" + json.dumps(result, ensure_ascii=False, default=str)
-                        except Exception as e:
-                            logger.error(f"Assistant festivo failed: {e}")
-                            obs = f"ERROR al verificar festivos: {e}"
-                        yield _tool_chip("festivo", "done", error=(obs.startswith("ERROR") or None))
-                    else:  # buscar
-                        web_used += 1
+                        query = body.strip()
                         yield _tool_chip("buscar", "run")
                         if not web_allowed:
                             obs = ("Búsqueda web deshabilitada (el usuario apagó el acceso a "
                                    "internet). Responde con los datos disponibles.")
-                            yield _tool_chip("buscar", "done", error=True)
+                            yield _tool_chip("buscar", "done", query=query, error=True)
                         else:
-                            result = _run_web_search(body.strip())
+                            result = _run_web_search(query)
                             err = result.get("error")
                             obs = ("ERROR en búsqueda web: " + err) if err else (
                                 "RESULTADO BÚSQUEDA WEB (JSON):\n"
                                 + json.dumps(result, ensure_ascii=False, default=str))
                             yield _tool_chip("buscar", "done",
-                                             resultados=result.get("total", 0), error=err)
+                                             query=query,
+                                             resultados=result.get("total", 0),
+                                             items=result.get("resultados", []),
+                                             error=err)
 
                 convo.append({"role": "user", "content": obs})
                 # Sin presupuesto restante en ninguna vía: empujar a responder ya.

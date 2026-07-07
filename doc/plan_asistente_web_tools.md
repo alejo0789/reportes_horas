@@ -9,9 +9,13 @@ atípicos** (picos altos/bajos) y enriquecer el análisis:
 
 | Herramienta | Fuente | Red | Uso |
 |-------------|--------|-----|-----|
-| ` ```buscar `  | DuckDuckGo (`ddgs`) | Sí | Búsqueda web general (causas de picos, eventos, contexto). |
-| ` ```deporte ` | TheSportsDB (API pública) | Sí | Calendario/resultados de fútbol (¿jugó Colombia esa fecha?). |
-| ` ```festivo ` | Librería `holidays` (CO) | **No (local)** | ¿La fecha fue festivo en Colombia? |
+| ` ```buscar `  | DuckDuckGo (`ddgs`) | Sí | Búsqueda web general: causas de picos/valles, partidos de fútbol, festivos, eventos, contexto. |
+| ` ```deporte ` | TheSportsDB (API pública) | Sí | (Fase 3, pendiente) Calendario/resultados de fútbol estructurados. |
+
+> Nota: la herramienta `festivo` (librería `holidays`) se implementó y luego se
+> **descartó** por redundante: la búsqueda web ya cubre festivos, y el foco real es
+> que ante una anomalía se investiguen **partidos de fútbol importantes** (Selección
+> Colombia, clubes) vía `buscar`. El prompt refuerza ese comportamiento.
 
 ## Decisiones tomadas
 

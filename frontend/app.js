@@ -983,13 +983,11 @@ function buildToolChip(payload) {
     const RUN_LABELS = {
         sql: 'Consultando base de datos…',
         resumen: 'Calculando resumen…',
-        festivo: 'Verificando festivos…',
         buscar: 'Buscando en internet…',
     };
     const DONE_ICONS = {
         sql: 'fa-database',
         resumen: 'fa-database',
-        festivo: 'fa-calendar-day',
         buscar: 'fa-magnifying-glass',
     };
 
@@ -998,12 +996,9 @@ function buildToolChip(payload) {
         label = RUN_LABELS[kind] || 'Consultando base de datos…';
     } else if (hasError) {
         label = kind === 'buscar' ? 'Búsqueda con error'
-            : kind === 'festivo' ? 'No se pudo verificar festivos'
             : 'Consulta con error';
     } else if (kind === 'resumen') {
         label = 'Resumen listo';
-    } else if (kind === 'festivo') {
-        label = 'Festivos verificados';
     } else if (kind === 'buscar') {
         const n = (p.resultados != null) ? p.resultados : 0;
         label = `Búsqueda lista · ${n} ${n === 1 ? 'resultado' : 'resultados'}`;
@@ -1017,6 +1012,20 @@ function buildToolChip(payload) {
     let html = `<div class="tool-chip-head"><i class="fa-solid ${icon}"></i><span>${escapeHtml(label)}</span></div>`;
     if (done && kind === 'sql' && p.sql) {
         html += `<details class="tool-chip-sql"><summary>Ver consulta SQL</summary><pre>${escapeHtml(p.sql)}</pre>`;
+        if (hasError) html += `<div class="tool-chip-error">${escapeHtml(p.error)}</div>`;
+        html += `</details>`;
+    } else if (done && kind === 'buscar' && (p.query || hasError)) {
+        html += `<details class="tool-chip-sql"><summary>Ver búsqueda</summary>`;
+        if (p.query) html += `<pre>${escapeHtml(p.query)}</pre>`;
+        const items = Array.isArray(p.items) ? p.items : [];
+        if (items.length) {
+            html += `<ul class="tool-chip-web">` + items.map(it => {
+                const t = escapeHtml(it.titulo || it.url || 'Resultado');
+                return it.url
+                    ? `<li><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener">${t}</a></li>`
+                    : `<li>${t}</li>`;
+            }).join('') + `</ul>`;
+        }
         if (hasError) html += `<div class="tool-chip-error">${escapeHtml(p.error)}</div>`;
         html += `</details>`;
     }

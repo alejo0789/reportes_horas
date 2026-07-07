@@ -9,4 +9,3 @@ openpyxl>=3.0.0
 openai>=1.0.0
 pypdf>=4.0.0
 ddgs>=6.0.0
-holidays>=0.50

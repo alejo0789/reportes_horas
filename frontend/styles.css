@@ -3094,6 +3094,22 @@ input:checked + .slider:before {
     color: #b42318;
     font-size: 12px;
 }
+.chat-tool-chip .tool-chip-web {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    font-size: 12px;
+}
+.chat-tool-chip .tool-chip-web li {
+    margin: 2px 0;
+    word-break: break-word;
+}
+.chat-tool-chip .tool-chip-web a {
+    color: var(--accent, #2563eb);
+    text-decoration: none;
+}
+.chat-tool-chip .tool-chip-web a:hover {
+    text-decoration: underline;
+}
 .chat-island-header {
     padding: 10px 16px;
     background: rgba(99, 102, 241, 0.1);
