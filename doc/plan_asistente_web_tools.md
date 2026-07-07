@@ -87,11 +87,11 @@ Valida el patrón end-to-end sin depender de red.
 - [ ] Registrar en regex + rama en el loop + chip (`fa-futbol`).
 - [ ] Documentar en el system prompt.
 
-### Fase 4 — Toggle web en la UI
-- [ ] `AssistantChatRequest`: nuevo campo `web_enabled: Optional[bool] = True`.
-- [ ] Frontend: interruptor junto al selector de modelo; guarda en `State.assistant`
-  y lo envía en el request a `/api/assistant/chat`.
-- [ ] Backend: gobierna solo `buscar` y `deporte`; `festivo` ignora el flag.
+### Fase 4 — Toggle web en la UI  ✅
+- [x] `AssistantChatRequest`: campo `web_enabled: Optional[bool] = True`.
+- [x] Frontend: botón globo junto al selector de modelo (`#asistente-web-toggle`),
+  con preferencia recordada en `localStorage`; envía `web_enabled` en el request.
+- [x] Backend: `web_allowed = WEB_SEARCH_ENABLED and req.web_enabled` gobierna `buscar`.
 
 ### Fase 5 — Estrategia de "explicar picos" en el prompt
 Sección nueva en `ASSISTANT_SYSTEM_PROMPT`:

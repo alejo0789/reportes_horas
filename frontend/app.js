@@ -57,6 +57,7 @@ const State = {
         history: [],     // [{role:'user'|'assistant', content:'...'}]
         busy: false,     // si hay una respuesta en curso
         model: null,     // id del modelo seleccionado
+        webEnabled: true, // acceso a internet (búsqueda web) habilitado
         attachments: []  // adjuntos de la pregunta actual: {kind, filename, texto?|data_url?}
     }
 };
@@ -426,6 +427,34 @@ function openAssistant() {
     checkAssistantHealth();
     loadAssistantModels();
     loadAssistantKpis();
+    setupWebToggle();
+}
+
+// --- ASISTENTE IA: TOGGLE DE BÚSQUEDA WEB (acceso a internet) ---
+let _webToggleWired = false;
+function setupWebToggle() {
+    const btn = document.getElementById('asistente-web-toggle');
+    if (!btn) return;
+    const apply = () => {
+        const on = State.assistant.webEnabled !== false;
+        btn.classList.toggle('is-on', on);
+        btn.classList.toggle('is-off', !on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.title = on ? 'Búsqueda web activada (clic para desactivar)'
+                       : 'Búsqueda web desactivada (clic para activar)';
+    };
+    if (!_webToggleWired) {
+        // Preferencia recordada entre sesiones.
+        const saved = localStorage.getItem('assistantWebEnabled');
+        if (saved !== null) State.assistant.webEnabled = saved !== '0';
+        btn.addEventListener('click', () => {
+            State.assistant.webEnabled = !(State.assistant.webEnabled !== false);
+            localStorage.setItem('assistantWebEnabled', State.assistant.webEnabled ? '1' : '0');
+            apply();
+        });
+        _webToggleWired = true;
+    }
+    apply();
 }
 
 // Registra el formulario de desbloqueo (una sola vez al iniciar).
@@ -1381,6 +1410,7 @@ async function sendAssistantMessage() {
                 desde: range.desde,
                 hasta: range.hasta,
                 model: State.assistant.model,
+                web_enabled: State.assistant.webEnabled !== false,
                 adjuntos
             })
         });
