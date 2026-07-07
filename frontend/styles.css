@@ -3039,6 +3039,15 @@ input:checked + .slider:before {
     user-select: none;
 }
 .chat-reasoning > summary::-webkit-details-marker { display: none; }
+/* Título en una sola línea con elipsis (lo último que va escribiendo). */
+.chat-reasoning-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.chat-reasoning.thinking > summary .chat-reasoning-title { font-style: italic; }
 .chat-reasoning > summary .chevron { transition: transform 0.2s ease; }
 .chat-reasoning[open] > summary .chevron { transform: rotate(90deg); }
 .chat-reasoning.thinking > summary { color: var(--primary); }

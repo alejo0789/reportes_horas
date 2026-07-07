@@ -1130,28 +1130,22 @@ function stripAllReasoning(raw) {
         .replace(new RegExp(REASON_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*$'), '');
 }
 
-// Título rodante del razonamiento: el ÚLTIMO marcador <t>...</t> que el modelo
-// emite al inicio de cada paso. Si aún no hay ninguno, no inventa un título.
-const REASON_TITLE_RE = /<t>([\s\S]*?)<\/t>/gi;
+// Headline de una sola línea: lo ÚLTIMO que el modelo va escribiendo en su
+// razonamiento (última línea con contenido). Actualiza en vivo con el stream.
 function reasoningHeadline(reasoning) {
-    let m, last = '';
-    REASON_TITLE_RE.lastIndex = 0;
-    while ((m = REASON_TITLE_RE.exec(reasoning || '')) !== null) last = m[1];
-    last = last.trim().replace(/[*_`]/g, '');
-    if (last.length > 90) last = last.slice(0, 90).replace(/\s+\S*$/, '') + '…';
-    return last;
-}
-
-// Quita las etiquetas <t>...</t> del cuerpo (dejando el texto del título).
-function stripReasoningTags(reasoning) {
-    return (reasoning || '').replace(/<\/?t>/gi, '').trim();
+    const lines = (reasoning || '').split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    let t = lines[lines.length - 1];
+    t = t.replace(/^#{1,6}\s*/, '').replace(/^[-*>]\s*/, '').replace(/[*_`]/g, '');
+    if (t.length > 120) t = t.slice(0, 120).replace(/\s+\S*$/, '') + '…';
+    return t;
 }
 
 function buildReasoningPanel(reasoning, thinking) {
     const det = document.createElement('details');
     det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
-    // El razonamiento NO se muestra completo por defecto: solo el título del
-    // paso actual. El usuario puede expandir para ver todo el proceso.
+    // Colapsado por defecto: se ve una sola línea (lo último que escribe). El
+    // usuario puede desplegar para ver TODO el razonamiento que va llegando.
     const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
     const headline = thinking ? (reasoningHeadline(reasoning) || 'Razonando…') : 'Razonamiento';
     det.innerHTML = `
@@ -1159,7 +1153,7 @@ function buildReasoningPanel(reasoning, thinking) {
         <div class="chat-reasoning-body"></div>
     `;
     det.querySelector('.chat-reasoning-title').textContent = headline;
-    det.querySelector('.chat-reasoning-body').textContent = stripReasoningTags(reasoning);
+    det.querySelector('.chat-reasoning-body').textContent = (reasoning || '').trim();
     return det;
 }
 
