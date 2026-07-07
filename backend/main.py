@@ -2087,6 +2087,14 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
 LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "3"))
 LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "200"))
 
+# Herramienta web del asistente (búsqueda en internet). Presupuesto de
+# iteraciones SEPARADO del de SQL: las búsquedas no consumen los turnos de datos.
+# WEB_SEARCH_ENABLED gobierna el acceso a internet (toggle del usuario).
+WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "1") not in ("0", "false", "False", "")
+LLM_MAX_WEB_ITERS = int(os.getenv("LLM_MAX_WEB_ITERS", "3"))
+WEB_SEARCH_TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+
 # Topes del CONTEXTO agregado que se inyecta al modelo en cada mensaje.
 # Ajustables por variable de entorno para reducir el tamaño del prompt sin
 # tocar el código. Valores por defecto = recorte "moderado".
@@ -2369,10 +2377,24 @@ SUBZONA.IDE_ZONA = ZONA.IDE_ZONA
 SV.IDE_TIPO_SITIO = TSV.IDE_TIPO_SITIO
 P.IDE_USUARIO    = U.IDE_USUARIO   (igual para R.IDE_USUARIO)
 
+-- Consultas POR USUARIO / CLIENTE --
+Puedes responder preguntas sobre un cliente concreto usando IDE_USUARIO (id interno) o
+NUM_IDENTIFICACION (cédula/identificación del cliente). Une la transacción con MAET_USUARIOS:
+  P.IDE_USUARIO = U.IDE_USUARIO   (igual para R.IDE_USUARIO)
+Si el usuario da una identificación (cédula), filtra por U.NUM_IDENTIFICACION (es varchar, usa comillas).
+Si da un id de usuario numérico, filtra por IDE_USUARIO directamente. Ejemplo (recargas de un cliente):
+  SELECT U.NUM_IDENTIFICACION, COUNT(*) AS num, SUM(R.VLR_RECARGA) AS total
+  FROM GANA_SIGA.SIGT_RECARGAS R
+  JOIN GANA_MAESTROS.MAET_USUARIOS U ON R.IDE_USUARIO = U.IDE_USUARIO
+  WHERE R.IDE_PRODUCTO = 17287 AND R.IDE_ESTADO = 48
+    AND U.NUM_IDENTIFICACION = '1234567890'
+  GROUP BY U.NUM_IDENTIFICACION
+
 REGLAS SQL:
 - Oracle. Fechas con TO_DATE('YYYY-MM-DD HH24:MI:SS','YYYY-MM-DD HH24:MI:SS') o TRUNC(SYSDATE) para hoy.
 - Solo SELECT/WITH; una sola sentencia; sin punto y coma final.
 - Limita SIEMPRE el resultado (FETCH FIRST N ROWS ONLY); si no lo pones, se acota automáticamente.
+- Para consultas por cliente usa IDE_USUARIO o NUM_IDENTIFICACION (join con MAET_USUARIOS).
 - No consultes tablas fuera de este catálogo."""
 
 # Términos de escritura/DDL/DCL/PLSQL prohibidos (límites de palabra, case-insensitive)
@@ -2479,6 +2501,35 @@ def _run_assistant_resumen(desde=None, hasta=None, tipo="ambos"):
     return out
 
 
+# --- Herramienta web del asistente (búsqueda en internet) ---
+
+
+def _run_web_search(query, max_results=None):
+    """
+    Búsqueda web general vía DuckDuckGo (librería `ddgs`, gratuita, sin API key).
+    Devuelve una lista compacta de resultados [{titulo, cuerpo, url}]. Best-effort:
+    ante error o timeout, devuelve {"error": ...} para reinyectar al modelo.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "consulta vacía"}
+    n = max_results or WEB_SEARCH_MAX_RESULTS
+    try:
+        from ddgs import DDGS
+        resultados = []
+        with DDGS(timeout=WEB_SEARCH_TIMEOUT) as ddgs:
+            for r in ddgs.text(query, region="co-es", max_results=n):
+                resultados.append({
+                    "titulo": r.get("title"),
+                    "cuerpo": (r.get("body") or "")[:400],
+                    "url": r.get("href") or r.get("url"),
+                })
+        return {"query": query, "resultados": resultados, "total": len(resultados)}
+    except Exception as e:
+        logger.error(f"Web search failed: {e}")
+        return {"error": str(e), "query": query}
+
+
 @app.post("/api/assistant/upload")
 async def assistant_upload(file: UploadFile = File(...)):
     """
@@ -2548,6 +2599,30 @@ pagos y recargas). Opcionalmente un JSON con {"tipo":"pagos|recargas|ambos","des
 ```
 Devuelve totales, por hora, por zona, por ciudad, por oficina, top sitios y top usuarios del periodo.
 
+HERRAMIENTA 3 — Búsqueda web (internet). Herramienta COMPLEMENTARIA y OPCIONAL. Es tu fuente para lo que
+no está en la base de datos: sobre todo, qué partido de fútbol hubo en una fecha concreta.
+Emite un bloque ```buscar con el texto de búsqueda (una línea):
+```buscar
+partidos de futbol 17 de junio de 2026 resultados
+```
+Devuelve una lista de resultados (título, extracto y URL). Cita la fuente cuando uses un dato web.
+
+CUÁNDO usar la búsqueda web (sé conservador, NO abuses):
+- Úsala cuando el USUARIO pida explícitamente la causa de un pico/valle o preguntes por eventos deportivos.
+- Úsala también, de forma puntual, si al analizar una anomalía aporta valor saber qué fútbol hubo ese día.
+- NO la uses para preguntas de puro dato interno (cuánto se vendió, top zona, etc.).
+- Haz como MÁXIMO una búsqueda por fecha relevante y NO repitas búsquedas equivalentes. Si ya buscaste algo,
+  no lo vuelvas a buscar con otras palabras: usa lo que ya obtuviste.
+
+CÓMO buscar (para que traiga partidos y no páginas genéricas):
+- UNA FECHA CONCRETA por consulta; NO combines varias fechas ni rangos.
+- Usa la fórmula: "partidos de futbol <DÍA de MES de AÑO> resultados".
+- NO uses "eventos deportivos", "festivos" ni "calendario": IGNORA los festivos.
+- Fíjate en fútbol importante: Selección Colombia, clubes colombianos (Nacional, Millonarios, América,
+  Junior), Champions League, Libertadores, Mundial, Copa América. Reporta el partido concreto (equipos y torneo).
+- Correlaciona sin afirmar causalidad absoluta ("coincide con", "posiblemente por"). Si no hay partido claro,
+  dilo con honestidad; no inventes eventos.
+
 REGLAS DE DATOS:
 - "monto" está en pesos colombianos (COP). Las cantidades son número de transacciones.
 - No inventes cifras: si no tienes el dato, pídelo con una herramienta. Si tras consultarlo no aparece, dilo con honestidad.
@@ -2592,6 +2667,8 @@ Para una tabla, usa un bloque ```table con este formato exacto:
 Reglas:
 - Genera un gráfico o tabla SOLO si aporta valor; no abuses.
 - El JSON debe ser válido y completo (no lo cortes). Una sola visualización por bloque.
+- NO generes dos gráficos (ni dos tablas) que muestren los MISMOS datos o el mismo resultado. Si ya
+  visualizaste una serie, no la repitas con otro gráfico distinto: una sola visualización por idea.
 - Acompaña la visualización con una breve explicación en texto, pero NO repitas los mismos datos dos veces:
   si usas un bloque ```table o ```chart, NO vuelvas a escribir esos datos como tabla Markdown ni los enumeres todos en texto.
 - No generes em-dashes
@@ -2602,7 +2679,10 @@ Reglas:
 # --- Loop ReAct: detección de bloques de herramienta en el stream ---
 
 # Bloque de herramienta COMPLETO: ```sql ... ``` o ```resumen ... ```
-_TOOL_FENCE_RE = _re.compile(r"```(sql|resumen)[ \t]*\r?\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
+_TOOL_FENCE_RE = _re.compile(r"```(sql|resumen|buscar)[ \t]*\r?\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
+
+# Nombres de herramienta (para retención segura del stream y validación).
+_TOOL_KINDS = ("sql", "resumen", "buscar")
 
 # Marcadores de chip que el frontend interpreta (estado de las herramientas).
 def _tool_chip(kind, estado, **meta):
@@ -2628,10 +2708,10 @@ def _safe_flush_len(buf):
     if nl != -1:
         tag = buf[idx + 3:nl].strip().lower()
         # Herramienta abierta pero aún sin cerrar: retener hasta el cierre.
-        return idx if tag in ("sql", "resumen") else len(buf)
-    # Etiqueta aún llegando: retener si puede convertirse en sql/resumen.
+        return idx if tag in _TOOL_KINDS else len(buf)
+    # Etiqueta aún llegando: retener si puede convertirse en una herramienta.
     tag = buf[idx + 3:].strip().lower()
-    if tag == "" or "sql".startswith(tag) or "resumen".startswith(tag):
+    if tag == "" or any(k.startswith(tag) for k in _TOOL_KINDS):
         return idx
     return len(buf)
 
@@ -2678,6 +2758,7 @@ class AssistantChatRequest(BaseModel):
     #   pdf   -> {"kind":"pdf","filename":..., "texto":...}
     #   image -> {"kind":"image","filename":..., "data_url":"data:image/...;base64,..."}
     adjuntos: Optional[List[dict]] = None
+    web_enabled: Optional[bool] = True  # permite/bloquea las herramientas de red
 
 
 @app.post("/api/assistant/chat")
@@ -2766,9 +2847,14 @@ def assistant_chat(req: AssistantChatRequest):
         #  Los bloques ```chart / ```table NO son herramientas: pasan tal cual.
         convo = list(messages)
         client = get_llm_client()
+        # Presupuestos separados: datos (sql/resumen) vs. web (buscar).
+        web_allowed = bool(WEB_SEARCH_ENABLED and req.web_enabled)
+        sql_used = 0
+        web_used = 0
+        max_turns = LLM_MAX_SQL_ITERS + LLM_MAX_WEB_ITERS + 1
         try:
-            for turn in range(LLM_MAX_SQL_ITERS + 1):
-                allow_tools = turn < LLM_MAX_SQL_ITERS
+            for turn in range(max_turns):
+                allow_tools = (sql_used < LLM_MAX_SQL_ITERS) or (web_used < LLM_MAX_WEB_ITERS)
                 in_reasoning = False
                 content_buf = ""
                 sent = 0
@@ -2828,29 +2914,61 @@ def assistant_chat(req: AssistantChatRequest):
                 # Registrar lo que produjo el modelo (incluido el bloque) en la conversación.
                 convo.append({"role": "assistant", "content": content_buf[:end_idx]})
 
-                if kind == "sql":
-                    sql = body.strip()
-                    yield _tool_chip("sql", "run")
-                    result = _run_assistant_sql(sql)
-                    yield _tool_chip("sql", "done",
-                                     sql=result.get("sql", sql),
-                                     rows=result.get("row_count", 0),
-                                     error=result.get("error"))
-                    obs = _observation_text_sql(sql, result)
-                else:  # resumen
-                    yield _tool_chip("resumen", "run")
-                    params = _parse_resumen_params(body, desde, hasta)
-                    try:
-                        result = _run_assistant_resumen(**params)
-                        obs = "RESULTADO RESUMEN (JSON):\n" + json.dumps(result, ensure_ascii=False, default=str)
-                    except Exception as e:
-                        logger.error(f"Assistant resumen failed: {e}")
-                        obs = f"ERROR al calcular el resumen: {e}"
-                    yield _tool_chip("resumen", "done")
+                if kind in ("sql", "resumen"):
+                    # Presupuesto de datos.
+                    if sql_used >= LLM_MAX_SQL_ITERS:
+                        obs = "Límite de consultas de datos alcanzado. Responde ahora con lo disponible."
+                    elif kind == "sql":
+                        sql_used += 1
+                        sql = body.strip()
+                        yield _tool_chip("sql", "run")
+                        result = _run_assistant_sql(sql)
+                        # Muestra acotada de resultados para que el usuario valide.
+                        sample_rows = result.get("rows", [])[:10]
+                        yield _tool_chip("sql", "done",
+                                         sql=result.get("sql", sql),
+                                         rows=result.get("row_count", 0),
+                                         error=result.get("error"),
+                                         columns=result.get("columns", []),
+                                         sample=sample_rows)
+                        obs = _observation_text_sql(sql, result)
+                    else:  # resumen
+                        sql_used += 1
+                        yield _tool_chip("resumen", "run")
+                        params = _parse_resumen_params(body, desde, hasta)
+                        try:
+                            result = _run_assistant_resumen(**params)
+                            obs = "RESULTADO RESUMEN (JSON):\n" + json.dumps(result, ensure_ascii=False, default=str)
+                        except Exception as e:
+                            logger.error(f"Assistant resumen failed: {e}")
+                            obs = f"ERROR al calcular el resumen: {e}"
+                        yield _tool_chip("resumen", "done")
+                else:  # buscar (web)
+                    if web_used >= LLM_MAX_WEB_ITERS:
+                        obs = "Límite de búsquedas web alcanzado. Responde ahora con lo disponible."
+                    else:
+                        web_used += 1
+                        query = body.strip()
+                        yield _tool_chip("buscar", "run")
+                        if not web_allowed:
+                            obs = ("Búsqueda web deshabilitada (el usuario apagó el acceso a "
+                                   "internet). Responde con los datos disponibles.")
+                            yield _tool_chip("buscar", "done", query=query, error=True)
+                        else:
+                            result = _run_web_search(query)
+                            err = result.get("error")
+                            obs = ("ERROR en búsqueda web: " + err) if err else (
+                                "RESULTADO BÚSQUEDA WEB (JSON):\n"
+                                + json.dumps(result, ensure_ascii=False, default=str))
+                            yield _tool_chip("buscar", "done",
+                                             query=query,
+                                             resultados=result.get("total", 0),
+                                             items=result.get("resultados", []),
+                                             error=err)
 
                 convo.append({"role": "user", "content": obs})
-                # Si es el último turno permitido, empujar al modelo a responder ya.
-                if not (turn + 1 < LLM_MAX_SQL_ITERS):
+                # Sin presupuesto restante en ninguna vía: empujar a responder ya.
+                if sql_used >= LLM_MAX_SQL_ITERS and web_used >= LLM_MAX_WEB_ITERS:
                     convo.append({"role": "system",
                                   "content": "Ya no puedes pedir más datos. Responde ahora con la información disponible."})
         except Exception as e:

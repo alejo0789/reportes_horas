@@ -23,7 +23,7 @@
     <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
     <!-- leaflet-image: renderiza el mapa a canvas para el PDF (sin offset) -->
     <script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
-    <link rel="stylesheet" href="styles.css?v=5.5">
+    <link rel="stylesheet" href="styles.css?v=5.7">
 </head>
 <body>
     <!-- FILTRO SVG LIQUID GLASS (refracción tipo lente, estilo macOS).
@@ -826,6 +826,10 @@
                     <button type="button" class="asistente-attach-btn" id="asistente-attach" title="Adjuntar PDF o imagen">
                         <i class="fa-solid fa-paperclip"></i>
                     </button>
+                    <button type="button" class="asistente-attach-btn asistente-web-toggle is-on" id="asistente-web-toggle"
+                            title="Búsqueda web activada" aria-pressed="true">
+                        <i class="fa-solid fa-globe"></i>
+                    </button>
                     <textarea id="asistente-input" rows="1" placeholder="Escribe tu pregunta sobre Betplay..."></textarea>
                     <button type="button" class="action-btn-primary" id="asistente-send">
                         <i class="fa-solid fa-paper-plane"></i> Enviar
@@ -1109,6 +1113,6 @@
     </div>
 
     <!-- Script loading -->
-    <script src="app.js?v=4.8"></script>
+    <script src="app.js?v=5.0"></script>
 </body>
 </html>

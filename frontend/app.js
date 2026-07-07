@@ -57,6 +57,7 @@ const State = {
         history: [],     // [{role:'user'|'assistant', content:'...'}]
         busy: false,     // si hay una respuesta en curso
         model: null,     // id del modelo seleccionado
+        webEnabled: true, // acceso a internet (búsqueda web) habilitado
         attachments: []  // adjuntos de la pregunta actual: {kind, filename, texto?|data_url?}
     }
 };
@@ -426,6 +427,34 @@ function openAssistant() {
     checkAssistantHealth();
     loadAssistantModels();
     loadAssistantKpis();
+    setupWebToggle();
+}
+
+// --- ASISTENTE IA: TOGGLE DE BÚSQUEDA WEB (acceso a internet) ---
+let _webToggleWired = false;
+function setupWebToggle() {
+    const btn = document.getElementById('asistente-web-toggle');
+    if (!btn) return;
+    const apply = () => {
+        const on = State.assistant.webEnabled !== false;
+        btn.classList.toggle('is-on', on);
+        btn.classList.toggle('is-off', !on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.title = on ? 'Búsqueda web activada (clic para desactivar)'
+                       : 'Búsqueda web desactivada (clic para activar)';
+    };
+    if (!_webToggleWired) {
+        // Preferencia recordada entre sesiones.
+        const saved = localStorage.getItem('assistantWebEnabled');
+        if (saved !== null) State.assistant.webEnabled = saved !== '0';
+        btn.addEventListener('click', () => {
+            State.assistant.webEnabled = !(State.assistant.webEnabled !== false);
+            localStorage.setItem('assistantWebEnabled', State.assistant.webEnabled ? '1' : '0');
+            apply();
+        });
+        _webToggleWired = true;
+    }
+    apply();
 }
 
 // Registra el formulario de desbloqueo (una sola vez al iniciar).
@@ -979,22 +1008,69 @@ function buildToolChip(payload) {
     const el = document.createElement('div');
     el.className = 'chat-tool-chip' + (done ? (hasError ? ' error' : ' done') : ' run');
 
+    // Etiquetas por herramienta: en curso (run) y terminada (done).
+    const RUN_LABELS = {
+        sql: 'Consultando base de datos…',
+        resumen: 'Calculando resumen…',
+        buscar: 'Buscando en internet…',
+    };
+    const DONE_ICONS = {
+        sql: 'fa-database',
+        resumen: 'fa-database',
+        buscar: 'fa-magnifying-glass',
+    };
+
     let label;
     if (!done) {
-        label = kind === 'resumen' ? 'Calculando resumen…' : 'Consultando base de datos…';
+        label = RUN_LABELS[kind] || 'Consultando base de datos…';
+    } else if (hasError) {
+        label = kind === 'buscar' ? 'Búsqueda con error'
+            : 'Consulta con error';
     } else if (kind === 'resumen') {
         label = 'Resumen listo';
-    } else if (hasError) {
-        label = 'Consulta con error';
+    } else if (kind === 'buscar') {
+        const n = (p.resultados != null) ? p.resultados : 0;
+        label = `Búsqueda lista · ${n} ${n === 1 ? 'resultado' : 'resultados'}`;
     } else {
         const n = (p.rows != null) ? p.rows : 0;
         label = `Consulta lista · ${n} ${n === 1 ? 'fila' : 'filas'}`;
     }
-    const icon = !done ? 'fa-spinner fa-spin' : (hasError ? 'fa-triangle-exclamation' : 'fa-database');
+    const icon = !done ? 'fa-spinner fa-spin'
+        : (hasError ? 'fa-triangle-exclamation' : (DONE_ICONS[kind] || 'fa-database'));
 
     let html = `<div class="tool-chip-head"><i class="fa-solid ${icon}"></i><span>${escapeHtml(label)}</span></div>`;
     if (done && kind === 'sql' && p.sql) {
-        html += `<details class="tool-chip-sql"><summary>Ver consulta SQL</summary><pre>${escapeHtml(p.sql)}</pre>`;
+        html += `<details class="tool-chip-sql"><summary>Ver consulta y resultado</summary><pre>${escapeHtml(p.sql)}</pre>`;
+        const cols = Array.isArray(p.columns) ? p.columns : [];
+        const sample = Array.isArray(p.sample) ? p.sample : [];
+        if (!hasError) {
+            if (sample.length && cols.length) {
+                const head = cols.map(c => `<th>${escapeHtml(String(c))}</th>`).join('');
+                const body = sample.map(r => '<tr>' + cols.map(c => {
+                    const v = r[c];
+                    return `<td>${escapeHtml(v == null ? '' : String(v))}</td>`;
+                }).join('') + '</tr>').join('');
+                const extra = (p.rows > sample.length)
+                    ? `<div class="tool-chip-note">Mostrando ${sample.length} de ${p.rows} filas.</div>` : '';
+                html += `<div class="tool-chip-tablewrap"><table class="tool-chip-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${extra}`;
+            } else {
+                html += `<div class="tool-chip-note">La consulta no devolvió filas.</div>`;
+            }
+        }
+        if (hasError) html += `<div class="tool-chip-error">${escapeHtml(p.error)}</div>`;
+        html += `</details>`;
+    } else if (done && kind === 'buscar' && (p.query || hasError)) {
+        html += `<details class="tool-chip-sql"><summary>Ver búsqueda</summary>`;
+        if (p.query) html += `<pre>${escapeHtml(p.query)}</pre>`;
+        const items = Array.isArray(p.items) ? p.items : [];
+        if (items.length) {
+            html += `<ul class="tool-chip-web">` + items.map(it => {
+                const t = escapeHtml(it.titulo || it.url || 'Resultado');
+                return it.url
+                    ? `<li><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener">${t}</a></li>`
+                    : `<li>${t}</li>`;
+            }).join('') + `</ul>`;
+        }
         if (hasError) html += `<div class="tool-chip-error">${escapeHtml(p.error)}</div>`;
         html += `</details>`;
     }
@@ -1054,16 +1130,29 @@ function stripAllReasoning(raw) {
         .replace(new RegExp(REASON_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*$'), '');
 }
 
+// Headline de una sola línea: lo ÚLTIMO que el modelo va escribiendo en su
+// razonamiento (última línea con contenido). Actualiza en vivo con el stream.
+function reasoningHeadline(reasoning) {
+    const lines = (reasoning || '').split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    let t = lines[lines.length - 1];
+    t = t.replace(/^#{1,6}\s*/, '').replace(/^[-*>]\s*/, '').replace(/[*_`]/g, '');
+    if (t.length > 120) t = t.slice(0, 120).replace(/\s+\S*$/, '') + '…';
+    return t;
+}
+
 function buildReasoningPanel(reasoning, thinking) {
     const det = document.createElement('details');
     det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
-    if (thinking) det.open = true;
-    const label = thinking ? 'Razonando…' : 'Razonamiento';
+    // Colapsado por defecto: se ve una sola línea (lo último que escribe). El
+    // usuario puede desplegar para ver TODO el razonamiento que va llegando.
     const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
+    const headline = thinking ? (reasoningHeadline(reasoning) || 'Razonando…') : 'Razonamiento';
     det.innerHTML = `
-        <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> ${label}</summary>
+        <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> <span class="chat-reasoning-title"></span></summary>
         <div class="chat-reasoning-body"></div>
     `;
+    det.querySelector('.chat-reasoning-title').textContent = headline;
     det.querySelector('.chat-reasoning-body').textContent = (reasoning || '').trim();
     return det;
 }
@@ -1350,6 +1439,7 @@ async function sendAssistantMessage() {
                 desde: range.desde,
                 hasta: range.hasta,
                 model: State.assistant.model,
+                web_enabled: State.assistant.webEnabled !== false,
                 adjuntos
             })
         });

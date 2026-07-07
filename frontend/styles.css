@@ -2497,6 +2497,39 @@ input:checked + .slider:before {
     cursor: pointer;
 }
 .asistente-model-select:disabled { opacity: 0.6; cursor: progress; }
+/* Toggle de búsqueda web: hereda el tamaño del botón de adjuntar.
+   Estados MUY diferenciados: ON = verde sólido; OFF = gris con tachado. */
+.asistente-web-toggle { position: relative; }
+.asistente-web-toggle.is-on {
+    background: #16a34a;
+    border-color: #16a34a;
+    color: #ffffff;
+    box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2);
+}
+.asistente-web-toggle.is-on:hover {
+    background: #128a3e;
+    border-color: #128a3e;
+}
+.asistente-web-toggle.is-off {
+    background: rgba(148, 163, 184, 0.15);
+    border-color: var(--panel-border);
+    color: #94a3b8;
+}
+.asistente-web-toggle.is-off:hover {
+    background: rgba(148, 163, 184, 0.25);
+}
+/* Línea diagonal (tachado) sobre el globo cuando está apagado. */
+.asistente-web-toggle.is-off::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 24px;
+    height: 2px;
+    background: #ef4444;
+    transform: translate(-50%, -50%) rotate(-45deg);
+    border-radius: 2px;
+}
 .asistente-model-status {
     display: inline-flex;
     align-items: center;
@@ -3006,6 +3039,15 @@ input:checked + .slider:before {
     user-select: none;
 }
 .chat-reasoning > summary::-webkit-details-marker { display: none; }
+/* Título en una sola línea con elipsis (lo último que va escribiendo). */
+.chat-reasoning-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.chat-reasoning.thinking > summary .chat-reasoning-title { font-style: italic; }
 .chat-reasoning > summary .chevron { transition: transform 0.2s ease; }
 .chat-reasoning[open] > summary .chevron { transform: rotate(90deg); }
 .chat-reasoning.thinking > summary { color: var(--primary); }
@@ -3093,6 +3135,52 @@ input:checked + .slider:before {
     margin-top: 8px;
     color: #b42318;
     font-size: 12px;
+}
+.chat-tool-chip .tool-chip-tablewrap {
+    margin-top: 8px;
+    max-height: 220px;
+    overflow: auto;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+}
+.chat-tool-chip .tool-chip-table {
+    border-collapse: collapse;
+    font-size: 11.5px;
+    width: 100%;
+}
+.chat-tool-chip .tool-chip-table th,
+.chat-tool-chip .tool-chip-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--panel-border);
+    text-align: left;
+    white-space: nowrap;
+}
+.chat-tool-chip .tool-chip-table th {
+    background: rgba(15, 37, 64, 0.05);
+    position: sticky;
+    top: 0;
+    font-weight: 600;
+}
+.chat-tool-chip .tool-chip-note {
+    margin-top: 6px;
+    font-size: 11.5px;
+    color: var(--text-secondary, #6b7280);
+}
+.chat-tool-chip .tool-chip-web {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    font-size: 12px;
+}
+.chat-tool-chip .tool-chip-web li {
+    margin: 2px 0;
+    word-break: break-word;
+}
+.chat-tool-chip .tool-chip-web a {
+    color: var(--accent, #2563eb);
+    text-decoration: none;
+}
+.chat-tool-chip .tool-chip-web a:hover {
+    text-decoration: underline;
 }
 .chat-island-header {
     padding: 10px 16px;
