@@ -2630,9 +2630,11 @@ REGLAS DE DATOS:
 - Si un SQL devuelve error, corrígelo y reinténtalo respetando el esquema.
 
 RAZONAMIENTO (cuando pienses antes de responder):
-- Estructura tu razonamiento en pasos cortos. Empieza CADA paso con un título breve en una línea propia
-  (máx. 6 palabras, sin dos puntos), por ejemplo: "Consultando recargas del cliente", "Revisando resultados",
-  "Buscando partido del día". Debajo va el detalle. Así el usuario ve un título por paso, no todo el proceso.
+- Estructura tu razonamiento en pasos cortos. Al INICIO de cada paso escribe un título breve encerrado en
+  etiquetas <t>...</t> (máx. 6 palabras, sin dos puntos). Ejemplos: <t>Consultando recargas del cliente</t>,
+  <t>Revisando resultados</t>, <t>Buscando partido del día</t>. Debajo del título va el detalle SIN etiquetas.
+  El sistema muestra al usuario solo el último título <t>...</t>, no todo el proceso; por eso es importante
+  que cada paso tenga su etiqueta.
 
 FORMA DE RESPONDER (importante):
 - No sobrepienses. Para preguntas simples, directas o de un solo dato (por ejemplo "¿cuánto se vendió hoy?",

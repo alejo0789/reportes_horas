@@ -2497,21 +2497,39 @@ input:checked + .slider:before {
     cursor: pointer;
 }
 .asistente-model-select:disabled { opacity: 0.6; cursor: progress; }
-/* Toggle de búsqueda web: hereda el tamaño del botón de adjuntar. */
+/* Toggle de búsqueda web: hereda el tamaño del botón de adjuntar.
+   Estados MUY diferenciados: ON = verde sólido; OFF = gris con tachado. */
+.asistente-web-toggle { position: relative; }
 .asistente-web-toggle.is-on {
-    background: var(--brand-blue, #1257d1);
-    border-color: var(--brand-blue, #1257d1);
+    background: #16a34a;
+    border-color: #16a34a;
     color: #ffffff;
+    box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2);
 }
 .asistente-web-toggle.is-on:hover {
-    background: #0f49b0;
-    border-color: #0f49b0;
+    background: #128a3e;
+    border-color: #128a3e;
 }
 .asistente-web-toggle.is-off {
-    color: var(--text-secondary, #6b7280);
-    opacity: 0.75;
+    background: rgba(148, 163, 184, 0.15);
+    border-color: var(--panel-border);
+    color: #94a3b8;
 }
-.asistente-web-toggle.is-off i { opacity: 0.85; }
+.asistente-web-toggle.is-off:hover {
+    background: rgba(148, 163, 184, 0.25);
+}
+/* Línea diagonal (tachado) sobre el globo cuando está apagado. */
+.asistente-web-toggle.is-off::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 24px;
+    height: 2px;
+    background: #ef4444;
+    transform: translate(-50%, -50%) rotate(-45deg);
+    border-radius: 2px;
+}
 .asistente-model-status {
     display: inline-flex;
     align-items: center;
