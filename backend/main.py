@@ -3182,7 +3182,14 @@ async def receive_whatsapp_webhook(request: Request):
         return {"status": "error", "message": "Invalid JSON"}
         
     logger.info(f"Received WhatsApp webhook notification: {json.dumps(body)}")
-    
+
+    # Modo simulacion: con ?dry_run=1 se ejecuta toda la logica real
+    # (deteccion de primer contacto, ruteo por rol, recopilatorio de ayer,
+    # botones) pero NO se envia nada por Meta; se devuelven los mensajes
+    # compuestos para inspeccionarlos localmente.
+    dry_run = str(request.query_params.get("dry_run", "")).lower() in {"1", "true", "yes"}
+    dry_messages = []
+
     # 1. Parse incoming message structures
     entry = body.get("entry", [])
     if not entry:
@@ -3323,11 +3330,11 @@ async def receive_whatsapp_webhook(request: Request):
     # Retrieve the phone number ID of the bot receiving the message
     phone_number_id = value.get("metadata", {}).get("phone_number_id")
     
-    if not whatsapp_token:
+    if not whatsapp_token and not dry_run:
         logger.error("WHATSAPP_TOKEN not configured in .env!")
         return {"status": "error", "message": "WHATSAPP_TOKEN not configured"}
-        
-    if not phone_number_id:
+
+    if not phone_number_id and not dry_run:
         logger.error("phone_number_id not found in webhook metadata!")
         return {"status": "error", "message": "phone_number_id not found"}
         
@@ -3342,7 +3349,9 @@ async def receive_whatsapp_webhook(request: Request):
         try:
             yesterday_result = get_whatsapp_query(sender_phone, report_type="products", ref_date=yesterday_date)
             yesterday_text = yesterday_result.get("text")
-            if yesterday_text:
+            if yesterday_text and dry_run:
+                dry_messages.append({"kind": "text", "label": "recopilatorio_ayer", "text": yesterday_text})
+            elif yesterday_text:
                 y_payload = {
                     "messaging_product": "whatsapp",
                     "recipient_type": "individual",
@@ -3365,6 +3374,9 @@ async def receive_whatsapp_webhook(request: Request):
             logger.error(f"Error sending yesterday recap to {sender_phone}: {e}")
 
     # 1. Send the main report as a standard text message (limit 4096 characters, no error 400)
+    if dry_run:
+        dry_messages.append({"kind": "text", "label": "reporte_hoy", "text": reply_text})
+
     payload_text = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -3374,7 +3386,7 @@ async def receive_whatsapp_webhook(request: Request):
             "body": reply_text
         }
     }
-    
+
     req_data_text = json.dumps(payload_text).encode("utf-8")
     req_text = urllib.request.Request(
         url,
@@ -3386,17 +3398,18 @@ async def receive_whatsapp_webhook(request: Request):
         method="POST"
     )
     
-    try:
-        with urllib.request.urlopen(req_text) as response:
-            res_body = response.read().decode("utf-8")
-            logger.info(f"WhatsApp text report sent successfully to {sender_phone}: {res_body}")
-    except urllib.error.HTTPError as he:
-        err_msg = he.read().decode("utf-8")
-        logger.error(f"HTTPError sending text report to WhatsApp API: {he.code} - {err_msg}")
-        return {"status": "error", "code": he.code, "message": err_msg}
-    except Exception as e:
-        logger.error(f"Unexpected error sending text report to WhatsApp API: {e}")
-        return {"status": "error", "message": str(e)}
+    if not dry_run:
+        try:
+            with urllib.request.urlopen(req_text) as response:
+                res_body = response.read().decode("utf-8")
+                logger.info(f"WhatsApp text report sent successfully to {sender_phone}: {res_body}")
+        except urllib.error.HTTPError as he:
+            err_msg = he.read().decode("utf-8")
+            logger.error(f"HTTPError sending text report to WhatsApp API: {he.code} - {err_msg}")
+            return {"status": "error", "code": he.code, "message": err_msg}
+        except Exception as e:
+            logger.error(f"Unexpected error sending text report to WhatsApp API: {e}")
+            return {"status": "error", "message": str(e)}
 
     # 2. Send the interactive menu buttons as a separate short message (limit 1024 characters, completely safe)
     buttons = []
@@ -3465,7 +3478,14 @@ async def receive_whatsapp_webhook(request: Request):
             })
             button_prompt = "📦 Seleccione una opción:"
             
-    if buttons:
+    if buttons and dry_run:
+        dry_messages.append({
+            "kind": "interactive",
+            "label": "menu_botones",
+            "text": button_prompt,
+            "buttons": [b["reply"]["title"] for b in buttons],
+        })
+    elif buttons:
         payload_buttons = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -3481,7 +3501,7 @@ async def receive_whatsapp_webhook(request: Request):
                 }
             }
         }
-        
+
         req_data_buttons = json.dumps(payload_buttons).encode("utf-8")
         req_buttons = urllib.request.Request(
             url,
@@ -3502,6 +3522,9 @@ async def receive_whatsapp_webhook(request: Request):
             logger.error(f"HTTPError sending interactive buttons to WhatsApp API: {he.code} - {err_msg}")
         except Exception as e:
             logger.error(f"Unexpected error sending interactive buttons to WhatsApp API: {e}")
+
+    if dry_run:
+        return {"status": "dry_run", "count": len(dry_messages), "messages": dry_messages}
 
     return {"status": "success", "message": "Reply and menus processed"}
 
