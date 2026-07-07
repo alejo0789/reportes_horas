@@ -979,18 +979,40 @@ function buildToolChip(payload) {
     const el = document.createElement('div');
     el.className = 'chat-tool-chip' + (done ? (hasError ? ' error' : ' done') : ' run');
 
+    // Etiquetas por herramienta: en curso (run) y terminada (done).
+    const RUN_LABELS = {
+        sql: 'Consultando base de datos…',
+        resumen: 'Calculando resumen…',
+        festivo: 'Verificando festivos…',
+        buscar: 'Buscando en internet…',
+    };
+    const DONE_ICONS = {
+        sql: 'fa-database',
+        resumen: 'fa-database',
+        festivo: 'fa-calendar-day',
+        buscar: 'fa-magnifying-glass',
+    };
+
     let label;
     if (!done) {
-        label = kind === 'resumen' ? 'Calculando resumen…' : 'Consultando base de datos…';
+        label = RUN_LABELS[kind] || 'Consultando base de datos…';
+    } else if (hasError) {
+        label = kind === 'buscar' ? 'Búsqueda con error'
+            : kind === 'festivo' ? 'No se pudo verificar festivos'
+            : 'Consulta con error';
     } else if (kind === 'resumen') {
         label = 'Resumen listo';
-    } else if (hasError) {
-        label = 'Consulta con error';
+    } else if (kind === 'festivo') {
+        label = 'Festivos verificados';
+    } else if (kind === 'buscar') {
+        const n = (p.resultados != null) ? p.resultados : 0;
+        label = `Búsqueda lista · ${n} ${n === 1 ? 'resultado' : 'resultados'}`;
     } else {
         const n = (p.rows != null) ? p.rows : 0;
         label = `Consulta lista · ${n} ${n === 1 ? 'fila' : 'filas'}`;
     }
-    const icon = !done ? 'fa-spinner fa-spin' : (hasError ? 'fa-triangle-exclamation' : 'fa-database');
+    const icon = !done ? 'fa-spinner fa-spin'
+        : (hasError ? 'fa-triangle-exclamation' : (DONE_ICONS[kind] || 'fa-database'));
 
     let html = `<div class="tool-chip-head"><i class="fa-solid ${icon}"></i><span>${escapeHtml(label)}</span></div>`;
     if (done && kind === 'sql' && p.sql) {

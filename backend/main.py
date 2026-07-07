@@ -2087,6 +2087,16 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
 LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "3"))
 LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "200"))
 
+# Herramientas web del asistente (búsqueda en internet). Presupuesto de
+# iteraciones SEPARADO del de SQL: las búsquedas no consumen los turnos de datos.
+# WEB_SEARCH_ENABLED gobierna solo las herramientas de red (buscar/deporte); la
+# verificación de festivos es local y siempre está disponible.
+WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "1") not in ("0", "false", "False", "")
+LLM_MAX_WEB_ITERS = int(os.getenv("LLM_MAX_WEB_ITERS", "2"))
+WEB_SEARCH_TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+HOLIDAYS_COUNTRY = os.getenv("HOLIDAYS_COUNTRY", "CO")
+
 # Topes del CONTEXTO agregado que se inyecta al modelo en cada mensaje.
 # Ajustables por variable de entorno para reducir el tamaño del prompt sin
 # tocar el código. Valores por defecto = recorte "moderado".
@@ -2479,6 +2489,99 @@ def _run_assistant_resumen(desde=None, hasta=None, tipo="ambos"):
     return out
 
 
+# --- Herramientas externas del asistente (festivos y búsqueda web) ---
+
+_holidays_cache = {}
+
+
+def _get_co_holidays(year):
+    """Calendario de festivos de Colombia para un año (cacheado). Sin red."""
+    if year not in _holidays_cache:
+        import holidays as _holidays
+        _holidays_cache[year] = _holidays.country_holidays(HOLIDAYS_COUNTRY, years=year)
+    return _holidays_cache[year]
+
+
+def _parse_festivo_params(body, def_fecha):
+    """Parsea el cuerpo de ```festivo: JSON {"fecha":...} o {"desde":...,"hasta":...}.
+    Si el cuerpo es texto plano tipo 'YYYY-MM-DD', se toma como fecha única."""
+    params = {"fecha": def_fecha, "desde": None, "hasta": None}
+    body = (body or "").strip()
+    if not body:
+        return params
+    try:
+        j = json.loads(body)
+        if isinstance(j, dict):
+            params["fecha"] = j.get("fecha", params["fecha"])
+            params["desde"] = j.get("desde")
+            params["hasta"] = j.get("hasta")
+            return params
+    except Exception:
+        pass
+    # Texto plano: primera cosa que parezca fecha.
+    m = _re.search(r"\d{4}-\d{2}-\d{2}", body)
+    if m:
+        params["fecha"] = m.group(0)
+    return params
+
+
+def _run_holiday_check(fecha=None, desde=None, hasta=None):
+    """
+    Verifica festivos en Colombia (librería `holidays`, cálculo LOCAL sin red).
+    - Rango [desde, hasta]: devuelve la lista de festivos dentro del rango.
+    - Fecha única: indica si ese día es festivo y su nombre.
+    """
+    def _d(s):
+        return date.fromisoformat(str(s)[:10])
+
+    if desde and hasta:
+        d0, d1 = _d(desde), _d(hasta)
+        if d1 < d0:
+            d0, d1 = d1, d0
+        encontrados = []
+        for y in range(d0.year, d1.year + 1):
+            for dia, nombre in _get_co_holidays(y).items():
+                if d0 <= dia <= d1:
+                    encontrados.append({"fecha": dia.isoformat(), "nombre": nombre})
+        encontrados.sort(key=lambda x: x["fecha"])
+        return {"tipo": "rango", "desde": d0.isoformat(), "hasta": d1.isoformat(),
+                "festivos": encontrados, "total": len(encontrados)}
+
+    dia = _d(fecha or date.today().isoformat())
+    cal = _get_co_holidays(dia.year)
+    nombre = cal.get(dia)
+    return {"tipo": "fecha", "fecha": dia.isoformat(),
+            "es_festivo": nombre is not None,
+            "nombre": nombre,
+            "dia_semana": dia.strftime("%A")}
+
+
+def _run_web_search(query, max_results=None):
+    """
+    Búsqueda web general vía DuckDuckGo (librería `ddgs`, gratuita, sin API key).
+    Devuelve una lista compacta de resultados [{titulo, cuerpo, url}]. Best-effort:
+    ante error o timeout, devuelve {"error": ...} para reinyectar al modelo.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "consulta vacía"}
+    n = max_results or WEB_SEARCH_MAX_RESULTS
+    try:
+        from ddgs import DDGS
+        resultados = []
+        with DDGS(timeout=WEB_SEARCH_TIMEOUT) as ddgs:
+            for r in ddgs.text(query, region="co-es", max_results=n):
+                resultados.append({
+                    "titulo": r.get("title"),
+                    "cuerpo": (r.get("body") or "")[:400],
+                    "url": r.get("href") or r.get("url"),
+                })
+        return {"query": query, "resultados": resultados, "total": len(resultados)}
+    except Exception as e:
+        logger.error(f"Web search failed: {e}")
+        return {"error": str(e), "query": query}
+
+
 @app.post("/api/assistant/upload")
 async def assistant_upload(file: UploadFile = File(...)):
     """
@@ -2548,6 +2651,30 @@ pagos y recargas). Opcionalmente un JSON con {"tipo":"pagos|recargas|ambos","des
 ```
 Devuelve totales, por hora, por zona, por ciudad, por oficina, top sitios y top usuarios del periodo.
 
+HERRAMIENTA 3 — Verificar festivos en Colombia (cálculo local, sin internet). Úsala para saber si una
+fecha fue festivo (los festivos suelen explicar picos altos o valles de actividad). Emite un bloque ```festivo
+con un JSON. Fecha única {"fecha":"YYYY-MM-DD"} o rango {"desde":"YYYY-MM-DD","hasta":"YYYY-MM-DD"}:
+```festivo
+{"fecha":"2026-07-20"}
+```
+
+HERRAMIENTA 4 — Búsqueda web (internet). Úsala SOLO cuando la pregunta requiera información externa que
+NO está en la base de datos: causa de un comportamiento atípico, eventos deportivos (p. ej. partidos de
+Colombia), noticias o contexto. Para preguntas de puro dato interno NO la uses. Emite un bloque ```buscar
+con el texto de búsqueda (una línea):
+```buscar
+partidos seleccion Colombia 5 julio 2026 resultado
+```
+Devuelve una lista de resultados (título, extracto y URL). Cita la fuente cuando uses un dato web y
+distínguelo claramente de las cifras de la base de datos. Si la búsqueda está deshabilitada, dilo y sigue
+con los datos internos.
+
+ANÁLISIS DE PICOS Y VALLES (comportamientos atípicos):
+Si detectas un día u hora con monto atípico (muy alto o muy bajo) y te preguntan la causa, antes de concluir:
+(1) verifica si esa fecha fue festivo con ```festivo; (2) revisa si hubo un evento deportivo relevante con
+```buscar. Correlaciona los hallazgos con el pico, pero NO afirmes causalidad como certeza absoluta
+(usa "coincide con", "posiblemente por"). No inventes eventos: si la búsqueda no arroja nada, dilo.
+
 REGLAS DE DATOS:
 - "monto" está en pesos colombianos (COP). Las cantidades son número de transacciones.
 - No inventes cifras: si no tienes el dato, pídelo con una herramienta. Si tras consultarlo no aparece, dilo con honestidad.
@@ -2602,7 +2729,10 @@ Reglas:
 # --- Loop ReAct: detección de bloques de herramienta en el stream ---
 
 # Bloque de herramienta COMPLETO: ```sql ... ``` o ```resumen ... ```
-_TOOL_FENCE_RE = _re.compile(r"```(sql|resumen)[ \t]*\r?\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
+_TOOL_FENCE_RE = _re.compile(r"```(sql|resumen|festivo|buscar)[ \t]*\r?\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
+
+# Nombres de herramienta (para retención segura del stream y validación).
+_TOOL_KINDS = ("sql", "resumen", "festivo", "buscar")
 
 # Marcadores de chip que el frontend interpreta (estado de las herramientas).
 def _tool_chip(kind, estado, **meta):
@@ -2628,10 +2758,10 @@ def _safe_flush_len(buf):
     if nl != -1:
         tag = buf[idx + 3:nl].strip().lower()
         # Herramienta abierta pero aún sin cerrar: retener hasta el cierre.
-        return idx if tag in ("sql", "resumen") else len(buf)
-    # Etiqueta aún llegando: retener si puede convertirse en sql/resumen.
+        return idx if tag in _TOOL_KINDS else len(buf)
+    # Etiqueta aún llegando: retener si puede convertirse en una herramienta.
     tag = buf[idx + 3:].strip().lower()
-    if tag == "" or "sql".startswith(tag) or "resumen".startswith(tag):
+    if tag == "" or any(k.startswith(tag) for k in _TOOL_KINDS):
         return idx
     return len(buf)
 
@@ -2678,6 +2808,7 @@ class AssistantChatRequest(BaseModel):
     #   pdf   -> {"kind":"pdf","filename":..., "texto":...}
     #   image -> {"kind":"image","filename":..., "data_url":"data:image/...;base64,..."}
     adjuntos: Optional[List[dict]] = None
+    web_enabled: Optional[bool] = True  # permite/bloquea las herramientas de red
 
 
 @app.post("/api/assistant/chat")
@@ -2766,9 +2897,14 @@ def assistant_chat(req: AssistantChatRequest):
         #  Los bloques ```chart / ```table NO son herramientas: pasan tal cual.
         convo = list(messages)
         client = get_llm_client()
+        # Presupuestos separados: datos (sql/resumen) vs. externas (festivo/buscar).
+        web_allowed = bool(WEB_SEARCH_ENABLED and req.web_enabled)
+        sql_used = 0
+        web_used = 0
+        max_turns = LLM_MAX_SQL_ITERS + LLM_MAX_WEB_ITERS + 1
         try:
-            for turn in range(LLM_MAX_SQL_ITERS + 1):
-                allow_tools = turn < LLM_MAX_SQL_ITERS
+            for turn in range(max_turns):
+                allow_tools = (sql_used < LLM_MAX_SQL_ITERS) or (web_used < LLM_MAX_WEB_ITERS)
                 in_reasoning = False
                 content_buf = ""
                 sent = 0
@@ -2828,29 +2964,65 @@ def assistant_chat(req: AssistantChatRequest):
                 # Registrar lo que produjo el modelo (incluido el bloque) en la conversación.
                 convo.append({"role": "assistant", "content": content_buf[:end_idx]})
 
-                if kind == "sql":
-                    sql = body.strip()
-                    yield _tool_chip("sql", "run")
-                    result = _run_assistant_sql(sql)
-                    yield _tool_chip("sql", "done",
-                                     sql=result.get("sql", sql),
-                                     rows=result.get("row_count", 0),
-                                     error=result.get("error"))
-                    obs = _observation_text_sql(sql, result)
-                else:  # resumen
-                    yield _tool_chip("resumen", "run")
-                    params = _parse_resumen_params(body, desde, hasta)
-                    try:
-                        result = _run_assistant_resumen(**params)
-                        obs = "RESULTADO RESUMEN (JSON):\n" + json.dumps(result, ensure_ascii=False, default=str)
-                    except Exception as e:
-                        logger.error(f"Assistant resumen failed: {e}")
-                        obs = f"ERROR al calcular el resumen: {e}"
-                    yield _tool_chip("resumen", "done")
+                if kind in ("sql", "resumen"):
+                    # Presupuesto de datos.
+                    if sql_used >= LLM_MAX_SQL_ITERS:
+                        obs = "Límite de consultas de datos alcanzado. Responde ahora con lo disponible."
+                    elif kind == "sql":
+                        sql_used += 1
+                        sql = body.strip()
+                        yield _tool_chip("sql", "run")
+                        result = _run_assistant_sql(sql)
+                        yield _tool_chip("sql", "done",
+                                         sql=result.get("sql", sql),
+                                         rows=result.get("row_count", 0),
+                                         error=result.get("error"))
+                        obs = _observation_text_sql(sql, result)
+                    else:  # resumen
+                        sql_used += 1
+                        yield _tool_chip("resumen", "run")
+                        params = _parse_resumen_params(body, desde, hasta)
+                        try:
+                            result = _run_assistant_resumen(**params)
+                            obs = "RESULTADO RESUMEN (JSON):\n" + json.dumps(result, ensure_ascii=False, default=str)
+                        except Exception as e:
+                            logger.error(f"Assistant resumen failed: {e}")
+                            obs = f"ERROR al calcular el resumen: {e}"
+                        yield _tool_chip("resumen", "done")
+                else:
+                    # Herramientas externas (festivo local / buscar web).
+                    if web_used >= LLM_MAX_WEB_ITERS:
+                        obs = "Límite de consultas externas alcanzado. Responde ahora con lo disponible."
+                    elif kind == "festivo":
+                        web_used += 1
+                        yield _tool_chip("festivo", "run")
+                        params = _parse_festivo_params(body, today.isoformat())
+                        try:
+                            result = _run_holiday_check(**params)
+                            obs = "RESULTADO FESTIVOS (JSON):\n" + json.dumps(result, ensure_ascii=False, default=str)
+                        except Exception as e:
+                            logger.error(f"Assistant festivo failed: {e}")
+                            obs = f"ERROR al verificar festivos: {e}"
+                        yield _tool_chip("festivo", "done", error=(obs.startswith("ERROR") or None))
+                    else:  # buscar
+                        web_used += 1
+                        yield _tool_chip("buscar", "run")
+                        if not web_allowed:
+                            obs = ("Búsqueda web deshabilitada (el usuario apagó el acceso a "
+                                   "internet). Responde con los datos disponibles.")
+                            yield _tool_chip("buscar", "done", error=True)
+                        else:
+                            result = _run_web_search(body.strip())
+                            err = result.get("error")
+                            obs = ("ERROR en búsqueda web: " + err) if err else (
+                                "RESULTADO BÚSQUEDA WEB (JSON):\n"
+                                + json.dumps(result, ensure_ascii=False, default=str))
+                            yield _tool_chip("buscar", "done",
+                                             resultados=result.get("total", 0), error=err)
 
                 convo.append({"role": "user", "content": obs})
-                # Si es el último turno permitido, empujar al modelo a responder ya.
-                if not (turn + 1 < LLM_MAX_SQL_ITERS):
+                # Sin presupuesto restante en ninguna vía: empujar a responder ya.
+                if sql_used >= LLM_MAX_SQL_ITERS and web_used >= LLM_MAX_WEB_ITERS:
                     convo.append({"role": "system",
                                   "content": "Ya no puedes pedir más datos. Responde ahora con la información disponible."})
         except Exception as e:
