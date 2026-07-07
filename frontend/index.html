@@ -787,10 +787,6 @@
                             <i class="fa-solid fa-brain"></i>
                             <select id="asistente-model-select" class="asistente-model-select"></select>
                             <span class="asistente-model-status" id="asistente-model-status" hidden></span>
-                            <button type="button" class="asistente-web-toggle is-on" id="asistente-web-toggle"
-                                    title="Búsqueda web activada" aria-pressed="true">
-                                <i class="fa-solid fa-globe"></i>
-                            </button>
                         </div>
                         <button type="button" class="asistente-report-btn" id="asistente-report" title="Generar informe a partir de mensajes seleccionados">
                             <i class="fa-solid fa-file-lines"></i> Generar informe
@@ -829,6 +825,10 @@
                     <input type="file" id="asistente-file" accept="application/pdf,image/png,image/jpeg,image/webp" multiple hidden>
                     <button type="button" class="asistente-attach-btn" id="asistente-attach" title="Adjuntar PDF o imagen">
                         <i class="fa-solid fa-paperclip"></i>
+                    </button>
+                    <button type="button" class="asistente-attach-btn asistente-web-toggle is-on" id="asistente-web-toggle"
+                            title="Búsqueda web activada" aria-pressed="true">
+                        <i class="fa-solid fa-globe"></i>
                     </button>
                     <textarea id="asistente-input" rows="1" placeholder="Escribe tu pregunta sobre Betplay..."></textarea>
                     <button type="button" class="action-btn-primary" id="asistente-send">

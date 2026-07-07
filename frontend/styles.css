@@ -2497,30 +2497,21 @@ input:checked + .slider:before {
     cursor: pointer;
 }
 .asistente-model-select:disabled { opacity: 0.6; cursor: progress; }
-.asistente-web-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    border-radius: 8px;
-    border: 1px solid var(--panel-border);
-    background: #ffffff;
-    cursor: pointer;
-    font-size: 13px;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
+/* Toggle de búsqueda web: hereda el tamaño del botón de adjuntar. */
 .asistente-web-toggle.is-on {
-    background: rgba(37, 99, 235, 0.12);
-    border-color: rgba(37, 99, 235, 0.4);
-    color: #2563eb;
+    background: var(--brand-blue, #1257d1);
+    border-color: var(--brand-blue, #1257d1);
+    color: #ffffff;
+}
+.asistente-web-toggle.is-on:hover {
+    background: #0f49b0;
+    border-color: #0f49b0;
 }
 .asistente-web-toggle.is-off {
-    background: #ffffff;
     color: var(--text-secondary, #6b7280);
-    opacity: 0.7;
+    opacity: 0.75;
 }
-.asistente-web-toggle.is-off i { text-decoration: line-through; }
+.asistente-web-toggle.is-off i { opacity: 0.85; }
 .asistente-model-status {
     display: inline-flex;
     align-items: center;
@@ -3117,6 +3108,36 @@ input:checked + .slider:before {
     margin-top: 8px;
     color: #b42318;
     font-size: 12px;
+}
+.chat-tool-chip .tool-chip-tablewrap {
+    margin-top: 8px;
+    max-height: 220px;
+    overflow: auto;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+}
+.chat-tool-chip .tool-chip-table {
+    border-collapse: collapse;
+    font-size: 11.5px;
+    width: 100%;
+}
+.chat-tool-chip .tool-chip-table th,
+.chat-tool-chip .tool-chip-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--panel-border);
+    text-align: left;
+    white-space: nowrap;
+}
+.chat-tool-chip .tool-chip-table th {
+    background: rgba(15, 37, 64, 0.05);
+    position: sticky;
+    top: 0;
+    font-weight: 600;
+}
+.chat-tool-chip .tool-chip-note {
+    margin-top: 6px;
+    font-size: 11.5px;
+    color: var(--text-secondary, #6b7280);
 }
 .chat-tool-chip .tool-chip-web {
     margin: 8px 0 0;

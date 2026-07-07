@@ -1040,7 +1040,23 @@ function buildToolChip(payload) {
 
     let html = `<div class="tool-chip-head"><i class="fa-solid ${icon}"></i><span>${escapeHtml(label)}</span></div>`;
     if (done && kind === 'sql' && p.sql) {
-        html += `<details class="tool-chip-sql"><summary>Ver consulta SQL</summary><pre>${escapeHtml(p.sql)}</pre>`;
+        html += `<details class="tool-chip-sql"><summary>Ver consulta y resultado</summary><pre>${escapeHtml(p.sql)}</pre>`;
+        const cols = Array.isArray(p.columns) ? p.columns : [];
+        const sample = Array.isArray(p.sample) ? p.sample : [];
+        if (!hasError) {
+            if (sample.length && cols.length) {
+                const head = cols.map(c => `<th>${escapeHtml(String(c))}</th>`).join('');
+                const body = sample.map(r => '<tr>' + cols.map(c => {
+                    const v = r[c];
+                    return `<td>${escapeHtml(v == null ? '' : String(v))}</td>`;
+                }).join('') + '</tr>').join('');
+                const extra = (p.rows > sample.length)
+                    ? `<div class="tool-chip-note">Mostrando ${sample.length} de ${p.rows} filas.</div>` : '';
+                html += `<div class="tool-chip-tablewrap"><table class="tool-chip-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${extra}`;
+            } else {
+                html += `<div class="tool-chip-note">La consulta no devolvió filas.</div>`;
+            }
+        }
         if (hasError) html += `<div class="tool-chip-error">${escapeHtml(p.error)}</div>`;
         html += `</details>`;
     } else if (done && kind === 'buscar' && (p.query || hasError)) {
@@ -1114,16 +1130,30 @@ function stripAllReasoning(raw) {
         .replace(new RegExp(REASON_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*$'), '');
 }
 
+// Extrae un "título" corto del razonamiento: la última línea con contenido,
+// sin markdown, recortada. Sirve como estado rodante (cambia según avanza).
+function reasoningHeadline(reasoning) {
+    const lines = (reasoning || '').split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    let t = lines[lines.length - 1];
+    // Quitar marcadores de encabezado/lista y énfasis markdown.
+    t = t.replace(/^#{1,6}\s*/, '').replace(/^[-*>]\s*/, '').replace(/[*_`]/g, '');
+    if (t.length > 90) t = t.slice(0, 90).replace(/\s+\S*$/, '') + '…';
+    return t;
+}
+
 function buildReasoningPanel(reasoning, thinking) {
     const det = document.createElement('details');
     det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
-    if (thinking) det.open = true;
-    const label = thinking ? 'Razonando…' : 'Razonamiento';
+    // El razonamiento NO se muestra completo por defecto: solo un título que
+    // resume el paso actual. El usuario puede expandir para ver todo el proceso.
     const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
+    const headline = thinking ? (reasoningHeadline(reasoning) || 'Razonando…') : 'Razonamiento';
     det.innerHTML = `
-        <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> ${label}</summary>
+        <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> <span class="chat-reasoning-title"></span></summary>
         <div class="chat-reasoning-body"></div>
     `;
+    det.querySelector('.chat-reasoning-title').textContent = headline;
     det.querySelector('.chat-reasoning-body').textContent = (reasoning || '').trim();
     return det;
 }

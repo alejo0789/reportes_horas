@@ -2377,10 +2377,24 @@ SUBZONA.IDE_ZONA = ZONA.IDE_ZONA
 SV.IDE_TIPO_SITIO = TSV.IDE_TIPO_SITIO
 P.IDE_USUARIO    = U.IDE_USUARIO   (igual para R.IDE_USUARIO)
 
+-- Consultas POR USUARIO / CLIENTE --
+Puedes responder preguntas sobre un cliente concreto usando IDE_USUARIO (id interno) o
+NUM_IDENTIFICACION (cédula/identificación del cliente). Une la transacción con MAET_USUARIOS:
+  P.IDE_USUARIO = U.IDE_USUARIO   (igual para R.IDE_USUARIO)
+Si el usuario da una identificación (cédula), filtra por U.NUM_IDENTIFICACION (es varchar, usa comillas).
+Si da un id de usuario numérico, filtra por IDE_USUARIO directamente. Ejemplo (recargas de un cliente):
+  SELECT U.NUM_IDENTIFICACION, COUNT(*) AS num, SUM(R.VLR_RECARGA) AS total
+  FROM GANA_SIGA.SIGT_RECARGAS R
+  JOIN GANA_MAESTROS.MAET_USUARIOS U ON R.IDE_USUARIO = U.IDE_USUARIO
+  WHERE R.IDE_PRODUCTO = 17287 AND R.IDE_ESTADO = 48
+    AND U.NUM_IDENTIFICACION = '1234567890'
+  GROUP BY U.NUM_IDENTIFICACION
+
 REGLAS SQL:
 - Oracle. Fechas con TO_DATE('YYYY-MM-DD HH24:MI:SS','YYYY-MM-DD HH24:MI:SS') o TRUNC(SYSDATE) para hoy.
 - Solo SELECT/WITH; una sola sentencia; sin punto y coma final.
 - Limita SIEMPRE el resultado (FETCH FIRST N ROWS ONLY); si no lo pones, se acota automáticamente.
+- Para consultas por cliente usa IDE_USUARIO o NUM_IDENTIFICACION (join con MAET_USUARIOS).
 - No consultes tablas fuera de este catálogo."""
 
 # Términos de escritura/DDL/DCL/PLSQL prohibidos (límites de palabra, case-insensitive)
@@ -2614,6 +2628,11 @@ REGLAS DE DATOS:
 - No inventes cifras: si no tienes el dato, pídelo con una herramienta. Si tras consultarlo no aparece, dilo con honestidad.
 - Máximo {MAX_ITERS} consultas por respuesta; sé eficiente (una consulta bien pensada mejor que muchas).
 - Si un SQL devuelve error, corrígelo y reinténtalo respetando el esquema.
+
+RAZONAMIENTO (cuando pienses antes de responder):
+- Estructura tu razonamiento en pasos cortos. Empieza CADA paso con un título breve en una línea propia
+  (máx. 6 palabras, sin dos puntos), por ejemplo: "Consultando recargas del cliente", "Revisando resultados",
+  "Buscando partido del día". Debajo va el detalle. Así el usuario ve un título por paso, no todo el proceso.
 
 FORMA DE RESPONDER (importante):
 - No sobrepienses. Para preguntas simples, directas o de un solo dato (por ejemplo "¿cuánto se vendió hoy?",
@@ -2909,10 +2928,14 @@ def assistant_chat(req: AssistantChatRequest):
                         sql = body.strip()
                         yield _tool_chip("sql", "run")
                         result = _run_assistant_sql(sql)
+                        # Muestra acotada de resultados para que el usuario valide.
+                        sample_rows = result.get("rows", [])[:10]
                         yield _tool_chip("sql", "done",
                                          sql=result.get("sql", sql),
                                          rows=result.get("row_count", 0),
-                                         error=result.get("error"))
+                                         error=result.get("error"),
+                                         columns=result.get("columns", []),
+                                         sample=sample_rows)
                         obs = _observation_text_sql(sql, result)
                     else:  # resumen
                         sql_used += 1
