@@ -5,7 +5,8 @@ const State = {
     distribution: [],      // Promoters Excel rows
     sites: [],             // Sites catalogue
     products: [],          // Products catalogue
-    expandedOffices: new Set(), // Set of offices expanded in tree grid
+    expandedTableRows: new Set(), // Rutas expandidas del árbol Zona→Municipio→Oficina→Sitio
+    tableParentPaths: new Set(),  // Todas las rutas padre del último render (para Expandir todo)
     whatsappPromoters: [],     // List of whatsapp authorized promoters
     whatsappCoordinators: [],   // List of whatsapp authorized coordinators
     whatsappAdministrators: [], // List of whatsapp authorized administrators
@@ -16,6 +17,7 @@ const State = {
     selectedOffice: '',
     selectedSeller: '',
     selectedProduct: '',
+    assistantLockEnabled: false, // Candado del Asistente IA (flag del backend)
 
     // Table-specific filter values
     tableFilters: {
@@ -54,7 +56,9 @@ const State = {
     assistant: {
         history: [],     // [{role:'user'|'assistant', content:'...'}]
         busy: false,     // si hay una respuesta en curso
-        model: null      // id del modelo seleccionado
+        model: null,     // id del modelo seleccionado
+        webEnabled: true, // acceso a internet (búsqueda web) habilitado
+        attachments: []  // adjuntos de la pregunta actual: {kind, filename, texto?|data_url?}
     }
 };
 
@@ -144,6 +148,56 @@ const getApiBase = () => {
     return `${window.location.origin}${prefix}`;
 };
 const API_BASE = getApiBase();
+
+// ─────────────────────────────────────────────────────────────────
+//  Sesión simple — sin JWT ni cookies.
+//  El acceso se controla con el login de usuario/contraseña quemados;
+//  tras un login exitoso se guarda una bandera en sessionStorage.
+// ─────────────────────────────────────────────────────────────────
+const TokenManager = {
+    init() {
+        this._updateBadge();
+    },
+
+    isLoggedIn() {
+        return sessionStorage.getItem('logged_in') === '1';
+    },
+
+    hasToken() {
+        return this.isLoggedIn();
+    },
+
+    clearToken() {
+        sessionStorage.removeItem('logged_in');
+        this._updateBadge();
+    },
+
+    _updateBadge() {
+        const badge = document.getElementById('auth-badge');
+        if (!badge) return;
+        if (this.isLoggedIn()) {
+            badge.innerHTML = '<i class="fa-solid fa-right-from-bracket"></i> Cerrar sesión';
+            badge.className = 'auth-badge auth-ok';
+            badge.title = 'Cerrar sesión';
+        } else {
+            badge.textContent = 'Sin sesión';
+            badge.className = 'auth-badge auth-missing';
+        }
+    }
+};
+
+// Cierra la sesión: limpia la bandera local y vuelve a la pantalla de login.
+async function logout() {
+    if (!confirm('¿Cerrar sesión?')) return;
+    TokenManager.clearToken();
+    window.location.replace('login.html');
+}
+
+// authFetch: wrapper de fetch (se conserva el nombre para no tocar los llamados).
+// Ya no inyecta token: el backend no requiere autenticación por request.
+async function authFetch(url, options = {}) {
+    return fetch(url, options);
+}
 
 // DOM Elements
 const elements = {
@@ -262,8 +316,12 @@ const elements = {
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', async () => {
+    // Inicializar gestor de tokens antes que cualquier otra cosa
+    TokenManager.init();
+
     setupTabs();
     setupBetplayControls();
+    setupAssistantLock();
     setupAssistantChat();
     setupUploadHandlers();
     setupFilterListeners();
@@ -273,7 +331,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupCoordinatorManagement();
     setupAdministratorManagement();
     setupGoalsManagement();
-    
+
+    // Guarda de acceso: sin token válido → redirigir a la pantalla de login.
+    // (Los datos ya están protegidos por JWT en el backend; esto evita mostrar
+    //  el dashboard vacío y fuerza el ingreso.)
+    if (!TokenManager.hasToken()) {
+        window.location.replace('login.html');
+        return;
+    }
+
     // Load initial data
     await checkStatus();
     await loadInitialCatalogues();
@@ -282,15 +348,34 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // --- TAB NAVIGATION ---
 function setupTabs() {
+    const tabBar = document.getElementById('tab-bar');
     const tabButtons = document.querySelectorAll('.tab-bar .tab-btn');
     const views = document.querySelectorAll('.tab-view');
+    const indicator = document.getElementById('tab-indicator');
     if (!tabButtons.length) return;
+
+    // Desliza el indicador de vidrio bajo el tab activo.
+    function moveIndicator(btn) {
+        if (!indicator || !btn) return;
+        // offsetLeft/Width relativos al .tab-bar (contenedor posicionado).
+        indicator.style.width = `${btn.offsetWidth}px`;
+        indicator.style.transform = `translateX(${btn.offsetLeft - tabBar.clientLeft}px)`;
+    }
+
+    // Posición inicial (esperar layout para medir).
+    const initialActive = document.querySelector('.tab-bar .tab-btn.active') || tabButtons[0];
+    requestAnimationFrame(() => moveIndicator(initialActive));
+    // Reposicionar si cambia el tamaño (iframe/responsive).
+    window.addEventListener('resize', () => {
+        moveIndicator(document.querySelector('.tab-bar .tab-btn.active'));
+    });
 
     tabButtons.forEach(btn => {
         btn.addEventListener('click', () => {
             const targetId = btn.dataset.view;
             // Toggle active button
             tabButtons.forEach(b => b.classList.toggle('active', b === btn));
+            moveIndicator(btn);
             // Toggle visible view
             views.forEach(v => { v.hidden = (v.id !== targetId); });
 
@@ -303,13 +388,108 @@ function setupTabs() {
                 setTimeout(() => State.betplay.map.invalidateSize(), 200);
             }
 
-            // Al abrir el Asistente: verificar conexión, modelos y KPIs del día.
+            // Al abrir el Asistente: aplicar candado si corresponde y, si está
+            // desbloqueado, verificar conexión, modelos y KPIs del día.
             if (targetId === 'view-asistente') {
-                checkAssistantHealth();
-                loadAssistantModels();
-                loadAssistantKpis();
+                openAssistant();
             }
         });
+    });
+}
+
+// --- ASISTENTE IA: CANDADO "SITIO EN CONSTRUCCIÓN" ---
+// La contraseña se valida en el backend; aquí solo se gestiona la UI y una
+// bandera de desbloqueo por sesión.
+function isAssistantUnlocked() {
+    return sessionStorage.getItem('asistente_unlocked') === '1';
+}
+
+// Muestra u oculta el overlay según el flag del backend y el estado de sesión.
+// Devuelve true si la vista quedó bloqueada.
+function applyAssistantLockUI() {
+    const view = document.getElementById('view-asistente');
+    const lock = document.getElementById('asistente-lock');
+    if (!view || !lock) return false;
+    const locked = !!State.assistantLockEnabled && !isAssistantUnlocked();
+    view.classList.toggle('is-locked', locked);
+    lock.hidden = !locked;
+    return locked;
+}
+
+// Punto de entrada al abrir la pestaña: si está bloqueada, enfoca el campo de
+// contraseña; si no, carga el contenido normal del Asistente.
+function openAssistant() {
+    if (applyAssistantLockUI()) {
+        const inp = document.getElementById('asistente-lock-password');
+        if (inp) { inp.value = ''; setTimeout(() => inp.focus(), 50); }
+        return;
+    }
+    checkAssistantHealth();
+    loadAssistantModels();
+    loadAssistantKpis();
+    setupWebToggle();
+}
+
+// --- ASISTENTE IA: TOGGLE DE BÚSQUEDA WEB (acceso a internet) ---
+let _webToggleWired = false;
+function setupWebToggle() {
+    const btn = document.getElementById('asistente-web-toggle');
+    if (!btn) return;
+    const apply = () => {
+        const on = State.assistant.webEnabled !== false;
+        btn.classList.toggle('is-on', on);
+        btn.classList.toggle('is-off', !on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.title = on ? 'Búsqueda web activada (clic para desactivar)'
+                       : 'Búsqueda web desactivada (clic para activar)';
+    };
+    if (!_webToggleWired) {
+        // Preferencia recordada entre sesiones.
+        const saved = localStorage.getItem('assistantWebEnabled');
+        if (saved !== null) State.assistant.webEnabled = saved !== '0';
+        btn.addEventListener('click', () => {
+            State.assistant.webEnabled = !(State.assistant.webEnabled !== false);
+            localStorage.setItem('assistantWebEnabled', State.assistant.webEnabled ? '1' : '0');
+            apply();
+        });
+        _webToggleWired = true;
+    }
+    apply();
+}
+
+// Registra el formulario de desbloqueo (una sola vez al iniciar).
+function setupAssistantLock() {
+    const form = document.getElementById('asistente-lock-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const inp = document.getElementById('asistente-lock-password');
+        const err = document.getElementById('asistente-lock-error');
+        const btn = document.getElementById('asistente-lock-submit');
+        const pwd = (inp && inp.value || '').trim();
+        if (!pwd) return;
+        if (err) err.hidden = true;
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Verificando…'; }
+        try {
+            const res = await authFetch(`${API_BASE}/api/assistant/unlock`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pwd })
+            });
+            if (res.ok) {
+                sessionStorage.setItem('asistente_unlocked', '1');
+                openAssistant();
+            } else if (err) {
+                err.textContent = res.status === 401
+                    ? 'Contraseña incorrecta.'
+                    : 'No se pudo verificar. Intenta de nuevo.';
+                err.hidden = false;
+            }
+        } catch (e2) {
+            if (err) { err.textContent = 'Error de conexión con el servidor.'; err.hidden = false; }
+        } finally {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-unlock-keyhole"></i> Desbloquear'; }
+        }
     });
 }
 
@@ -323,11 +503,19 @@ async function checkAssistantHealth() {
     text.textContent = 'Verificando conexión con el modelo...';
 
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/health?t=${new Date().getTime()}`);
+        const res = await authFetch(`${API_BASE}/api/assistant/health?t=${new Date().getTime()}`);
         const json = await res.json();
         if (json.online) {
             indicator.classList.add('online');
-            text.textContent = `Modelo conectado (${json.configured_model || 'local'})`;
+            // Mostrar el modelo realmente CARGADO (no el configurado por defecto).
+            let modelName = json.configured_model || 'local';
+            try {
+                const mres = await authFetch(`${API_BASE}/api/assistant/models?t=${Date.now()}`);
+                const mjson = await mres.json();
+                const loaded = (mjson.models || []).find(m => m.loaded);
+                if (loaded) modelName = loaded.id || loaded.label;
+            } catch (_) { /* si falla, se queda el configurado */ }
+            text.textContent = modelName;
         } else {
             indicator.classList.add('offline');
             text.textContent = 'Sin conexión con el modelo (Mac inaccesible)';
@@ -340,13 +528,16 @@ async function checkAssistantHealth() {
 
 // --- ASISTENTE IA: SELECTOR DE MODELO (NIVEL DE INTELIGENCIA) ---
 let _assistantModelsLoaded = false;
+const _assistantVisionModels = new Set();  // ids de modelos con visión
 async function loadAssistantModels() {
     const select = document.getElementById('asistente-model-select');
     if (!select) return;
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/models?t=${new Date().getTime()}`);
+        const res = await authFetch(`${API_BASE}/api/assistant/models?t=${new Date().getTime()}`);
         const json = await res.json();
         const models = json.models || [];
+        _assistantVisionModels.clear();
+        models.forEach(m => { if (m.vision) _assistantVisionModels.add(m.id); });
         // Modelo activo: el que esté cargado, o el guardado, o el default.
         const loaded = models.find(m => m.loaded);
         const current = State.assistant.model
@@ -384,7 +575,7 @@ async function selectAssistantModel(modelId) {
         status.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cargando modelo…';
     }
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/model/select`, {
+        const res = await authFetch(`${API_BASE}/api/assistant/model/select`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: modelId })
@@ -434,7 +625,7 @@ async function loadAssistantKpis() {
         try {
             const url = `${API_BASE}/api/betplay/resumen?tipo=${tipo}&desde=${encodeURIComponent(desde)}`
                 + `&hasta=${encodeURIComponent(hasta)}&force_refresh=true&t=${new Date().getTime()}`;
-            const res = await fetch(url);
+            const res = await authFetch(url);
             const json = await res.json();
             fill(tipo, (json.data && json.data.totales) ? json.data.totales : {});
         } catch (err) {
@@ -445,11 +636,62 @@ async function loadAssistantKpis() {
     await Promise.all([fetchTipo('pagos'), fetchTipo('recargas')]);
 }
 
+// --- ASISTENTE IA: PERSISTENCIA DEL CHAT ---
+// Persistencia interina en localStorage (sobrevive recargas) mientras llega la BD.
+// TODO(BD): migrar guardado/recuperación de conversaciones a base de datos
+// (multi-conversación por usuario) cuando exista el backend correspondiente.
+const ASSISTANT_STORAGE_KEY = 'betplay.assistant.history.v1';
+let _assistantWelcomeHTML = '';
+
+function saveAssistantHistory() {
+    try {
+        localStorage.setItem(ASSISTANT_STORAGE_KEY, JSON.stringify(State.assistant.history));
+    } catch (e) { console.warn('[Asistente] No se pudo guardar el historial:', e); }
+}
+
+// Re-pinta en el DOM el historial guardado (usuario en texto plano, asistente
+// re-renderizado con sus islas de gráfico/tabla). No re-consulta al modelo.
+function restoreAssistantHistory() {
+    let saved = [];
+    try {
+        saved = JSON.parse(localStorage.getItem(ASSISTANT_STORAGE_KEY) || '[]');
+    } catch (e) { saved = []; }
+    if (!Array.isArray(saved) || !saved.length) return;
+
+    State.assistant.history = saved;
+    const container = document.getElementById('asistente-messages');
+    if (container) container.innerHTML = '';
+    saved.forEach((m, i) => {
+        if (m.role === 'user') {
+            appendChatBubble('user', m.content || '', i);
+        } else if (m.role === 'assistant') {
+            const { content } = appendAssistantMessage(i);
+            renderAssistantMessage(content, m.content || '', true);
+        }
+    });
+}
+
+// Limpia la conversación: vacía el DOM (restaura la bienvenida), el estado y el
+// almacenamiento local. La persistencia en BD se abordará más adelante.
+function clearAssistantChat() {
+    if (State.assistant.busy) return;
+    if (!confirm('¿Limpiar la conversación actual? Esta acción no se puede deshacer.')) return;
+    exitReportSelection();
+    State.assistant.history = [];
+    try { localStorage.removeItem(ASSISTANT_STORAGE_KEY); } catch (e) { /* noop */ }
+    const container = document.getElementById('asistente-messages');
+    if (container) container.innerHTML = _assistantWelcomeHTML;
+}
+
 // --- ASISTENTE IA: CHAT CON STREAMING ---
 function setupAssistantChat() {
     const input = document.getElementById('asistente-input');
     const sendBtn = document.getElementById('asistente-send');
     if (!input || !sendBtn) return;
+
+    // Guarda el mensaje de bienvenida para poder restaurarlo al limpiar.
+    const container = document.getElementById('asistente-messages');
+    if (container) _assistantWelcomeHTML = container.innerHTML;
 
     sendBtn.addEventListener('click', () => sendAssistantMessage());
     // Enter envía; Shift+Enter hace salto de línea.
@@ -459,6 +701,36 @@ function setupAssistantChat() {
             sendAssistantMessage();
         }
     });
+    // Pegar imágenes desde el portapapeles (Ctrl+V).
+    input.addEventListener('paste', (e) => {
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        const imgs = [];
+        for (const it of items) {
+            if (it.kind === 'file' && it.type.startsWith('image/')) {
+                const f = it.getAsFile();
+                if (f) imgs.push(f);
+            }
+        }
+        if (imgs.length) {
+            e.preventDefault();  // no pegar la ruta/binario como texto
+            handleAssistantFiles(imgs);
+        }
+    });
+
+    const clearBtn = document.getElementById('asistente-clear');
+    if (clearBtn) clearBtn.addEventListener('click', clearAssistantChat);
+
+    const attachBtn = document.getElementById('asistente-attach');
+    const fileInput = document.getElementById('asistente-file');
+    if (attachBtn && fileInput) {
+        attachBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => handleAssistantFiles(fileInput.files));
+    }
+
+    setupAssistantReport();
+
+    // Restaura la conversación previa (si la hay).
+    restoreAssistantHistory();
 }
 
 // Construye el rango "día actual" para el contexto del asistente.
@@ -471,10 +743,11 @@ function assistantTodayRange() {
 }
 
 // Agrega una burbuja de chat de usuario (texto plano).
-function appendChatBubble(role, text) {
+function appendChatBubble(role, text, histIndex) {
     const container = document.getElementById('asistente-messages');
     const msg = document.createElement('div');
     msg.className = `chat-msg ${role}`;
+    if (histIndex != null) msg.dataset.hi = histIndex;
     const icon = role === 'user' ? 'fa-user' : 'fa-robot';
     msg.innerHTML = `
         <div class="chat-avatar"><i class="fa-solid ${icon}"></i></div>
@@ -484,15 +757,60 @@ function appendChatBubble(role, text) {
     bubble.textContent = text;
     container.appendChild(msg);
     container.scrollTop = container.scrollHeight;
-    return bubble;
+    return msg;
+}
+
+// Icono SVG de documento PDF con los colores del header (azul profundo + amarillo).
+function pdfIconSVG() {
+    return `<svg class="chat-att-pdf-icon" viewBox="0 0 40 48" width="34" height="40" aria-hidden="true">
+        <path d="M4 2h22l10 10v32a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z" fill="#0a2e73"/>
+        <path d="M26 2l10 10H28a2 2 0 0 1-2-2V2z" fill="#4a90ff"/>
+        <rect x="6" y="30" width="28" height="12" rx="2" fill="#ffc400"/>
+        <text x="20" y="39" text-anchor="middle" font-size="8" font-weight="700" fill="#0a2e73" font-family="Arial, sans-serif">PDF</text>
+    </svg>`;
+}
+
+// Burbuja del usuario con adjuntos: imágenes como miniatura y PDFs como icono,
+// con el nombre del archivo; el texto de la pregunta va debajo.
+function appendUserMessage(text, adjuntos, histIndex) {
+    const container = document.getElementById('asistente-messages');
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg user';
+    if (histIndex != null) msg.dataset.hi = histIndex;
+
+    const attHtml = (adjuntos || []).map(a => {
+        if (a.kind === 'image' && a.data_url) {
+            return `<div class="chat-att chat-att-img">
+                <img src="${a.data_url}" alt="${escapeHtml(a.filename)}">
+                <span class="chat-att-name">${escapeHtml(a.filename)}</span>
+            </div>`;
+        }
+        return `<div class="chat-att chat-att-file">
+            ${pdfIconSVG()}
+            <span class="chat-att-name">${escapeHtml(a.filename)}</span>
+        </div>`;
+    }).join('');
+
+    const textHtml = text ? `<div class="chat-att-text">${escapeHtml(text)}</div>` : '';
+    msg.innerHTML = `
+        <div class="chat-avatar"><i class="fa-solid fa-user"></i></div>
+        <div class="chat-bubble">
+            <div class="chat-attachments-in">${attHtml}</div>
+            ${textHtml}
+        </div>
+    `;
+    container.appendChild(msg);
+    container.scrollTop = container.scrollHeight;
+    return msg;
 }
 
 // Crea un mensaje del asistente con avatar + columna de contenido (texto + islas).
 // Devuelve la columna de contenido, que se re-renderiza con renderAssistantMessage().
-function appendAssistantMessage() {
+function appendAssistantMessage(histIndex) {
     const container = document.getElementById('asistente-messages');
     const msg = document.createElement('div');
     msg.className = 'chat-msg assistant';
+    if (histIndex != null) msg.dataset.hi = histIndex;
     msg.innerHTML = `
         <div class="chat-avatar"><i class="fa-solid fa-robot"></i></div>
         <div class="chat-col">
@@ -503,6 +821,7 @@ function appendAssistantMessage() {
     container.appendChild(msg);
     container.scrollTop = container.scrollHeight;
     return {
+        msg,
         content: msg.querySelector('.chat-content'),
         timer: msg.querySelector('.chat-timer'),
         timerVal: msg.querySelector('.chat-timer-val'),
@@ -537,7 +856,8 @@ function mdInline(s) {
         .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
 }
 function mdToHtml(text) {
-    const lines = String(text).split('\n');
+    // Em-dash / en-dash prohibidos: se reemplazan por guion simple al renderizar.
+    const lines = String(text).replace(/[—–]/g, '-').split('\n');
     const isSep = (l) => /^\s*\|?[\s:|-]*-[-\s:|]*\|?\s*$/.test(l) && l.includes('-');
     const parseRow = (l) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
 
@@ -574,6 +894,15 @@ function mdToHtml(text) {
                 i = j;
                 continue;
             }
+        }
+
+        const h = line.match(/^(#{1,3})\s+(.*)$/);
+        if (h) {
+            closeList();
+            const lvl = h[1].length;
+            html += `<h${lvl}>${mdInline(h[2])}</h${lvl}>`;
+            i++;
+            continue;
         }
 
         const li = line.match(/^\s*[-*]\s+(.*)$/);
@@ -618,6 +947,137 @@ function parseAssistantSegments(raw) {
     return segs;
 }
 
+// --- CHIPS DE HERRAMIENTA ([[TOOL]]{...}[[/TOOL]]) que emite el backend ---
+// Quita los marcadores de herramienta de un texto (para guardar historial /
+// generar informes sin ese ruido de estado).
+function stripToolMarkers(s) {
+    return (s || '')
+        .replace(/\[\[TOOL\]\][\s\S]*?\[\[\/TOOL\]\]/g, '')
+        .replace(/\[\[TOOL\]\][\s\S]*$/g, '');
+}
+
+// Divide la respuesta en partes de texto y marcadores de herramienta, en orden.
+// Colapsa el par run+done de la misma herramienta en un solo chip.
+function splitToolMarkers(raw) {
+    const parts = [];
+    const re = /\[\[TOOL\]\]([\s\S]*?)\[\[\/TOOL\]\]/g;
+    let last = 0, m;
+    while ((m = re.exec(raw)) !== null) {
+        if (m.index > last) parts.push({ type: 'text', content: raw.slice(last, m.index) });
+        let payload = null;
+        try { payload = JSON.parse(m[1]); } catch (_) { payload = null; }
+        parts.push({ type: 'tool', payload: payload || {} });
+        last = re.lastIndex;
+    }
+    const tail = raw.slice(last);
+    const openIdx = tail.indexOf('[[TOOL]]');
+    if (openIdx !== -1) {
+        const before = tail.slice(0, openIdx);
+        if (before) parts.push({ type: 'text', content: before });
+        // Marcador aún llegando por el stream: chip en curso.
+        let payload = null;
+        try { payload = JSON.parse(tail.slice(openIdx + 8)); } catch (_) { payload = null; }
+        parts.push({ type: 'tool', payload: payload || { estado: 'run' } });
+    } else if (tail) {
+        parts.push({ type: 'text', content: tail });
+    }
+    // Colapsar: un 'done' elimina el 'run' previo de la misma herramienta.
+    const out = [];
+    for (const p of parts) {
+        if (p.type === 'tool' && p.payload && p.payload.estado === 'done') {
+            for (let i = out.length - 1; i >= 0; i--) {
+                const q = out[i];
+                if (q.type === 'text' && !q.content.trim()) continue;
+                if (q.type === 'tool' && q.payload && q.payload.estado === 'run'
+                    && q.payload.kind === p.payload.kind) {
+                    out.splice(i, 1);
+                }
+                break;
+            }
+        }
+        out.push(p);
+    }
+    return out;
+}
+
+function buildToolChip(payload) {
+    const p = payload || {};
+    const kind = p.kind || 'sql';
+    const done = p.estado === 'done';
+    const hasError = done && p.error;
+    const el = document.createElement('div');
+    el.className = 'chat-tool-chip' + (done ? (hasError ? ' error' : ' done') : ' run');
+
+    // Etiquetas por herramienta: en curso (run) y terminada (done).
+    const RUN_LABELS = {
+        sql: 'Consultando base de datos…',
+        resumen: 'Calculando resumen…',
+        buscar: 'Buscando en internet…',
+    };
+    const DONE_ICONS = {
+        sql: 'fa-database',
+        resumen: 'fa-database',
+        buscar: 'fa-magnifying-glass',
+    };
+
+    let label;
+    if (!done) {
+        label = RUN_LABELS[kind] || 'Consultando base de datos…';
+    } else if (hasError) {
+        label = kind === 'buscar' ? 'Búsqueda con error'
+            : 'Consulta con error';
+    } else if (kind === 'resumen') {
+        label = 'Resumen listo';
+    } else if (kind === 'buscar') {
+        const n = (p.resultados != null) ? p.resultados : 0;
+        label = `Búsqueda lista · ${n} ${n === 1 ? 'resultado' : 'resultados'}`;
+    } else {
+        const n = (p.rows != null) ? p.rows : 0;
+        label = `Consulta lista · ${n} ${n === 1 ? 'fila' : 'filas'}`;
+    }
+    const icon = !done ? 'fa-spinner fa-spin'
+        : (hasError ? 'fa-triangle-exclamation' : (DONE_ICONS[kind] || 'fa-database'));
+
+    let html = `<div class="tool-chip-head"><i class="fa-solid ${icon}"></i><span>${escapeHtml(label)}</span></div>`;
+    if (done && kind === 'sql' && p.sql) {
+        html += `<details class="tool-chip-sql"><summary>Ver consulta y resultado</summary><pre>${escapeHtml(p.sql)}</pre>`;
+        const cols = Array.isArray(p.columns) ? p.columns : [];
+        const sample = Array.isArray(p.sample) ? p.sample : [];
+        if (!hasError) {
+            if (sample.length && cols.length) {
+                const head = cols.map(c => `<th>${escapeHtml(String(c))}</th>`).join('');
+                const body = sample.map(r => '<tr>' + cols.map(c => {
+                    const v = r[c];
+                    return `<td>${escapeHtml(v == null ? '' : String(v))}</td>`;
+                }).join('') + '</tr>').join('');
+                const extra = (p.rows > sample.length)
+                    ? `<div class="tool-chip-note">Mostrando ${sample.length} de ${p.rows} filas.</div>` : '';
+                html += `<div class="tool-chip-tablewrap"><table class="tool-chip-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${extra}`;
+            } else {
+                html += `<div class="tool-chip-note">La consulta no devolvió filas.</div>`;
+            }
+        }
+        if (hasError) html += `<div class="tool-chip-error">${escapeHtml(p.error)}</div>`;
+        html += `</details>`;
+    } else if (done && kind === 'buscar' && (p.query || hasError)) {
+        html += `<details class="tool-chip-sql"><summary>Ver búsqueda</summary>`;
+        if (p.query) html += `<pre>${escapeHtml(p.query)}</pre>`;
+        const items = Array.isArray(p.items) ? p.items : [];
+        if (items.length) {
+            html += `<ul class="tool-chip-web">` + items.map(it => {
+                const t = escapeHtml(it.titulo || it.url || 'Resultado');
+                return it.url
+                    ? `<li><a href="${escapeHtml(it.url)}" target="_blank" rel="noopener">${t}</a></li>`
+                    : `<li>${t}</li>`;
+            }).join('') + `</ul>`;
+        }
+        if (hasError) html += `<div class="tool-chip-error">${escapeHtml(p.error)}</div>`;
+        html += `</details>`;
+    }
+    el.innerHTML = html;
+    return el;
+}
+
 // Separa el razonamiento (entre <|channel>thought y <channel|>) de la respuesta.
 // Devuelve { reasoning, answer, thinking } donde thinking=true si el bloque de
 // razonamiento aún no se ha cerrado (sigue llegando por el stream).
@@ -638,6 +1098,65 @@ function splitReasoning(raw) {
     return { reasoning: reasoning.trim(), answer, thinking: false };
 }
 
+// Con el loop SQL puede haber VARIAS trazas de razonamiento (una por turno).
+// Divide el stream en partes ordenadas: {type:'reasoning'|'content'}.
+function splitReasoningParts(raw) {
+    const parts = [];
+    let i = 0;
+    while (i < raw.length) {
+        const start = raw.indexOf(REASON_START, i);
+        if (start === -1) {
+            if (i < raw.length) parts.push({ type: 'content', content: raw.slice(i) });
+            break;
+        }
+        if (start > i) parts.push({ type: 'content', content: raw.slice(i, start) });
+        const afterStart = start + REASON_START.length;
+        const end = raw.indexOf(REASON_END, afterStart);
+        if (end === -1) {
+            // Razonamiento en curso (sigue llegando por el stream).
+            parts.push({ type: 'reasoning', content: raw.slice(afterStart), thinking: true });
+            return parts;
+        }
+        parts.push({ type: 'reasoning', content: raw.slice(afterStart, end).trim(), thinking: false });
+        i = end + REASON_END.length;
+    }
+    return parts;
+}
+
+// Quita TODAS las trazas de razonamiento (para guardar historial / informe).
+function stripAllReasoning(raw) {
+    return (raw || '')
+        .replace(new RegExp(REASON_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*?' + REASON_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), '')
+        .replace(new RegExp(REASON_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '[\\s\\S]*$'), '');
+}
+
+// Headline de una sola línea: lo ÚLTIMO que el modelo va escribiendo en su
+// razonamiento (última línea con contenido). Actualiza en vivo con el stream.
+function reasoningHeadline(reasoning) {
+    const lines = (reasoning || '').split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return '';
+    let t = lines[lines.length - 1];
+    t = t.replace(/^#{1,6}\s*/, '').replace(/^[-*>]\s*/, '').replace(/[*_`]/g, '');
+    if (t.length > 120) t = t.slice(0, 120).replace(/\s+\S*$/, '') + '…';
+    return t;
+}
+
+function buildReasoningPanel(reasoning, thinking) {
+    const det = document.createElement('details');
+    det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
+    // Colapsado por defecto: se ve una sola línea (lo último que escribe). El
+    // usuario puede desplegar para ver TODO el razonamiento que va llegando.
+    const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
+    const headline = thinking ? (reasoningHeadline(reasoning) || 'Razonando…') : 'Razonamiento';
+    det.innerHTML = `
+        <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> <span class="chat-reasoning-title"></span></summary>
+        <div class="chat-reasoning-body"></div>
+    `;
+    det.querySelector('.chat-reasoning-title').textContent = headline;
+    det.querySelector('.chat-reasoning-body').textContent = (reasoning || '').trim();
+    return det;
+}
+
 // Re-renderiza el contenido del asistente. Durante el stream (isFinal=false) los
 // bloques de visualización se muestran como placeholder; al finalizar se renderizan.
 function renderAssistantMessage(contentEl, raw, isFinal) {
@@ -647,44 +1166,40 @@ function renderAssistantMessage(contentEl, raw, isFinal) {
         ? (container.scrollHeight - container.scrollTop - container.clientHeight) < 80
         : true;
 
-    const { reasoning, answer, thinking } = splitReasoning(raw);
     contentEl.innerHTML = '';
 
-    // Panel de razonamiento (plegable). Se mantiene abierto mientras "piensa".
-    if (reasoning.trim() || thinking) {
-        const det = document.createElement('details');
-        det.className = 'chat-reasoning' + (thinking ? ' thinking' : '');
-        if (thinking) det.open = true;
-        const label = thinking ? 'Razonando…' : 'Razonamiento';
-        const icon = thinking ? 'fa-spinner fa-spin' : 'fa-brain';
-        det.innerHTML = `
-            <summary><i class="fa-solid fa-chevron-right chevron"></i><i class="fa-solid ${icon}"></i> ${label}</summary>
-            <div class="chat-reasoning-body"></div>
-        `;
-        det.querySelector('.chat-reasoning-body').textContent = reasoning.trim();
-        contentEl.appendChild(det);
-    }
-
-    const segments = parseAssistantSegments(answer);
-
-    for (const seg of segments) {
-        if (seg.type === 'text' || seg.type === 'code') {
-            if (!seg.content.trim()) continue;
-            const bubble = document.createElement('div');
-            bubble.className = 'chat-bubble';
-            bubble.innerHTML = mdToHtml(seg.content);
-            contentEl.appendChild(bubble);
-        } else if (seg.type === 'pending') {
-            contentEl.appendChild(buildIslandPlaceholder(seg.lang));
-        } else if (seg.type === 'chart' || seg.type === 'table') {
-            if (!isFinal) {
-                contentEl.appendChild(buildIslandPlaceholder(seg.type));
+    // El stream puede intercalar (en orden) varias trazas de razonamiento, chips
+    // de herramienta y contenido con texto/visualizaciones.
+    for (const rp of splitReasoningParts(raw)) {
+        if (rp.type === 'reasoning') {
+            if (rp.content.trim() || rp.thinking) contentEl.appendChild(buildReasoningPanel(rp.content, rp.thinking));
+            continue;
+        }
+        for (const part of splitToolMarkers(rp.content)) {
+            if (part.type === 'tool') {
+                contentEl.appendChild(buildToolChip(part.payload));
                 continue;
             }
-            const island = (seg.type === 'chart')
-                ? buildChartIsland(seg.content)
-                : buildTableIsland(seg.content);
-            contentEl.appendChild(island);
+            for (const seg of parseAssistantSegments(part.content)) {
+                if (seg.type === 'text' || seg.type === 'code') {
+                    if (!seg.content.trim()) continue;
+                    const bubble = document.createElement('div');
+                    bubble.className = 'chat-bubble';
+                    bubble.innerHTML = mdToHtml(seg.content);
+                    contentEl.appendChild(bubble);
+                } else if (seg.type === 'pending') {
+                    contentEl.appendChild(buildIslandPlaceholder(seg.lang));
+                } else if (seg.type === 'chart' || seg.type === 'table') {
+                    if (!isFinal) {
+                        contentEl.appendChild(buildIslandPlaceholder(seg.type));
+                        continue;
+                    }
+                    const island = (seg.type === 'chart')
+                        ? buildChartIsland(seg.content)
+                        : buildTableIsland(seg.content);
+                    contentEl.appendChild(island);
+                }
+            }
         }
     }
 
@@ -728,8 +1243,8 @@ function buildChartIsland(jsonStr) {
         return {
             label: s.label || `Serie ${i + 1}`,
             data: s.data || [],
-            backgroundColor: isPieLike ? BETPLAY_PALETTE : (chartType === 'line' ? 'rgba(99,102,241,0.2)' : color + '99'),
-            borderColor: isPieLike ? 'rgba(11,13,25,0.8)' : color,
+            backgroundColor: isPieLike ? BETPLAY_PALETTE : (chartType === 'line' ? 'rgba(18,87,209,0.2)' : color + '99'),
+            borderColor: isPieLike ? '#ffffff' : color,
             borderWidth: isPieLike ? 2 : 1.5,
             borderRadius: chartType === 'bar' ? 4 : 0,
             fill: chartType === 'line'
@@ -754,11 +1269,11 @@ function buildChartIsland(jsonStr) {
                 responsive: true,
                 maintainAspectRatio: false,
                 plugins: {
-                    legend: { display: isPieLike || datasets.length > 1, labels: { color: '#94a3b8', font: { size: 11 } } }
+                    legend: { display: isPieLike || datasets.length > 1, labels: { color: '#52627a', font: { size: 11 } } }
                 },
                 scales: isPieLike ? {} : {
-                    x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-                    y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+                    x: { ticks: { color: '#52627a', font: { size: 10 } }, grid: { color: 'rgba(15,37,64,0.08)' } },
+                    y: { ticks: { color: '#52627a', font: { size: 10 } }, grid: { color: 'rgba(15,37,64,0.08)' } }
                 }
             }
         });
@@ -791,6 +1306,93 @@ function buildTableIsland(jsonStr) {
     return el;
 }
 
+// --- ASISTENTE IA: ADJUNTOS (PDF / imágenes) ---
+function modelHasVision() {
+    return _assistantVisionModels.has(State.assistant.model);
+}
+
+function renderAssistantAttachments() {
+    const cont = document.getElementById('asistente-attachments');
+    if (!cont) return;
+    const items = State.assistant.attachments;
+    cont.hidden = items.length === 0;
+    cont.innerHTML = items.map((a, i) => {
+        const icon = a.kind === 'image' ? 'fa-image' : 'fa-file-pdf';
+        const note = a.truncated ? ' <span class="att-note">(recortado)</span>'
+            : (a.escaneado ? ' <span class="att-note">(sin texto)</span>' : '');
+        return `<span class="asistente-chip" data-idx="${i}">
+            <i class="fa-solid ${icon}"></i>
+            <span class="att-name">${escapeHtml(a.filename)}</span>${note}
+            <button type="button" class="att-remove" data-idx="${i}" title="Quitar"><i class="fa-solid fa-xmark"></i></button>
+        </span>`;
+    }).join('');
+    cont.querySelectorAll('.att-remove').forEach(btn => {
+        btn.addEventListener('click', () => {
+            State.assistant.attachments.splice(Number(btn.dataset.idx), 1);
+            renderAssistantAttachments();
+        });
+    });
+}
+
+function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+    });
+}
+
+async function handleAssistantFiles(fileList) {
+    const files = [...(fileList || [])];
+    const input = document.getElementById('asistente-file');
+    if (input) input.value = '';  // permite re-seleccionar el mismo archivo
+    if (State.assistant.busy) return;
+
+    for (const file of files) {
+        const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        const isImg = file.type.startsWith('image/');
+
+        if (isImg) {
+            if (!modelHasVision()) {
+                alert('Las imágenes solo se pueden analizar con el modelo de "Inteligencia Alta" (con visión). Selecciónalo para adjuntar imágenes.');
+                continue;
+            }
+            try {
+                const dataUrl = await readFileAsDataURL(file);
+                State.assistant.attachments.push({ kind: 'image', filename: file.name, data_url: dataUrl });
+            } catch (e) {
+                console.error('[Asistente] No se pudo leer la imagen:', e);
+                alert(`No se pudo leer la imagen "${file.name}".`);
+            }
+        } else if (isPdf) {
+            try {
+                const fd = new FormData();
+                fd.append('file', file);
+                const res = await authFetch(`${API_BASE}/api/assistant/upload`, { method: 'POST', body: fd });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                const data = await res.json();
+                State.assistant.attachments.push({
+                    kind: 'pdf', filename: data.filename || file.name,
+                    texto: data.texto || '', truncated: !!data.truncated, escaneado: !!data.escaneado
+                });
+                if (data.escaneado) {
+                    alert(`El PDF "${file.name}" no contiene texto extraíble (probablemente escaneado). Para analizarlo, conviértelo a imagen y adjúntalo con el modelo de visión.`);
+                }
+            } catch (e) {
+                console.error('[Asistente] Error subiendo PDF:', e);
+                alert(`No se pudo procesar "${file.name}": ${e.message}`);
+            }
+        } else {
+            alert(`Tipo de archivo no soportado: ${file.name}`);
+        }
+    }
+    renderAssistantAttachments();
+}
+
 async function sendAssistantMessage() {
     const input = document.getElementById('asistente-input');
     const sendBtn = document.getElementById('asistente-send');
@@ -798,15 +1400,25 @@ async function sendAssistantMessage() {
     if (!input || State.assistant.busy) return;
 
     const pregunta = input.value.trim();
-    if (!pregunta) return;
+    const adjuntos = State.assistant.attachments.slice();
+    if (!pregunta && !adjuntos.length) return;
 
-    // Pinta la pregunta del usuario
-    appendChatBubble('user', pregunta);
-    State.assistant.history.push({ role: 'user', content: pregunta });
+    // Pinta la pregunta del usuario (con miniaturas/iconos de adjuntos si los hay).
+    const uIndex = State.assistant.history.length;  // índice que tendrá tras el push
+    if (adjuntos.length) {
+        appendUserMessage(pregunta, adjuntos, uIndex);
+    } else {
+        appendChatBubble('user', pregunta, uIndex);
+    }
+    State.assistant.history.push({ role: 'user', content: pregunta || '(archivos adjuntos)' });
+    saveAssistantHistory();
     input.value = '';
+    // Los adjuntos se consumen en este envío; se limpian de la barra.
+    State.assistant.attachments = [];
+    renderAssistantAttachments();
 
     // Contenedor del mensaje del asistente (se re-renderiza con el stream)
-    const { content: contentEl, timer: timerEl, timerVal } = appendAssistantMessage();
+    const { msg: assistantMsgEl, content: contentEl, timer: timerEl, timerVal } = appendAssistantMessage();
     contentEl.innerHTML = '<div class="chat-bubble"><em>Pensando…</em></div>';
     const stopTimer = startResponseTimer(timerEl, timerVal);
 
@@ -818,15 +1430,17 @@ async function sendAssistantMessage() {
     let acumulado = '';
 
     try {
-        const res = await fetch(`${API_BASE}/api/assistant/chat`, {
+        const res = await authFetch(`${API_BASE}/api/assistant/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                pregunta,
+                pregunta: pregunta || 'Analiza los archivos adjuntos.',
                 historial: State.assistant.history.slice(-8),
                 desde: range.desde,
                 hasta: range.hasta,
-                model: State.assistant.model
+                model: State.assistant.model,
+                web_enabled: State.assistant.webEnabled !== false,
+                adjuntos
             })
         });
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -845,8 +1459,11 @@ async function sendAssistantMessage() {
         } else {
             renderAssistantMessage(contentEl, acumulado, true);
         }
-        // Guardamos solo la respuesta (sin el razonamiento) para no reenviarlo.
-        State.assistant.history.push({ role: 'assistant', content: splitReasoning(acumulado).answer.trim() });
+        // Guardamos solo la respuesta (sin razonamiento ni chips de herramienta)
+        // para no reenviar ese ruido como contexto al modelo.
+        State.assistant.history.push({ role: 'assistant', content: stripToolMarkers(stripAllReasoning(acumulado)).trim() });
+        if (assistantMsgEl) assistantMsgEl.dataset.hi = State.assistant.history.length - 1;
+        saveAssistantHistory();
         stopTimer('Respondió en');
     } catch (err) {
         console.error('[Asistente] Error en el chat:', err);
@@ -858,6 +1475,265 @@ async function sendAssistantMessage() {
         sendBtn.disabled = false;
         input.focus();
     }
+}
+
+// ==================== ASISTENTE IA: INFORME (Fase D) ====================
+// Estado del informe en curso: figuras (specs) numeradas y texto redactado.
+let _reportState = { specsByN: {}, figuras: [], text: '' };
+
+function setupAssistantReport() {
+    const wire = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+    wire('asistente-report', enterReportSelection);
+    wire('asistente-report-cancel', exitReportSelection);
+    wire('asistente-report-create', createReport);
+    wire('report-close', () => { document.getElementById('report-modal').style.display = 'none'; });
+    wire('report-regenerate', createReport);
+    wire('report-download', generateReportPDF);
+}
+
+// Entra al modo selección: agrega un checkbox a cada mensaje con índice de historial.
+function enterReportSelection() {
+    if (State.assistant.busy) return;
+    const msgs = document.querySelectorAll('#asistente-messages .chat-msg[data-hi]');
+    if (!msgs.length) { alert('No hay mensajes para incluir en un informe todavía.'); return; }
+    msgs.forEach(msg => {
+        if (msg.querySelector('.chat-select-check')) return;
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'chat-select-check';
+        cb.addEventListener('change', updateReportSelectCount);
+        msg.prepend(cb);
+        msg.classList.add('selectable');
+    });
+    document.getElementById('asistente-select-bar').hidden = false;
+    updateReportSelectCount();
+}
+
+function exitReportSelection() {
+    document.querySelectorAll('#asistente-messages .chat-select-check').forEach(cb => cb.remove());
+    document.querySelectorAll('#asistente-messages .chat-msg.selectable').forEach(m => m.classList.remove('selectable'));
+    const bar = document.getElementById('asistente-select-bar');
+    if (bar) bar.hidden = true;
+}
+
+function updateReportSelectCount() {
+    const n = document.querySelectorAll('#asistente-messages .chat-select-check:checked').length;
+    const el = document.getElementById('asistente-select-count');
+    if (el) el.textContent = `${n} seleccionado${n === 1 ? '' : 's'}`;
+}
+
+// Recolecta las fuentes (en orden) y las figuras de los mensajes marcados.
+function collectReportSources() {
+    const checked = [...document.querySelectorAll('#asistente-messages .chat-msg[data-hi] .chat-select-check:checked')];
+    const fuentes = [];
+    const figuras = [];
+    const specsByN = {};
+    let figN = 0;
+
+    for (const cb of checked) {
+        const msg = cb.closest('.chat-msg');
+        const hi = Number(msg.dataset.hi);
+        const entry = State.assistant.history[hi];
+        if (!entry) continue;
+
+        if (entry.role === 'user') {
+            fuentes.push({ rol: 'user', texto: entry.content || '' });
+            continue;
+        }
+        // Asistente: separar texto de figuras (chart/table) y numerarlas.
+        const segments = parseAssistantSegments(splitReasoning(entry.content).answer);
+        let texto = '';
+        for (const seg of segments) {
+            if (seg.type === 'text') {
+                texto += seg.content;
+            } else if (seg.type === 'chart' || seg.type === 'table') {
+                let spec;
+                try { spec = JSON.parse(seg.content); } catch (e) { continue; }
+                figN += 1;
+                const titulo = spec.title || (seg.type === 'chart' ? 'Gráfico' : 'Tabla');
+                figuras.push({ n: figN, tipo: seg.type, titulo });
+                specsByN[figN] = { type: seg.type, spec };
+                texto += `\n[Figura ${figN}: ${titulo}]\n`;
+            }
+        }
+        fuentes.push({ rol: 'assistant', texto: texto.trim() });
+    }
+    return { fuentes, figuras, specsByN };
+}
+
+async function createReport() {
+    const { fuentes, figuras, specsByN } = collectReportSources();
+    if (!fuentes.length) { alert('Selecciona al menos un mensaje para el informe.'); return; }
+
+    _reportState = { specsByN, figuras, text: '' };
+
+    const modal = document.getElementById('report-modal');
+    const preview = document.getElementById('report-preview');
+    const status = document.getElementById('report-status');
+    const dlBtn = document.getElementById('report-download');
+    modal.style.display = 'flex';
+    preview.innerHTML = '<p class="report-loading"><i class="fa-solid fa-spinner fa-spin"></i> Redactando informe…</p>';
+    status.textContent = 'Generando…';
+    dlBtn.disabled = true;
+
+    let acumulado = '';
+    try {
+        const res = await authFetch(`${API_BASE}/api/assistant/report`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fuentes, figuras, model: State.assistant.model })
+        });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            acumulado += decoder.decode(value, { stream: true });
+            renderReportPreview(preview, acumulado, false);
+        }
+        _reportState.text = splitReasoning(acumulado).answer.trim();
+        renderReportPreview(preview, acumulado, true);
+        status.textContent = 'Informe listo. Revísalo y descarga el PDF.';
+        dlBtn.disabled = false;
+    } catch (err) {
+        console.error('[Informe] Error generando informe:', err);
+        preview.innerHTML = '<p class="report-loading">No se pudo generar el informe. Verifica la conexión con el modelo.</p>';
+        status.textContent = 'Error.';
+    }
+}
+
+// Renderiza el informe (markdown) intercalando las figuras donde aparece [[FIGURA:N]].
+// Durante el streaming (isFinal=false) las figuras se muestran como placeholder
+// para no re-instanciar Chart.js en cada token.
+function renderReportPreview(container, raw, isFinal) {
+    const answer = splitReasoning(raw).answer;
+    container.innerHTML = '';
+    const parts = answer.split(/\[\[FIGURA:(\d+)\]\]/);
+    parts.forEach((part, i) => {
+        if (i % 2 === 1) {
+            // Marcador de figura: parte impar = número.
+            const n = Number(part);
+            const fig = _reportState.specsByN[n];
+            if (!fig) return;
+            if (!isFinal) {
+                container.appendChild(buildIslandPlaceholder(fig.type));
+                return;
+            }
+            const island = fig.type === 'chart'
+                ? buildChartIsland(JSON.stringify(fig.spec))
+                : buildTableIsland(JSON.stringify(fig.spec));
+            island.classList.add('report-figure');
+            container.appendChild(island);
+        } else if (part.trim()) {
+            const block = document.createElement('div');
+            block.className = 'report-text';
+            block.innerHTML = mdToHtml(part);
+            container.appendChild(block);
+        }
+    });
+}
+
+// Genera el PDF rasterizando la vista previa (texto + figuras ya renderizadas),
+// reutilizando el header de marca y el paginado del export de Betplay.
+async function generateReportPDF() {
+    const preview = document.getElementById('report-preview');
+    const status = document.getElementById('report-status');
+    const dlBtn = document.getElementById('report-download');
+    if (!preview || !preview.children.length) return;
+
+    dlBtn.disabled = true;
+    status.textContent = 'Generando PDF…';
+    try {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const pageW = doc.internal.pageSize.getWidth();
+        const pageH = doc.internal.pageSize.getHeight();
+        const margin = 10;
+        const fullW = pageW - margin * 2;
+
+        const contentTop = (await drawAssistantReportHeader(doc, pageW)) + 6;
+        let y = contentTop;
+        const newPage = async () => { doc.addPage(); await drawAssistantReportHeader(doc, pageW); y = contentTop; };
+        // Alto máximo utilizable en una página (para escalar figuras muy altas).
+        const maxBlockMm = pageH - margin - contentTop;
+        const isFigure = (el) => el.classList.contains('chat-island') || el.classList.contains('report-figure');
+
+        for (const child of [...preview.children]) {
+            const canvas = await html2canvas(child, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+            const pxPerMm = canvas.width / fullW;
+            const blockMm = canvas.height / pxPerMm;
+
+            if (isFigure(child)) {
+                // Bloque indivisible: no se parte entre páginas.
+                let drawW = fullW, drawH = blockMm;
+                if (drawH > maxBlockMm) {
+                    // Más alta que una página: escalar para caber completa.
+                    drawH = maxBlockMm;
+                    drawW = fullW * (maxBlockMm / blockMm);
+                }
+                // Si no cabe en lo que queda de la página actual, pasa a la siguiente.
+                if (y + drawH > pageH - margin) await newPage();
+                const xC = margin + (fullW - drawW) / 2;
+                doc.addImage(canvas.toDataURL('image/png'), 'PNG', xC, y, drawW, drawH);
+                y += drawH + 5;
+                continue;
+            }
+
+            // Bloque de texto: se puede partir entre páginas.
+            let srcY = 0, remaining = canvas.height;
+            while (remaining > 0) {
+                const availMm = pageH - margin - y;
+                if (availMm < 20) { await newPage(); continue; }
+                const slicePx = Math.min(remaining, availMm * pxPerMm);
+                const sliceMm = slicePx / pxPerMm;
+                const tmp = document.createElement('canvas');
+                tmp.width = canvas.width; tmp.height = Math.round(slicePx);
+                tmp.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
+                doc.addImage(tmp.toDataURL('image/png'), 'PNG', margin, y, fullW, sliceMm);
+                y += sliceMm + 3; srcY += slicePx; remaining -= slicePx;
+                if (remaining > 0) await newPage();
+            }
+            y += 3;
+        }
+
+        const stamp = new Date().toISOString().slice(0, 10);
+        doc.save(`Informe_Asistente_Betplay_${stamp}.pdf`);
+        status.textContent = 'PDF descargado.';
+    } catch (err) {
+        console.error('[Informe] Error generando PDF:', err);
+        status.textContent = 'No se pudo generar el PDF.';
+    } finally {
+        dlBtn.disabled = false;
+    }
+}
+
+// Header de marca para el informe (reutiliza los logos del export de Betplay).
+async function drawAssistantReportHeader(doc, pageW) {
+    const logos = await getPdfLogos();
+    const H = 24;
+    doc.setFillColor(10, 46, 115);
+    doc.rect(0, 0, pageW, H, 'F');
+    doc.setFillColor(255, 196, 0);
+    doc.rect(0, H, pageW, 1, 'F');
+
+    let x = 10;
+    const cy = 6, logoH = 12;
+    const aW = logos.a.width * logoH / logos.a.height;
+    doc.addImage(logos.a, 'PNG', x, cy, aW, logoH); x += aW + 5;
+    doc.setDrawColor(255, 255, 255); doc.setLineWidth(0.2);
+    doc.line(x, cy, x, cy + logoH); x += 5;
+    const sW = logos.s.width * logoH / logos.s.height;
+    doc.addImage(logos.s, 'PNG', x, cy, sW, logoH); x += sW + 5;
+    doc.line(x, cy, x, cy + logoH); x += 5;
+    const nW = logos.n.width * logoH / logos.n.height;
+    doc.addImage(logos.n, 'PNG', x, cy, nW, logoH);
+
+    doc.setTextColor(255, 255, 255); doc.setFontSize(12);
+    doc.text('Informe · Asistente IA Betplay', pageW - 10, 10, { align: 'right' });
+    doc.setFontSize(9); doc.setTextColor(210, 224, 248);
+    doc.text(new Date().toLocaleDateString('es-CO', { year: 'numeric', month: 'long', day: 'numeric' }), pageW - 10, 16, { align: 'right' });
+    return H + 1;
 }
 
 // --- BETPLAY: TIPO Y RANGO DE FECHAS ---
@@ -905,7 +1781,7 @@ function setupBetplayControls() {
             btn.addEventListener('click', () => {
                 State.betplay.metric = btn.dataset.metric;
                 metricToggle.querySelectorAll('.metric-btn').forEach(b => b.classList.toggle('active', b === btn));
-                if (State.betplay.resumen) renderBetplay(State.betplay.resumen);
+                if (State.betplay.resumen) renderBetplay(getBetplayRenderData());
             });
         });
     }
@@ -917,10 +1793,109 @@ function setupBetplayControls() {
             btn.addEventListener('click', () => {
                 State.betplay.mapMode = btn.dataset.map;
                 mapToggle.querySelectorAll('.metric-btn').forEach(b => b.classList.toggle('active', b === btn));
-                if (State.betplay.resumen) renderBetplayMap(State.betplay.resumen.por_sitio || []);
+                if (State.betplay.resumen) renderBetplayMap(getBetplayRenderData().por_sitio || []);
             });
         });
     }
+
+    // Filtros generales del dashboard (se aplican en el navegador).
+    const muniSel = document.getElementById('bp-filter-municipio');
+    if (muniSel) muniSel.addEventListener('change', () => {
+        refreshZonaOptionsForMunicipio();  // zonas dependientes del municipio
+        applyBetplayFilters();
+    });
+    ['bp-filter-tipo', 'bp-filter-zona'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', applyBetplayFilters);
+    });
+    ['bp-filter-sitio', 'bp-filter-cliente'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', applyBetplayFilters);
+    });
+    const clearBtn = document.getElementById('bp-filter-clear');
+    if (clearBtn) clearBtn.addEventListener('click', () => {
+        ['bp-filter-municipio', 'bp-filter-tipo', 'bp-filter-zona', 'bp-filter-sitio', 'bp-filter-cliente']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+        refreshZonaOptionsForMunicipio();  // restaura todas las zonas
+        applyBetplayFilters();
+    });
+
+    // Restablecer el orden original de la tabla de sitios.
+    const sortResetBtn = document.getElementById('bp-table-sort-reset');
+    if (sortResetBtn) sortResetBtn.addEventListener('click', () => {
+        State.betplay.tableSort = { key: null, dir: 1, type: 'text' };
+        updateBetplaySortIcons();
+        if (State.betplay._tableDraw) State.betplay._tableDraw();
+    });
+
+    // Exportar tabla "Detalle por Sitio de Venta" a Excel.
+    const exportBtn = document.getElementById('bp-table-export');
+    if (exportBtn) exportBtn.addEventListener('click', exportBetplayTable);
+
+    // Exportar visuales a PDF (modal de selección).
+    const pdfBtn = document.getElementById('bp-export-pdf');
+    if (pdfBtn) pdfBtn.addEventListener('click', openBetplayPdfModal);
+    const pdfClose = document.getElementById('bp-pdf-close');
+    const pdfCancel = document.getElementById('bp-pdf-cancel');
+    [pdfClose, pdfCancel].forEach(b => { if (b) b.addEventListener('click', () => {
+        const m = document.getElementById('bp-pdf-modal'); if (m) m.style.display = 'none';
+    }); });
+    const pdfAll = document.getElementById('bp-pdf-all');
+    if (pdfAll) pdfAll.addEventListener('change', () => {
+        document.querySelectorAll('#bp-pdf-list input[type="checkbox"]').forEach(c => c.checked = pdfAll.checked);
+    });
+    const pdfGen = document.getElementById('bp-pdf-generate');
+    if (pdfGen) pdfGen.addEventListener('click', generateBetplayPDF);
+
+    // Maximizar / restaurar el mapa a pantalla completa.
+    const maxBtn = document.getElementById('bp-map-maximize');
+    const closeBtn = document.getElementById('bp-map-close');
+    if (maxBtn) maxBtn.addEventListener('click', () => toggleBetplayMapFullscreen());
+    if (closeBtn) closeBtn.addEventListener('click', () => toggleBetplayMapFullscreen(false));
+    // ESC también cierra.
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const w = document.getElementById('bp-map-wrapper');
+            if (w && w.classList.contains('bp-map-fullscreen')) toggleBetplayMapFullscreen(false);
+        }
+    });
+}
+
+// Alterna el mapa a pantalla completa. El panel del mapa es .glass-panel
+// (backdrop-filter) → rompe position:fixed, por eso movemos el mapa al <body>
+// (portal) al maximizar y lo devolvemos a su lugar al restaurar.
+// force: true = maximizar, false = restaurar, undefined = alternar.
+function toggleBetplayMapFullscreen(force) {
+    const wrapper = document.getElementById('bp-map-wrapper');
+    const maxBtn = document.getElementById('bp-map-maximize');
+    if (!wrapper) return;
+    const isFull = wrapper.classList.contains('bp-map-fullscreen');
+    const goFull = force === undefined ? !isFull : force;
+    if (goFull === isFull) return;
+
+    if (goFull) {
+        State.betplay._mapPlaceholder = document.createComment('bp-map-portal');
+        wrapper.parentNode.insertBefore(State.betplay._mapPlaceholder, wrapper);
+        document.body.appendChild(wrapper);
+        wrapper.classList.add('bp-map-fullscreen');
+        if (maxBtn) maxBtn.innerHTML = '<i class="fa-solid fa-compress"></i> Restaurar';
+    } else {
+        wrapper.classList.add('bp-map-closing');
+        wrapper.classList.remove('bp-map-fullscreen');
+        const ph = State.betplay._mapPlaceholder;
+        const finish = () => {
+            wrapper.classList.remove('bp-map-closing');
+            if (ph && ph.parentNode) {
+                ph.parentNode.insertBefore(wrapper, ph);
+                ph.parentNode.removeChild(ph);
+            }
+            State.betplay._mapPlaceholder = null;
+            if (State.betplay.map) State.betplay.map.invalidateSize();
+        };
+        setTimeout(finish, 380);
+        if (maxBtn) maxBtn.innerHTML = '<i class="fa-solid fa-expand"></i> Maximizar';
+    }
+    if (State.betplay.map) setTimeout(() => State.betplay.map.invalidateSize(), 420);
 }
 
 // --- BETPLAY: CONSULTA A LA API ---
@@ -944,12 +1919,14 @@ async function fetchBetplay() {
             + `&desde=${encodeURIComponent(range.desde)}&hasta=${encodeURIComponent(range.hasta)}`
             + (forceRefresh ? '&force_refresh=true' : '')
             + `&t=${new Date().getTime()}`;
-        const res = await fetch(url);
+        const res = await authFetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
 
         State.betplay.loaded = true;
         State.betplay.resumen = json.data;
+        State.betplay.type = range.type;
+        State.betplay.filters = { municipio: '', tipo: '', zona: '', sitio: '', cliente: '' };
 
         loadingEl.hidden = true;
         const totalCantidad = json.data && json.data.totales ? json.data.totales.cantidad : 0;
@@ -959,7 +1936,8 @@ async function fetchBetplay() {
             return;
         }
         contentEl.hidden = false;
-        renderBetplay(json.data);
+        populateBetplayFilters(json.data);
+        renderBetplay(getBetplayRenderData());
     } catch (err) {
         console.error('[Betplay] Error consultando resumen:', err);
         loadingEl.hidden = true;
@@ -1008,14 +1986,29 @@ function updateBetplaySelectionSummary(range) {
     if (range.mode === 'today') periodo = 'día actual';
     else if (range.mode === 'single') periodo = `fecha ${range.desde.split(' ')[0]}`;
     else periodo = `del ${range.desde.split(' ')[0]} al ${document.getElementById('betplay-date-to').value}`;
-    el.textContent = `Mostrando: ${tipo} — ${periodo}`;
+    el.textContent = `Mostrando: ${tipo} · ${periodo}`;
 }
 
-// --- BETPLAY: RENDER ---
-const BETPLAY_PALETTE = [
-    '#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ef4444',
-    '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#3b82f6'
+// --- PALETA CATEGÓRICA DE MARCA (tortas / barras multicolor) ---
+// Empieza por azul y amarillo de marca; el resto son colores bien
+// diferenciables para muchas categorías.
+const CHART_PALETTE = [
+    '#1257d1', // azul marca
+    '#ffc400', // amarillo marca
+    '#16a34a', // verde
+    '#f97316', // naranja
+    '#8b5cf6', // violeta
+    '#06b6d4', // cian
+    '#ec4899', // rosa
+    '#0a2e73', // azul profundo
+    '#14b8a6', // teal
+    '#eab308', // ocre
+    '#ef4444', // rojo
+    '#64748b'  // gris azulado
 ];
+
+// --- BETPLAY: RENDER ---
+const BETPLAY_PALETTE = CHART_PALETTE;
 
 // Devuelve el valor de la métrica activa (monto o cantidad) de un grupo agregado.
 function bpMetricValue(item) {
@@ -1029,13 +2022,482 @@ function bpFormatMetric(val) {
         : formatCurrency(val);
 }
 
+// Nombres de columna crudas por tipo (para agregar en el navegador).
+const BP_KEYS = {
+    pagos:    { amount: 'VALOR_PAGO',  date: 'FEC_PAGO',  client: 'IDENTIFICACION' },
+    recargas: { amount: 'VLR_RECARGA', date: 'FEC_VENTA', client: 'NUM_CELULAR' },
+    ambos:    { amount: 'VALOR_UNIFICADO', date: 'FECHA_UNIFICADA', client: 'CLIENTE_UNIFICADO' }
+};
+
+// Re-agrega las filas crudas del detalle (misma forma que el backend) para
+// soportar el filtrado del dashboard en el navegador.
+function aggregateBetplayClient(rows, type) {
+    const k = BP_KEYS[type] || BP_KEYS.pagos;
+    const byHour = {}, byDay = {}, byZone = {}, byCity = {}, byType = {}, bySite = {}, byUser = {};
+    const siteClients = {};
+    let totalMonto = 0, totalCant = 0;
+    const usuarios = new Set(), clientes = new Set(), sitios = new Set();
+
+    const bump = (d, key, monto, labels) => {
+        if (key === null || key === undefined) key = '(sin)';
+        if (!d[key]) d[key] = { monto: 0, cantidad: 0, ...(labels || {}) };
+        d[key].monto += monto;
+        d[key].cantidad += 1;
+    };
+
+    rows.forEach(r => {
+        const monto = parseFloat(r[k.amount]) || 0;
+        totalMonto += monto; totalCant += 1;
+
+        const dt = new Date(r[k.date]);
+        if (!isNaN(dt.getTime())) {
+            bump(byHour, dt.getHours(), monto);
+            bump(byDay, dt.toISOString().slice(0, 10), monto);
+        }
+        const zona = r['Zona'] || 'Sin Zona'; bump(byZone, zona, monto, { zona });
+        const ciudad = r['Ciudad'] || 'Sin Ciudad'; bump(byCity, ciudad, monto, { ciudad });
+        const tipo = r['Tipo SV'] || 'Sin Tipo'; bump(byType, tipo, monto, { tipo });
+
+        const cod = r['Cod. Sitio'];
+        bump(bySite, cod, monto, {
+            cod_sitio: cod, sitio: r['Sitio de venta'] || 'Sin Sitio',
+            oficina: r['Oficina'] || 'Sin Oficina', zona, ciudad, tipo_sv: tipo,
+            cx: r['CX'], cy: r['CY']
+        });
+        if (cod !== null && cod !== undefined) sitios.add(cod);
+
+        const ident = r['NUM_IDENTIFICACION'];
+        if (ident !== null && ident !== undefined && String(ident).trim() !== '') {
+            bump(byUser, ident, monto, { identificacion: ident });
+            usuarios.add(ident);
+        }
+        const cli = r[k.client];
+        if (cli !== null && cli !== undefined && String(cli).trim() !== '') {
+            clientes.add(cli);
+            if (cod !== null && cod !== undefined) {
+                (siteClients[cod] = siteClients[cod] || new Set()).add(cli);
+            }
+        }
+    });
+
+    Object.keys(bySite).forEach(cod => {
+        const e = bySite[cod];
+        e.clientes = siteClients[cod] ? siteClients[cod].size : 0;
+        e.ticket_promedio = e.cantidad ? Math.round(e.monto / e.cantidad * 100) / 100 : 0;
+    });
+
+    const toList = (d, labelKey) => {
+        const items = Object.keys(d).map(kk => {
+            const e = { ...d[kk] };
+            if (labelKey && e[labelKey] === undefined) e[labelKey] = kk;
+            return e;
+        });
+        items.sort((a, b) => (b.monto || 0) - (a.monto || 0));
+        return items;
+    };
+
+    return {
+        totales: {
+            monto: Math.round(totalMonto * 100) / 100,
+            cantidad: totalCant,
+            usuarios_unicos: usuarios.size,
+            clientes_unicos: clientes.size,
+            sitios_unicos: sitios.size,
+            ticket_promedio: totalCant ? Math.round(totalMonto / totalCant * 100) / 100 : 0,
+        },
+        por_hora: Object.keys(byHour).map(h => ({ hora: Number(h), ...byHour[h] })).sort((a, b) => a.hora - b.hora),
+        por_dia: Object.keys(byDay).sort().map(dd => ({ fecha: dd, ...byDay[dd] })),
+        por_zona: toList(byZone, 'zona'),
+        por_ciudad: toList(byCity, 'ciudad'),
+        por_tipo_sv: toList(byType, 'tipo'),
+        por_sitio: toList(bySite, 'cod_sitio'),
+        por_usuario: toList(byUser, 'identificacion'),
+        detalle: rows,
+        detalle_total: rows.length,
+    };
+}
+
+// Devuelve la data a renderizar: la del servidor si no hay filtros, o una
+// re-agregación de las filas del detalle filtradas.
+function getBetplayRenderData() {
+    const base = State.betplay.resumen;
+    if (!base) return base;
+    const f = State.betplay.filters || {};
+    const active = f.municipio || f.tipo || f.zona || f.sitio || f.cliente;
+    const infoEl = document.getElementById('bp-filters-info');
+    if (!active) { if (infoEl) infoEl.textContent = ''; return base; }
+
+    const k = BP_KEYS[State.betplay.type] || BP_KEYS.pagos;
+    const rows = (base.detalle || []).filter(r => {
+        if (f.municipio && (r['Ciudad'] || 'Sin Ciudad') !== f.municipio) return false;
+        if (f.tipo && (r['Tipo SV'] || 'Sin Tipo') !== f.tipo) return false;
+        if (f.zona && (r['Zona'] || 'Sin Zona') !== f.zona) return false;
+        if (f.sitio) {
+            const s = (String(r['Sitio de venta'] || '') + ' ' + String(r['Cod. Sitio'] || '')).toLowerCase();
+            if (!s.includes(f.sitio.toLowerCase())) return false;
+        }
+        if (f.cliente) {
+            const c = String(r[k.client] ?? '').toLowerCase();
+            if (!c.includes(f.cliente.toLowerCase())) return false;
+        }
+        return true;
+    });
+
+    if (infoEl) {
+        const capped = (base.detalle_total || 0) > (base.detalle || []).length;
+        infoEl.textContent = `Filtrado: ${rows.length.toLocaleString('es-CO')} transacciones`
+            + (capped ? ` (sobre muestra de ${(base.detalle || []).length.toLocaleString('es-CO')})` : '');
+    }
+    return aggregateBetplayClient(rows, State.betplay.type);
+}
+
+// Llena los selects de filtro con los valores disponibles del periodo.
+function populateBetplayFilters(data) {
+    const uniq = (arr) => Array.from(new Set(arr.filter(x => x !== null && x !== undefined && x !== '')))
+        .sort((a, b) => String(a).localeCompare(String(b), 'es'));
+    const fill = (id, items, ph) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const cur = el.value;
+        el.innerHTML = `<option value="">${ph}</option>`
+            + items.map(v => `<option value="${String(v).replace(/"/g, '&quot;')}">${v}</option>`).join('');
+        el.value = cur;
+    };
+    fill('bp-filter-municipio', uniq((data.por_ciudad || []).map(c => c.ciudad)), 'Todos los municipios');
+    fill('bp-filter-tipo', uniq((data.por_tipo_sv || []).map(t => t.tipo)), 'Todos los tipos de SV');
+    fill('bp-filter-zona', uniq((data.por_zona || []).map(z => z.zona)), 'Todas las zonas');
+}
+
+// Recalcula las zonas del selector según el municipio elegido (filtros
+// dependientes): si hay municipio, solo aparecen las zonas presentes en él.
+function refreshZonaOptionsForMunicipio() {
+    const base = State.betplay.resumen;
+    const muni = (document.getElementById('bp-filter-municipio') || {}).value || '';
+    const zonaSel = document.getElementById('bp-filter-zona');
+    if (!base || !zonaSel) return;
+    const prev = zonaSel.value;
+
+    let zonas;
+    if (!muni) {
+        zonas = Array.from(new Set((base.por_zona || []).map(z => z.zona)));
+    } else {
+        const set = new Set();
+        (base.detalle || []).forEach(r => {
+            if ((r['Ciudad'] || 'Sin Ciudad') === muni) set.add(r['Zona'] || 'Sin Zona');
+        });
+        zonas = Array.from(set);
+    }
+    zonas = zonas.filter(z => z !== null && z !== undefined && z !== '')
+        .sort((a, b) => String(a).localeCompare(String(b), 'es'));
+
+    zonaSel.innerHTML = '<option value="">Todas las zonas</option>'
+        + zonas.map(z => `<option value="${String(z).replace(/"/g, '&quot;')}">${z}</option>`).join('');
+    // Conservar la zona previa solo si sigue siendo válida para el municipio.
+    zonaSel.value = zonas.includes(prev) ? prev : '';
+}
+
+// Lee los filtros y re-renderiza el dashboard.
+function applyBetplayFilters() {
+    if (!State.betplay.resumen) return;
+    const val = (id) => { const e = document.getElementById(id); return e ? e.value.trim() : ''; };
+    State.betplay.filters = {
+        municipio: val('bp-filter-municipio'),
+        tipo: val('bp-filter-tipo'),
+        zona: val('bp-filter-zona'),
+        sitio: val('bp-filter-sitio'),
+        cliente: val('bp-filter-cliente'),
+    };
+    renderBetplay(getBetplayRenderData());
+}
+
+// Exporta la tabla "Detalle por Sitio de Venta" (respetando filtros) a Excel.
+function exportBetplayTable() {
+    if (typeof XLSX === 'undefined') { alert('No se pudo cargar el exportador de Excel.'); return; }
+    const data = getBetplayRenderData();
+    const sites = (data && data.por_sitio) || [];
+    if (!sites.length) { alert('No hay datos para exportar.'); return; }
+    const rows = sites.map(s => ({
+        'Cod. Sitio': s.cod_sitio ?? '',
+        'Sitio de Venta': s.sitio || '',
+        'Oficina': s.oficina || '',
+        'Zona': s.zona || '',
+        'Municipio': s.ciudad || '',
+        'Monto': s.monto || 0,
+        'Transacciones': s.cantidad || 0,
+        'Prom. Transacción': s.ticket_promedio || 0,
+        'Clientes': s.clientes || 0,
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Detalle por Sitio');
+    const tipo = State.betplay.type || 'betplay';
+    const fecha = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `betplay_${tipo}_detalle_sitios_${fecha}.xlsx`);
+}
+
+// ===================== EXPORTAR A PDF =====================
+let _pdfLogos = null;
+function _pdfLoadImg(src) {
+    return new Promise((resolve, reject) => {
+        const im = new Image();
+        im.crossOrigin = 'anonymous';
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = src;
+    });
+}
+async function getPdfLogos() {
+    if (_pdfLogos) return _pdfLogos;
+    const [a, s, n, b] = await Promise.all([
+        _pdfLoadImg('assets/logos/acertemos.png'),
+        _pdfLoadImg('assets/logos/sured.png'),
+        _pdfLoadImg('assets/logos/negativo.png'),
+        _pdfLoadImg('assets/logos/betplay.jpg'),
+    ]);
+    _pdfLogos = { a, s, n, b };
+    return _pdfLogos;
+}
+
+function betplayPdfPeriodText() {
+    const el = document.getElementById('betplay-selection-text');
+    return el ? el.textContent.replace('Mostrando:', '').trim() : '';
+}
+
+// Dibuja el header de marca (logos, sin estado de conexión). Devuelve su alto en mm.
+async function drawBetplayPdfHeader(doc, pageW) {
+    const logos = await getPdfLogos();
+    const H = 24;
+    doc.setFillColor(10, 46, 115);      // azul profundo
+    doc.rect(0, 0, pageW, H, 'F');
+    doc.setFillColor(255, 196, 0);      // línea amarilla inferior
+    doc.rect(0, H, pageW, 1, 'F');
+
+    let x = 10;
+    const cy = 6, logoH = 12;
+    const aW = logos.a.width * logoH / logos.a.height;
+    doc.addImage(logos.a, 'PNG', x, cy, aW, logoH); x += aW + 5;
+    doc.setDrawColor(255, 255, 255); doc.setLineWidth(0.2);
+    doc.line(x, cy, x, cy + logoH); x += 5;
+    const sW = logos.s.width * logoH / logos.s.height;
+    doc.addImage(logos.s, 'PNG', x, cy, sW, logoH); x += sW + 5;
+    doc.line(x, cy, x, cy + logoH); x += 5;
+    const nW = logos.n.width * logoH / logos.n.height;
+    doc.addImage(logos.n, 'PNG', x, cy, nW, logoH); x += nW + 6;
+
+    // Logo Betplay como chip blanco redondeado
+    const bH = logoH - 1;
+    const bW = logos.b.width * bH / logos.b.height;
+    const chipW = bW + 6, chipH = logoH + 2;
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(x, cy - 1, chipW, chipH, 1.6, 1.6, 'F');
+    doc.addImage(logos.b, 'JPEG', x + 3, cy, bW, bH);
+
+    // Título + tipo/periodo a la derecha
+    const tipo = State.betplay.type;
+    const tipoLabel = tipo === 'ambos' ? 'Pagos y Recargas' : (tipo === 'recargas' ? 'Recargas' : 'Pagos');
+    doc.setTextColor(255, 255, 255); doc.setFontSize(12);
+    doc.text('Dashboard de Operaciones · Betplay', pageW - 10, 10, { align: 'right' });
+    doc.setFontSize(9); doc.setTextColor(210, 224, 248);
+    doc.text(`${tipoLabel} · ${betplayPdfPeriodText()}`, pageW - 10, 16, { align: 'right' });
+
+    return H + 1;
+}
+
+// Lista de visuales exportables presentes y visibles en el dashboard.
+// kind: 'wide' (ancho completo) | 'compact' (media página, 2 por fila).
+function getBetplayPdfTargets() {
+    const panelOf = (id) => {
+        const c = document.getElementById(id);
+        return c ? (c.closest('.chart-panel') || c.closest('.table-panel')) : null;
+    };
+    const list = [
+        { name: 'Indicadores (KPIs)', el: document.querySelector('#betplay-content .kpi-strip'), kind: 'wide' },
+        { name: 'Comportamiento en el tiempo', el: panelOf('bp-chart-time'), kind: 'wide' },
+        { name: 'Distribución por Zona', el: panelOf('bp-chart-zona'), kind: 'compact' },
+        { name: 'Distribución por Tipo de SV', el: panelOf('bp-chart-tipo'), kind: 'compact' },
+        { name: 'Top 10 Municipios', el: panelOf('bp-chart-municipio'), kind: 'compact' },
+        { name: 'Distribución por Municipio', el: panelOf('bp-chart-municipio-donut'), kind: 'compact' },
+        { name: 'Top 10 Sitios de Venta', el: panelOf('bp-chart-sitios'), kind: 'compact' },
+        { name: 'Top 10 Usuarios', el: panelOf('bp-chart-usuarios'), kind: 'compact' },
+        { name: 'Top 10 Menos Recargas', el: panelOf('bp-chart-menos'), kind: 'compact' },
+        { name: 'Mapa de Ventas', el: document.getElementById('bp-map-wrapper'), kind: 'wide', isMap: true },
+        { name: 'Detalle por Sitio de Venta', el: panelOf('bp-table'), kind: 'wide', tableEl: document.getElementById('bp-table') },
+    ];
+    return list.filter(t => t.el && t.el.offsetParent !== null);
+}
+
+// Captura una visual a canvas. Casos especiales: mapa (leaflet-image, sin
+// offset) y tabla (expandir scroll y capturar solo la tabla, sin botones).
+async function captureBetplayTarget(t) {
+    if (t.isMap && State.betplay.map && typeof leafletImage === 'function') {
+        try {
+            const map = State.betplay.map;
+            const base = await new Promise((res, rej) =>
+                leafletImage(map, (err, canvas) => err ? rej(err) : res(canvas)));
+            // leaflet-image trae los tiles bien ubicados pero NO los circleMarker,
+            // así que dibujamos los puntos nosotros usando la proyección del mapa.
+            const size = map.getSize();
+            const scaleX = base.width / size.x, scaleY = base.height / size.y;
+            const points = bpComputeMapPoints((getBetplayRenderData() || {}).por_sitio || []);
+            const maxVal = Math.max(1, ...points.map(p => bpMetricValue(p)));
+            const ctx = base.getContext('2d');
+            points.forEach(p => {
+                const pt = map.latLngToContainerPoint([p.lat, p.lng]);
+                const x = pt.x * scaleX, y = pt.y * scaleY;
+                const r = (6 + 18 * (bpMetricValue(p) / maxVal)) * scaleX;
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, 2 * Math.PI);
+                ctx.fillStyle = 'rgba(18, 87, 209, 0.5)';
+                ctx.fill();
+                ctx.lineWidth = Math.max(1, scaleX);
+                ctx.strokeStyle = '#1257d1';
+                ctx.stroke();
+            });
+            return base;
+        } catch (e) { console.warn('[PDF] leaflet-image falló, uso html2canvas:', e); }
+    }
+    if (t.tableEl) {
+        const sc = t.el.querySelector('.betplay-detalle-scroll');
+        const prevMax = sc ? sc.style.maxHeight : null;
+        const prevOv = sc ? sc.style.overflow : null;
+        if (sc) { sc.style.maxHeight = 'none'; sc.style.overflow = 'visible'; }
+        const canvas = await html2canvas(t.tableEl, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+        if (sc) { sc.style.maxHeight = prevMax || ''; sc.style.overflow = prevOv || ''; }
+        return canvas;
+    }
+    return await html2canvas(t.el, { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false });
+}
+
+function openBetplayPdfModal() {
+    if (!State.betplay.resumen) { alert('Primero consulta datos de Betplay.'); return; }
+    const targets = getBetplayPdfTargets();
+    State.betplay._pdfTargets = targets;
+    const listEl = document.getElementById('bp-pdf-list');
+    if (listEl) listEl.innerHTML = targets.map((t, i) =>
+        `<label class="bp-pdf-item"><input type="checkbox" data-idx="${i}" checked> ${t.name}</label>`
+    ).join('');
+    const all = document.getElementById('bp-pdf-all'); if (all) all.checked = true;
+    const prog = document.getElementById('bp-pdf-progress'); if (prog) { prog.hidden = true; prog.textContent = ''; }
+    const modal = document.getElementById('bp-pdf-modal'); if (modal) modal.style.display = 'flex';
+}
+
+async function generateBetplayPDF() {
+    const targets = State.betplay._pdfTargets || [];
+    const checks = [...document.querySelectorAll('#bp-pdf-list input[type="checkbox"]')];
+    const selected = checks.filter(c => c.checked).map(c => targets[Number(c.dataset.idx)]).filter(Boolean);
+    if (!selected.length) { alert('Selecciona al menos una visual.'); return; }
+
+    const prog = document.getElementById('bp-pdf-progress');
+    const genBtn = document.getElementById('bp-pdf-generate');
+    const setProg = (t) => { if (prog) { prog.hidden = false; prog.textContent = t; } };
+    if (genBtn) genBtn.disabled = true;
+
+    try {
+        setProg('Preparando…');
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const pageW = doc.internal.pageSize.getWidth();
+        const pageH = doc.internal.pageSize.getHeight();
+        const margin = 10, gap = 6;
+        const fullW = pageW - margin * 2;
+        const colW = (fullW - gap) / 2;
+
+        let y = (await drawBetplayPdfHeader(doc, pageW)) + 6;
+        const newPage = async () => { doc.addPage(); y = (await drawBetplayPdfHeader(doc, pageW)) + 6; };
+
+        // Añade una imagen a lo ancho completo, partiéndola en varias páginas si es alta.
+        const addWidePaged = async (name, canvas) => {
+            if (y + 12 > pageH - margin) await newPage();
+            doc.setFontSize(11); doc.setTextColor(18, 87, 209);
+            doc.text(name, margin, y); y += 6;
+            const pxPerMm = canvas.width / fullW;
+            let srcY = 0, remaining = canvas.height;
+            while (remaining > 0) {
+                const availMm = pageH - margin - y;
+                if (availMm < 20) { await newPage(); continue; }
+                const slicePx = Math.min(remaining, availMm * pxPerMm);
+                const sliceMm = slicePx / pxPerMm;
+                const tmp = document.createElement('canvas');
+                tmp.width = canvas.width; tmp.height = Math.round(slicePx);
+                tmp.getContext('2d').drawImage(canvas, 0, srcY, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
+                doc.addImage(tmp.toDataURL('image/png'), 'PNG', margin, y, fullW, sliceMm);
+                y += sliceMm + 3; srcY += slicePx; remaining -= slicePx;
+                if (remaining > 0) await newPage();
+            }
+            y += 5;
+        };
+
+        // Procesa una fila de hasta 2 visuales compactas (media página c/u).
+        const addCompactRow = async (a, b) => {
+            const ca = await captureBetplayTarget(a);
+            const cb = b ? await captureBetplayTarget(b) : null;
+            const ha = colW * ca.height / ca.width;
+            const hb = cb ? colW * cb.height / cb.width : 0;
+            const rowH = 6 + Math.max(ha, hb);
+            if (y + rowH > pageH - margin) await newPage();
+            doc.setFontSize(9); doc.setTextColor(18, 87, 209);
+            doc.text(a.name, margin, y + 4);
+            doc.addImage(ca.toDataURL('image/png'), 'PNG', margin, y + 6, colW, ha);
+            if (b) {
+                doc.text(b.name, margin + colW + gap, y + 4);
+                doc.addImage(cb.toDataURL('image/png'), 'PNG', margin + colW + gap, y + 6, colW, hb);
+            }
+            y += rowH + gap;
+        };
+
+        // Recorre en orden: agrupa compactas de a 2; las anchas van solas.
+        let pending = null;
+        let done = 0;
+        const total = selected.length;
+        for (const t of selected) {
+            setProg(`Generando ${++done}/${total}: ${t.name}…`);
+            if (t.kind === 'compact') {
+                if (!pending) { pending = t; }
+                else { await addCompactRow(pending, t); pending = null; }
+            } else {
+                if (pending) { await addCompactRow(pending, null); pending = null; }
+                const canvas = await captureBetplayTarget(t);
+                await addWidePaged(t.name, canvas);
+            }
+        }
+        if (pending) await addCompactRow(pending, null);
+
+        const tipo = State.betplay.type || 'betplay';
+        const fecha = new Date().toISOString().slice(0, 10);
+        setProg('Guardando…');
+        doc.save(`betplay_${tipo}_${fecha}.pdf`);
+        const modal = document.getElementById('bp-pdf-modal'); if (modal) modal.style.display = 'none';
+    } catch (err) {
+        console.error('[PDF] Error:', err);
+        setProg('Error generando el PDF: ' + (err && err.message ? err.message : err));
+    } finally {
+        if (genBtn) genBtn.disabled = false;
+    }
+}
+
 function renderBetplay(data) {
     renderBetplayKPIs(data.totales || {});
     renderBetplayTimeChart(data);
     renderBetplayDonut('zona', 'bp-chart-zona', data.por_zona || [], 'zona');
     renderBetplayDonut('tipo', 'bp-chart-tipo', data.por_tipo_sv || [], 'tipo');
+    renderBetplayBar('municipio', 'bp-chart-municipio', (data.por_ciudad || []).slice(0, 10), 'ciudad');
+    renderBetplayDonut('municipioDonut', 'bp-chart-municipio-donut', (data.por_ciudad || []).slice(0, 8), 'ciudad');
     renderBetplayBar('sitios', 'bp-chart-sitios', (data.por_sitio || []).slice(0, 10), 'sitio');
     renderBetplayBar('usuarios', 'bp-chart-usuarios', (data.por_usuario || []).slice(0, 10), 'identificacion');
+
+    // Solo recargas: Top 10 sitios con MENOS recargas (menor métrica, entre los que vendieron).
+    const menosRow = document.getElementById('bp-menos-row');
+    if (menosRow) {
+        const isRecargas = State.betplay.type === 'recargas';
+        menosRow.hidden = !isRecargas;
+        if (isRecargas) {
+            const menos = (data.por_sitio || [])
+                .filter(s => bpMetricValue(s) > 0)
+                .sort((a, b) => bpMetricValue(a) - bpMetricValue(b))
+                .slice(0, 10);
+            renderBetplayBar('menos', 'bp-chart-menos', menos, 'sitio');
+        }
+    }
     renderBetplayMap(data.por_sitio || []);
     renderBetplayRaw(data.detalle || [], data.detalle_total || 0);
     renderBetplayTable(data.por_sitio || []);
@@ -1047,6 +2509,41 @@ function renderBetplayKPIs(totales) {
     document.getElementById('bp-kpi-cantidad').textContent = (totales.cantidad || 0).toLocaleString('es-CO');
     document.getElementById('bp-kpi-usuarios').textContent = (totales.usuarios_unicos || 0).toLocaleString('es-CO');
     document.getElementById('bp-kpi-sitios').textContent = (totales.sitios_unicos || 0).toLocaleString('es-CO');
+    const cliEl = document.getElementById('bp-kpi-clientes');
+    if (cliEl) cliEl.textContent = (totales.clientes_unicos || 0).toLocaleString('es-CO');
+    const cliSub = document.getElementById('bp-kpi-clientes-sub');
+    if (cliSub) cliSub.textContent = State.betplay.type === 'recargas' ? 'Por N° celular'
+        : State.betplay.type === 'ambos' ? 'Identificación + celular' : 'Por identificación';
+}
+
+// Callbacks reutilizables para tortas: muestran porcentaje en tooltip.
+function donutPercentTooltip(formatter) {
+    return {
+        label: (ctx) => {
+            const val = ctx.parsed;
+            const total = ctx.dataset.data.reduce((a, b) => a + (b || 0), 0) || 1;
+            const pct = (val / total * 100).toFixed(1);
+            const shown = formatter ? formatter(val) : val.toLocaleString('es-CO');
+            return `${ctx.label}: ${shown} (${pct}%)`;
+        }
+    };
+}
+
+// Plugin de labels de leyenda con porcentaje para donuts.
+function donutLegendLabels(chart) {
+    const data = chart.data;
+    const values = data.datasets[0].data;
+    const total = values.reduce((a, b) => a + (b || 0), 0) || 1;
+    return data.labels.map((label, i) => {
+        const pct = (values[i] / total * 100).toFixed(1);
+        return {
+            text: `${label} (${pct}%)`,
+            fillStyle: data.datasets[0].backgroundColor[i],
+            strokeStyle: '#ffffff',
+            lineWidth: 1,
+            index: i
+        };
+    });
 }
 
 // Gráfico de barras temporal: por hora (1 día) o por día (rango con varios días).
@@ -1077,8 +2574,8 @@ function renderBetplayTimeChart(data) {
             datasets: [{
                 label: metricLabel,
                 data: values,
-                backgroundColor: 'rgba(99, 102, 241, 0.6)',
-                borderColor: '#6366f1',
+                backgroundColor: 'rgba(18, 87, 209, 0.6)',
+                borderColor: '#1257d1',
                 borderWidth: 1,
                 borderRadius: 4
             }]
@@ -1098,7 +2595,7 @@ function renderBetplayDonut(key, canvasId, items, labelField) {
             datasets: [{
                 data: values,
                 backgroundColor: BETPLAY_PALETTE,
-                borderColor: 'rgba(11, 13, 25, 0.8)',
+                borderColor: '#ffffff',
                 borderWidth: 2
             }]
         },
@@ -1106,8 +2603,15 @@ function renderBetplayDonut(key, canvasId, items, labelField) {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: { position: 'right', labels: { color: '#94a3b8', font: { size: 11 } } },
-                tooltip: { callbacks: { label: ctx => `${ctx.label}: ${bpFormatMetric(ctx.parsed)}` } }
+                legend: {
+                    position: 'right',
+                    labels: {
+                        color: '#52627a',
+                        font: { size: 11 },
+                        generateLabels: donutLegendLabels
+                    }
+                },
+                tooltip: { callbacks: donutPercentTooltip(bpFormatMetric) }
             }
         }
     });
@@ -1116,6 +2620,9 @@ function renderBetplayDonut(key, canvasId, items, labelField) {
 function renderBetplayBar(key, canvasId, items, labelField) {
     const labels = items.map(i => String(i[labelField] ?? 'N/D'));
     const values = items.map(bpMetricValue);
+    // Colores alternados amarillo/azul de marca (una sí, una no).
+    const bg = values.map((_, i) => i % 2 === 0 ? 'rgba(255, 196, 0, 0.80)' : 'rgba(18, 87, 209, 0.72)');
+    const bd = values.map((_, i) => i % 2 === 0 ? '#e0a800' : '#1257d1');
     drawBetplayChart(key, canvasId, {
         type: 'bar',
         data: {
@@ -1123,8 +2630,8 @@ function renderBetplayBar(key, canvasId, items, labelField) {
             datasets: [{
                 label: State.betplay.metric === 'cantidad' ? 'Transacciones' : 'Monto',
                 data: values,
-                backgroundColor: 'rgba(6, 182, 212, 0.6)',
-                borderColor: '#06b6d4',
+                backgroundColor: bg,
+                borderColor: bd,
                 borderWidth: 1,
                 borderRadius: 4
             }]
@@ -1144,8 +2651,8 @@ function betplayChartOptions(horizontal) {
             tooltip: { callbacks: { label: ctx => bpFormatMetric(horizontal ? ctx.parsed.x : ctx.parsed.y) } }
         },
         scales: {
-            x: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-            y: { ticks: { color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+            x: { ticks: { color: '#52627a', font: { size: 10 } }, grid: { color: 'rgba(15,37,64,0.08)' } },
+            y: { ticks: { color: '#52627a', font: { size: 10 } }, grid: { color: 'rgba(15,37,64,0.08)' } }
         }
     };
 }
@@ -1160,15 +2667,20 @@ function drawBetplayChart(key, canvasId, config) {
     State.betplay.charts[key] = new Chart(canvas.getContext('2d'), config);
 }
 
+// Extrae los puntos con coordenadas válidas de una lista de sitios.
+function bpComputeMapPoints(sites) {
+    return (sites || [])
+        .map(s => ({ lat: parseFloat(s.cy), lng: parseFloat(s.cx), monto: s.monto || 0, cantidad: s.cantidad || 0, sitio: s.sitio, oficina: s.oficina, zona: s.zona, ciudad: s.ciudad, tipo_sv: s.tipo_sv, clientes: s.clientes || 0 }))
+        .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.lat !== 0 && p.lng !== 0);
+}
+
 // Mapa Leaflet: puntos o mapa de calor según State.betplay.mapMode.
 function renderBetplayMap(sites) {
     const mapEl = document.getElementById('bp-map');
     if (!mapEl || typeof L === 'undefined') return;
 
     // Sitios con coordenadas válidas
-    const points = sites
-        .map(s => ({ lat: parseFloat(s.cy), lng: parseFloat(s.cx), monto: s.monto || 0, cantidad: s.cantidad || 0, sitio: s.sitio, oficina: s.oficina, zona: s.zona }))
-        .filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.lat !== 0 && p.lng !== 0);
+    const points = bpComputeMapPoints(sites);
 
     // Inicializar el mapa una sola vez
     if (!State.betplay.map) {
@@ -1195,10 +2707,14 @@ function renderBetplayMap(sites) {
         points.forEach(p => {
             const radius = 6 + 18 * (bpMetricValue(p) / maxVal);
             L.circleMarker([p.lat, p.lng], {
-                radius, color: '#6366f1', fillColor: '#6366f1', fillOpacity: 0.5, weight: 1
+                radius, color: '#1257d1', fillColor: '#1257d1', fillOpacity: 0.5, weight: 1
             }).bindPopup(
-                `<strong>${p.sitio || 'Sitio'}</strong><br>${p.oficina || ''} — ${p.zona || ''}<br>`
-                + `Monto: ${formatCurrency(p.monto)}<br>Transacciones: ${p.cantidad.toLocaleString('es-CO')}`
+                `<strong>${p.sitio || 'Sitio'}</strong><br>${p.oficina || ''} · ${p.zona || ''}<br>`
+                + `${p.ciudad ? 'Municipio: ' + p.ciudad + '<br>' : ''}`
+                + `${p.tipo_sv ? 'Tipo SV: ' + p.tipo_sv + '<br>' : ''}`
+                + `Monto: ${formatCurrency(p.monto)}<br>Transacciones: ${p.cantidad.toLocaleString('es-CO')}<br>`
+                + `Clientes: ${p.clientes.toLocaleString('es-CO')}<br>`
+                + `<span style="color:#64748b;">Lat: ${p.lat.toFixed(5)} · Long: ${p.lng.toFixed(5)}</span>`
             ).addTo(layer);
         });
         layer.addTo(map);
@@ -1270,20 +2786,31 @@ function renderBetplayTable(sites) {
 
     // Guardar los sitios actuales para que la búsqueda use siempre el último dataset.
     State.betplay._tableSites = sites;
+    if (!State.betplay.tableSort) State.betplay.tableSort = { key: null, dir: 1, type: 'text' };
 
-    const draw = (filterText) => {
-        const ft = (filterText || '').toLowerCase().trim();
-        const current = State.betplay._tableSites || [];
-        const rows = current.filter(s => !ft
+    const draw = () => {
+        const ft = (searchEl ? searchEl.value : '').toLowerCase().trim();
+        let rows = (State.betplay._tableSites || []).filter(s => !ft
             || String(s.sitio || '').toLowerCase().includes(ft)
             || String(s.oficina || '').toLowerCase().includes(ft)
             || String(s.zona || '').toLowerCase().includes(ft)
+            || String(s.ciudad || '').toLowerCase().includes(ft)
             || String(s.cod_sitio || '').toLowerCase().includes(ft));
+
+        // Orden por columna (alfabético para texto, numérico para números).
+        const sort = State.betplay.tableSort;
+        if (sort.key) {
+            rows = rows.slice().sort((a, b) => {
+                let va = a[sort.key], vb = b[sort.key];
+                if (sort.type === 'num') return ((Number(va) || 0) - (Number(vb) || 0)) * sort.dir;
+                return String(va ?? '').localeCompare(String(vb ?? ''), 'es', { numeric: true }) * sort.dir;
+            });
+        }
 
         if (countEl) countEl.textContent = `${rows.length} sitios`;
 
         if (!rows.length) {
-            body.innerHTML = '<tr><td class="empty-table" colspan="6">Sin resultados.</td></tr>';
+            body.innerHTML = '<tr><td class="empty-table" colspan="9">Sin resultados.</td></tr>';
             return;
         }
         body.innerHTML = rows.map(s => `
@@ -1292,29 +2819,87 @@ function renderBetplayTable(sites) {
                 <td>${s.sitio || 'N/D'}</td>
                 <td>${s.oficina || 'N/D'}</td>
                 <td>${s.zona || 'N/D'}</td>
+                <td>${s.ciudad || 'N/D'}</td>
                 <td style="text-align: right;">${formatCurrency(s.monto || 0)}</td>
                 <td style="text-align: right;">${(s.cantidad || 0).toLocaleString('es-CO')}</td>
+                <td style="text-align: right;">${formatCurrency(s.ticket_promedio || 0)}</td>
+                <td style="text-align: right;">${(s.clientes || 0).toLocaleString('es-CO')}</td>
             </tr>
         `).join('');
     };
 
-    draw('');
+    State.betplay._tableDraw = draw;
+    draw();
+
     if (searchEl && !searchEl.dataset.bound) {
         searchEl.dataset.bound = '1';
-        searchEl.addEventListener('input', () => draw(searchEl.value));
+        searchEl.addEventListener('input', draw);
     }
+
+    // Encabezados ordenables: primer clic ordena, segundo invierte.
+    const thead = document.querySelector('#bp-table thead');
+    if (thead && !thead.dataset.sortBound) {
+        thead.dataset.sortBound = '1';
+        thead.querySelectorAll('th.bp-sortable').forEach(th => {
+            th.addEventListener('click', () => {
+                const key = th.dataset.sort;
+                const type = th.dataset.type || 'text';
+                const s = State.betplay.tableSort;
+                if (s.key === key) {
+                    s.dir = -s.dir;
+                } else {
+                    s.key = key; s.type = type;
+                    s.dir = type === 'num' ? -1 : 1;  // números: mayor→menor; texto: A→Z
+                }
+                updateBetplaySortIcons();
+                if (State.betplay._tableDraw) State.betplay._tableDraw();
+            });
+        });
+    }
+    updateBetplaySortIcons();
+}
+
+// Actualiza los íconos de orden (▲/▼) en la cabecera de la tabla de sitios.
+function updateBetplaySortIcons() {
+    const s = State.betplay.tableSort || {};
+    document.querySelectorAll('#bp-table th.bp-sortable').forEach(th => {
+        const icon = th.querySelector('.bp-sort-icon');
+        if (!icon) return;
+        if (th.dataset.sort === s.key) {
+            icon.className = 'fa-solid bp-sort-icon ' + (s.dir === 1 ? 'fa-sort-up' : 'fa-sort-down');
+            th.classList.add('bp-sort-active');
+        } else {
+            icon.className = 'fa-solid fa-sort bp-sort-icon';
+            th.classList.remove('bp-sort-active');
+        }
+    });
 }
 
 // Helper setup for expand/collapse all buttons
 function setupTreeControls() {
     if (elements.btnExpandAll && elements.btnCollapseAll) {
         elements.btnExpandAll.addEventListener('click', () => {
-            const offices = new Set(getFilteredCombinedData().joined.map(item => item.oficina || `Oficina ${item.cod_oficina}`));
-            offices.forEach(o => State.expandedOffices.add(o));
+            // Expandir todo: renderiza una vez para conocer todas las rutas padre y las abre.
+            renderTable();
+            State.expandedTableRows = new Set(State.tableParentPaths);
             renderTable();
         });
         elements.btnCollapseAll.addEventListener('click', () => {
-            State.expandedOffices.clear();
+            State.expandedTableRows.clear();
+            renderTable();
+        });
+    }
+    // Expandir/colapsar por clic (delegación sobre el tbody del árbol).
+    if (elements.tableBody) {
+        elements.tableBody.addEventListener('click', (e) => {
+            const row = e.target.closest('tr.tr-tree-parent[data-path]');
+            if (!row) return;
+            const path = row.dataset.path;
+            if (State.expandedTableRows.has(path)) {
+                State.expandedTableRows.delete(path);
+            } else {
+                State.expandedTableRows.add(path);
+            }
             renderTable();
         });
     }
@@ -1324,21 +2909,28 @@ function setupTreeControls() {
 
 async function checkStatus() {
     try {
-        const res = await fetch(`${API_BASE}/api/status?t=${new Date().getTime()}`);
+        const res = await authFetch(`${API_BASE}/api/status?t=${new Date().getTime()}`);
         const status = await res.json();
         
         State.uploadedProducts = status.goals_uploaded_products || [];
-        
+        State.assistantLockEnabled = !!status.assistant_lock_enabled;
+        // Si la vista del Asistente está visible, refrescar su estado de bloqueo.
+        const vAsis = document.getElementById('view-asistente');
+        if (vAsis && !vAsis.hidden) applyAssistantLockUI();
+
         const isOnline = status.cauca_connected || status.fortuna_connected;
         elements.statusIndicator.className = 'status-indicator ' + (isOnline ? 'online' : 'offline');
-        
+
+        // Solo indicador + icono de BD en la barra; el detalle va al tooltip.
         let text = [];
         if (status.cauca_connected) text.push('CAUCA OK');
         if (status.fortuna_connected) text.push('FORTUNA OK');
-        
-        elements.statusText.textContent = text.length > 0 
-            ? `Conectado a Oracle (${text.join(', ')})` 
-            : 'Sin conexión a bases de datos (Modo Demo)';
+        const dbStatusEl = document.getElementById('db-status');
+        if (dbStatusEl) {
+            dbStatusEl.title = text.length > 0
+                ? `Conectado a Oracle (${text.join(', ')})`
+                : 'Sin conexión a bases de datos (Modo Demo)';
+        }
             
         // Render badges according to uploaded lists
         const goalsContainer = document.getElementById('goals-management-link-container');
@@ -1363,15 +2955,16 @@ async function checkStatus() {
     } catch (e) {
         console.error("Error checking system status:", e);
         elements.statusIndicator.className = 'status-indicator offline';
-        elements.statusText.textContent = 'Servidor Backend desconectado';
+        const dbStatusEl = document.getElementById('db-status');
+        if (dbStatusEl) dbStatusEl.title = 'Servidor Backend desconectado';
     }
 }
 
 async function loadInitialCatalogues() {
     try {
         const [resSitios, resProds] = await Promise.all([
-            fetch(`${API_BASE}/api/sitios`),
-            fetch(`${API_BASE}/api/productos`)
+            authFetch(`${API_BASE}/api/sitios`),
+            authFetch(`${API_BASE}/api/productos`)
         ]);
         
         const sitiosData = await resSitios.json();
@@ -1398,8 +2991,8 @@ async function loadUploadedState() {
         State.selectedDate = todayStr;
 
         const [resMetas, resDist] = await Promise.all([
-            fetch(`${API_BASE}/api/metas?fecha=${todayStr}&t=${new Date().getTime()}`),
-            fetch(`${API_BASE}/api/distribucion?t=${new Date().getTime()}`)
+            authFetch(`${API_BASE}/api/metas?fecha=${todayStr}&t=${new Date().getTime()}`),
+            authFetch(`${API_BASE}/api/distribucion?t=${new Date().getTime()}`)
         ]);
         
         State.goals = await resMetas.json();
@@ -1453,7 +3046,7 @@ function setupUploadHandlers() {
     elements.btnClearData.addEventListener('click', async () => {
         if (confirm("¿Estás seguro de que quieres limpiar todos los excels cargados en el servidor?")) {
             try {
-                await fetch(`${API_BASE}/api/clear`, { method: 'POST' });
+                await authFetch(`${API_BASE}/api/clear`, { method: 'POST' });
                 State.goals = [];
                 State.distribution = [];
                 State.sales = [];
@@ -1481,7 +3074,7 @@ async function uploadMetasFiles(files) {
     elements.badgeMetas.textContent = 'Procesando...';
     
     try {
-        const res = await fetch(`${API_BASE}/api/upload/metas`, {
+        const res = await authFetch(`${API_BASE}/api/upload/metas`, {
             method: 'POST',
             body: formData
         });
@@ -1510,7 +3103,7 @@ async function uploadDistFile(file) {
     elements.badgeDist.textContent = 'Procesando...';
     
     try {
-        const res = await fetch(`${API_BASE}/api/upload/distribucion`, {
+        const res = await authFetch(`${API_BASE}/api/upload/distribucion`, {
             method: 'POST',
             body: formData
         });
@@ -1547,7 +3140,7 @@ async function fetchAndRenderData(forceRefresh = false) {
     // Add spin animation to the refresh button
     elements.btnRefresh.classList.add('spinning');
     elements.updateTimestamp.textContent = "Actualizando...";
-    elements.updateTimestamp.style.color = '#94a3b8';
+    elements.updateTimestamp.style.color = '#52627a';
     
     try {
         const desde = `${State.selectedDate} 00:00:00`;
@@ -1557,8 +3150,8 @@ async function fetchAndRenderData(forceRefresh = false) {
         
         const url = `${API_BASE}/api/ventas?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}${forceRefresh ? '&force_refresh=true' : ''}`;
         const [resSales, resMetas] = await Promise.all([
-            fetch(url),
-            fetch(`${API_BASE}/api/metas?fecha=${State.selectedDate}&t=${new Date().getTime()}`)
+            authFetch(url),
+            authFetch(`${API_BASE}/api/metas?fecha=${State.selectedDate}&t=${new Date().getTime()}`)
         ]);
         
         if (!resSales.ok) {
@@ -2117,6 +3710,18 @@ function renderDashboard() {
     renderTable(joined);
 }
 
+// Mapa cod_sitio -> {ciudad, tipo} desde el catálogo de sitios. Usado por el
+// árbol jerárquico de la tabla "Detalle de Ventas y Metas por Sitio".
+function buildSiteMeta() {
+    const map = {};
+    (State.sites || []).forEach(s => {
+        map[String(s.Cod_Sitio)] = {
+            ciudad: s.Ciudad || 'Sin Municipio',
+            tipo: s.Tipo_SV || 'Sin Tipo'
+        };
+    });
+    return map;
+}
 // --- CHARTS DRAWING ---
 
 function renderHourlyChart(data) {
@@ -2167,8 +3772,8 @@ function renderHourlyChart(data) {
                 {
                     label: 'Venta Real ($)',
                     data: salesPerHour,
-                    backgroundColor: 'rgba(6, 182, 212, 0.65)',
-                    borderColor: '#06b6d4',
+                    backgroundColor: 'rgba(255, 196, 0, 0.75)',
+                    borderColor: '#e0a800',
                     borderWidth: 1,
                     borderRadius: 4,
                     order: 2
@@ -2177,9 +3782,9 @@ function renderHourlyChart(data) {
                     label: 'Meta Prorrateada ($)',
                     data: goalPerHour,
                     type: 'line',
-                    borderColor: '#6366f1',
+                    borderColor: '#1257d1',
                     borderWidth: 3,
-                    pointBackgroundColor: '#6366f1',
+                    pointBackgroundColor: '#1257d1',
                     pointHoverRadius: 6,
                     fill: false,
                     tension: 0.35,
@@ -2195,15 +3800,15 @@ function renderHourlyChart(data) {
             },
             scales: {
                 y: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    grid: { color: 'rgba(15,37,64,0.08)' },
                     ticks: {
-                        color: '#94a3b8',
+                        color: '#52627a',
                         callback: value => '$' + value.toLocaleString()
                     }
                 },
                 x: {
                     grid: { display: false },
-                    ticks: { color: '#94a3b8' }
+                    ticks: { color: '#52627a' }
                 }
             }
         }
@@ -2231,21 +3836,14 @@ function renderProductChart(data) {
             type: 'doughnut',
             data: {
                 labels: ['Cargar metas/ventas'],
-                datasets: [{ data: [1], backgroundColor: ['rgba(255,255,255,0.05)'], borderWidth: 0 }]
+                datasets: [{ data: [1], backgroundColor: ['rgba(15,37,64,0.08)'], borderWidth: 0 }]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
         return;
     }
 
-    const colors = [
-        'rgba(99, 102, 241, 0.7)',  // Indigo
-        'rgba(6, 182, 212, 0.7)',   // Cyan
-        'rgba(16, 185, 129, 0.7)',  // Emerald
-        'rgba(245, 158, 11, 0.7)',  // Amber
-        'rgba(239, 68, 68, 0.7)',   // Red
-        'rgba(168, 85, 247, 0.7)'   // Purple
-    ];
+    const colors = CHART_PALETTE;
 
     State.charts.product = new Chart(ctx, {
         type: 'doughnut',
@@ -2255,7 +3853,7 @@ function renderProductChart(data) {
                 data: dataset,
                 backgroundColor: colors.slice(0, labels.length),
                 borderWidth: 1,
-                borderColor: 'rgba(255, 255, 255, 0.1)'
+                borderColor: '#ffffff'
             }]
         },
         options: {
@@ -2264,7 +3862,7 @@ function renderProductChart(data) {
             plugins: {
                 legend: {
                     position: 'bottom',
-                    labels: { color: '#94a3b8', boxWidth: 12, font: { family: 'Outfit', size: 11 } }
+                    labels: { color: '#52627a', boxWidth: 12, font: { family: 'Outfit', size: 11 } }
                 }
             },
             cutout: '65%'
@@ -2311,7 +3909,7 @@ function renderComplianceRanking(data) {
             type: 'bar',
             data: {
                 labels: ['Sin oficinas >= 95%'],
-                datasets: [{ data: [0], backgroundColor: ['rgba(255,255,255,0.05)'] }]
+                datasets: [{ data: [0], backgroundColor: ['rgba(15,37,64,0.08)'] }]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
@@ -2340,16 +3938,16 @@ function renderComplianceRanking(data) {
             },
             scales: {
                 x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    grid: { color: 'rgba(15,37,64,0.08)' },
                     ticks: {
-                        color: '#94a3b8',
+                        color: '#52627a',
                         callback: value => value + '%'
                     },
                     max: Math.max(100, ...dataset) // dynamic max scale
                 },
                 y: {
                     grid: { display: false },
-                    ticks: { color: '#94a3b8', font: { family: 'Outfit', size: 10 } }
+                    ticks: { color: '#52627a', font: { family: 'Outfit', size: 10 } }
                 }
             }
         }
@@ -2395,7 +3993,7 @@ function renderComplianceLagging(data) {
             type: 'bar',
             data: {
                 labels: ['Sin oficinas < 95%'],
-                datasets: [{ data: [0], backgroundColor: ['rgba(255,255,255,0.05)'] }]
+                datasets: [{ data: [0], backgroundColor: ['rgba(15,37,64,0.08)'] }]
             },
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
@@ -2424,16 +4022,16 @@ function renderComplianceLagging(data) {
             },
             scales: {
                 x: {
-                    grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                    grid: { color: 'rgba(15,37,64,0.08)' },
                     ticks: {
-                        color: '#94a3b8',
+                        color: '#52627a',
                         callback: value => value + '%'
                     },
                     max: 100 // keep it scaled up to 100% since they are lagging
                 },
                 y: {
                     grid: { display: false },
-                    ticks: { color: '#94a3b8', font: { family: 'Outfit', size: 10 } }
+                    ticks: { color: '#52627a', font: { family: 'Outfit', size: 10 } }
                 }
             }
         }
@@ -2702,13 +4300,12 @@ function renderTable(prejoinedData) {
         }
     }
 
-    // 3. Dynamically build table headers (Two-row dynamic thead)
+    // 3. Cabecera dinámica de dos filas: columna jerárquica única + Promotor + productos.
     if (elements.tableThead) {
         elements.tableThead.innerHTML = `
             <tr>
-                <th rowspan="2" style="width: 80px;">Zona</th>
-                <th rowspan="2" style="min-width: 280px; text-align: left;">Oficina / Sitio de Venta</th>
-                <th rowspan="2" style="min-width: 140px; text-align: left;">Promotor</th>
+                <th rowspan="2" class="sticky-col sticky-col-1" style="width: 360px; min-width: 360px; text-align: left;">Zona / Municipio / Oficina / Sitio</th>
+                <th rowspan="2" class="sticky-col sticky-col-2" style="width: 150px; min-width: 150px; text-align: left;">Promotor</th>
                 ${displayedProducts.map(prod => `
                     <th colspan="3" class="product-col-group-header">${prod}</th>
                 `).join('')}
@@ -2725,177 +4322,176 @@ function renderTable(prejoinedData) {
 
     elements.tableBody.innerHTML = '';
 
-    // 4. Group data by Office and Sales Site
-    const officesMap = {};
+    // 4. Construir árbol jerárquico: Zona → Municipio → Oficina → Sitio de venta.
+    //    El municipio se toma del catálogo de sitios (misma fuente que la matriz).
+    const siteMeta = buildSiteMeta();
+    const makeNode = (label, type, level, path) => ({
+        label, type, level, path,
+        productos: {}, promotores: new Set(), children: {}, leaves: 0,
+        cod_sitio: null, isLeaf: false
+    });
+    // Acumula venta/meta por producto en un nodo (misma lógica que antes: no altera valores).
+    const accumProduct = (node, item) => {
+        if (!node.productos[item.producto]) node.productos[item.producto] = { venta: 0, meta: 0 };
+        node.productos[item.producto].venta += item.venta;
+        node.productos[item.producto].meta += item.meta;
+    };
+
+    const root = makeNode('TOTAL', 'root', -1, '');
     filteredData.forEach(item => {
-        const officeKey = item.oficina || `Oficina ${item.cod_oficina}` || 'Sin Oficina';
-        
-        if (!officesMap[officeKey]) {
-            officesMap[officeKey] = {
-                oficina: officeKey,
-                cod_oficina: item.cod_oficina,
-                zona: item.zona || 'Sin Zona',
-                promotores: new Set(),
-                sitios: {},
-                productos: {}
-            };
-        }
-        
-        const officeObj = officesMap[officeKey];
-        if (item.promotor && item.promotor !== 'Sin Promotor') {
-            officeObj.promotores.add(item.promotor);
-        }
-        
-        // Accumulate on Office level
-        if (!officeObj.productos[item.producto]) {
-            officeObj.productos[item.producto] = { venta: 0, meta: 0 };
-        }
-        officeObj.productos[item.producto].venta += item.venta;
-        officeObj.productos[item.producto].meta += item.meta;
-        
-        // Accumulate on Site level
-        const siteKey = item.cod_sitio;
-        if (!officeObj.sitios[siteKey]) {
-            officeObj.sitios[siteKey] = {
-                cod_sitio: item.cod_sitio,
-                sitio_venta: item.sitio_venta,
-                promotor: item.promotor,
-                zona: item.zona,
-                productos: {}
-            };
-        }
-        
-        const siteObj = officeObj.sitios[siteKey];
-        if (!siteObj.productos[item.producto]) {
-            siteObj.productos[item.producto] = { venta: 0, meta: 0 };
-        }
-        siteObj.productos[item.producto].venta += item.venta;
-        siteObj.productos[item.producto].meta += item.meta;
+        const meta = siteMeta[String(item.cod_sitio)] || { ciudad: 'Sin Municipio' };
+        const officeLabel = item.oficina || `Oficina ${item.cod_oficina}` || 'Sin Oficina';
+        const levels = [
+            { key: item.zona || 'Sin Zona', label: item.zona || 'Sin Zona', type: 'zona' },
+            { key: meta.ciudad || 'Sin Municipio', label: meta.ciudad || 'Sin Municipio', type: 'municipio' },
+            { key: officeLabel, label: officeLabel, type: 'oficina' },
+            { key: String(item.cod_sitio), label: item.sitio_venta, type: 'sitio', cod: item.cod_sitio }
+        ];
+        let node = root;
+        let path = '';
+        levels.forEach((lvl, depth) => {
+            path = path ? `${path}||${lvl.key}` : lvl.key;
+            let child = node.children[lvl.key];
+            if (!child) {
+                child = node.children[lvl.key] = makeNode(lvl.label, lvl.type, depth, path);
+                if (lvl.type === 'sitio') { child.isLeaf = true; child.cod_sitio = lvl.cod; }
+            }
+            accumProduct(child, item);
+            if (item.promotor && item.promotor !== 'Sin Promotor') child.promotores.add(item.promotor);
+            node = child;
+        });
     });
 
-    const totalOffices = Object.keys(officesMap).length;
-    let totalSites = 0;
-    Object.values(officesMap).forEach(o => totalSites += Object.keys(o.sitios).length);
+    // Contar sitios (hojas) por subárbol y total de oficinas para el contador.
+    const countLeaves = (node) => {
+        if (node.isLeaf) return (node.leaves = 1);
+        let n = 0;
+        Object.values(node.children).forEach(c => { n += countLeaves(c); });
+        return (node.leaves = n);
+    };
+    countLeaves(root);
+    let totalOffices = 0;
+    const countOffices = (node) => {
+        Object.values(node.children).forEach(c => {
+            if (c.type === 'oficina') totalOffices++; else countOffices(c);
+        });
+    };
+    countOffices(root);
 
     // Update dynamic results counter badge
     if (elements.tableResultsCount) {
-        elements.tableResultsCount.textContent = `${totalOffices} oficinas (${totalSites} sitios)`;
+        elements.tableResultsCount.textContent = `${totalOffices} oficinas (${root.leaves} sitios)`;
     }
 
-    if (totalOffices === 0) {
+    if (root.leaves === 0) {
         elements.tableBody.innerHTML = `
             <tr>
-                <td colspan="${3 + displayedProducts.length * 3}" class="empty-table">No se encontraron registros que coincidan con la búsqueda o los filtros activos.</td>
+                <td colspan="${2 + displayedProducts.length * 3}" class="empty-table">No se encontraron registros que coincidan con la búsqueda o los filtros activos.</td>
             </tr>
         `;
+        State.tableParentPaths = new Set();
+        syncStickyColumnOffsets();
         return;
     }
 
-    // 5. Render Office Parent Rows and Site Child Rows (Tree Grid layout)
-    const sortedOfficeNames = Object.keys(officesMap).sort();
-    
-    sortedOfficeNames.forEach(offName => {
-        const office = officesMap[offName];
-        const isCollapsed = !State.expandedOffices.has(offName);
-        const officeSitesCount = Object.keys(office.sitios).length;
-        
-        // Render Office Parent Row
-        const trOffice = document.createElement('tr');
-        trOffice.className = 'tr-office-parent';
-        trOffice.dataset.office = offName;
-        
-        // Click toggles collapse state
-        trOffice.addEventListener('click', (e) => {
-            // Prevent toggling if user clicks a link/text selection inside
-            if (State.expandedOffices.has(offName)) {
-                State.expandedOffices.delete(offName);
-            } else {
-                State.expandedOffices.add(offName);
-            }
-            renderTable();
-        });
-        
-        let officeRowHtml = `
-            <td>${office.zona}</td>
-            <td>
-                <div class="office-name-container">
-                    <span class="office-chevron ${!isCollapsed ? 'expanded' : ''}">
-                        <i class="fa-solid fa-chevron-right"></i>
-                    </span>
-                    <span style="color:#ffffff; font-weight: 600;">${office.oficina}</span>
-                    <span class="office-sites-count">${officeSitesCount} sitios</span>
-                </div>
-            </td>
-            <td>${Array.from(office.promotores).join(', ') || 'Varios'}</td>
+    // Celdas de producto (Venta / Meta / % Cump.) — formato idéntico al anterior.
+    const productCells = (node) => displayedProducts.map((prod, index) => {
+        const prodData = node.productos[prod] || { venta: 0, meta: 0 };
+        const compliance = calculateCompliance(prodData.venta, prodData.meta);
+        const cumpColor = compliance >= 95 ? 'var(--accent)' : 'var(--danger)';
+        const isFirst = index === 0;
+        const isLast = index === displayedProducts.length - 1;
+        const cellClasses = `product-cell ${isFirst ? 'product-cell-first' : ''} ${isLast ? 'product-cell-last' : ''}`;
+        return `
+            <td class="num-col ${cellClasses}">${formatProductValue(prodData.venta, prod)}</td>
+            <td class="num-col ${cellClasses}" style="color:var(--text-muted);">${formatProductValue(prodData.meta, prod)}</td>
+            <td class="num-col ${cellClasses}" style="color: ${cumpColor} !important; font-weight: 600 !important;">${compliance}%</td>
         `;
-        
-        // Horizontal columns for each product on Office level
-        displayedProducts.forEach((prod, index) => {
-            const prodData = office.productos[prod] || { venta: 0, meta: 0 };
-            const compliance = calculateCompliance(prodData.venta, prodData.meta);
-            
-            let cumpColor = 'var(--danger)';
-            if (compliance >= 95) cumpColor = 'var(--accent)';
-            
-            const isFirst = index === 0;
-            const isLast = index === displayedProducts.length - 1;
-            const cellClasses = `product-cell ${isFirst ? 'product-cell-first' : ''} ${isLast ? 'product-cell-last' : ''}`;
-            
-            officeRowHtml += `
-                <td class="num-col ${cellClasses}">${formatProductValue(prodData.venta, prod)}</td>
-                <td class="num-col ${cellClasses}" style="color:rgba(255,255,255,0.45);">${formatProductValue(prodData.meta, prod)}</td>
-                <td class="num-col ${cellClasses}" style="color: ${cumpColor} !important; font-weight: 600 !important;">${compliance}%</td>
-            `;
+    }).join('');
+
+    // 5. Render recursivo respetando el estado de expansión (solo se pintan los
+    //    hijos de nodos expandidos). Por defecto arranca mostrando solo las zonas.
+    const LEVEL_NOUN = ['zona', 'municipio', 'oficina', 'sitio'];
+    // Todas las rutas padre del árbol completo (para "Expandir todo"), sin importar expansión.
+    const parentPaths = new Set();
+    const collectParents = (node) => {
+        Object.values(node.children).forEach(c => {
+            if (!c.isLeaf) { parentPaths.add(c.path); collectParents(c); }
         });
-        
-        trOffice.innerHTML = officeRowHtml;
-        elements.tableBody.appendChild(trOffice);
-        
-        // Render Site Child Rows (only if parent is NOT collapsed)
-        const sortedSiteKeys = Object.keys(office.sitios).sort();
-        
-        sortedSiteKeys.forEach(siteKey => {
-            const site = office.sitios[siteKey];
-            
-            const trSite = document.createElement('tr');
-            trSite.className = `tr-site-child ${isCollapsed ? 'collapsed-row' : ''}`;
-            
-            let siteRowHtml = `
-                <td style="color:var(--text-muted);">${site.zona}</td>
-                <td>
-                    <div class="indent-site-container">
-                        <span class="tree-branch-icon">└─</span>
-                        <span style="color:#ffffff; font-weight: 500;">${site.sitio_venta}</span>
-                        <span style="font-size: 10px; color: var(--text-muted); font-family: monospace;">(${site.cod_sitio})</span>
-                    </div>
-                </td>
-                <td>${site.promotor || 'Sin Promotor'}</td>
-            `;
-            
-            // Horizontal columns for each product on Site level
-            displayedProducts.forEach((prod, index) => {
-                const prodData = site.productos[prod] || { venta: 0, meta: 0 };
-                const compliance = calculateCompliance(prodData.venta, prodData.meta);
-                
-                let cumpColor = 'var(--danger)';
-                if (compliance >= 95) cumpColor = 'var(--accent)';
-                
-                const isFirst = index === 0;
-                const isLast = index === displayedProducts.length - 1;
-                const cellClasses = `product-cell ${isFirst ? 'product-cell-first' : ''} ${isLast ? 'product-cell-last' : ''}`;
-                
-                siteRowHtml += `
-                    <td class="num-col ${cellClasses}">${formatProductValue(prodData.venta, prod)}</td>
-                    <td class="num-col ${cellClasses}" style="color:var(--text-muted);">${formatProductValue(prodData.meta, prod)}</td>
-                    <td class="num-col ${cellClasses}" style="color: ${cumpColor} !important; font-weight: 600 !important;">${compliance}%</td>
-                `;
-            });
-            
-            trSite.innerHTML = siteRowHtml;
-            elements.tableBody.appendChild(trSite);
+    };
+    collectParents(root);
+    const rowsHtml = [];
+    const walk = (node) => {
+        const kids = Object.values(node.children).sort((a, b) => a.label.localeCompare(b.label, 'es'));
+        kids.forEach(child => {
+            const isLeaf = !!child.isLeaf;
+            const isExpanded = State.expandedTableRows.has(child.path);
+            const indent = child.level * 18;
+
+            const chevron = isLeaf
+                ? `<span class="tree-leaf-dot">•</span>`
+                : `<span class="office-chevron ${isExpanded ? 'expanded' : ''}"><i class="fa-solid fa-chevron-right"></i></span>`;
+
+            let ident;
+            if (isLeaf) {
+                ident = `<span class="tree-node-name">${escapeHtml(child.label || '')}</span>
+                         <span class="tree-node-code">(${escapeHtml(String(child.cod_sitio ?? ''))})</span>`;
+            } else {
+                const noun = child.leaves === 1 ? LEVEL_NOUN[3] : LEVEL_NOUN[3] + 's';
+                ident = `<span class="tree-node-name tree-lvl-${child.level}">${escapeHtml(child.label || '')}</span>
+                         <span class="office-sites-count">${child.leaves} ${noun}</span>`;
+            }
+
+            const promotor = child.promotores.size === 1
+                ? Array.from(child.promotores)[0]
+                : (child.promotores.size === 0 ? (isLeaf ? 'Sin Promotor' : '—') : 'Varios');
+
+            rowsHtml.push(`
+                <tr class="tr-tree-row tr-tree-lvl-${child.level}${isLeaf ? ' tr-tree-leaf' : ' tr-tree-parent'}"${isLeaf ? '' : ` data-path="${escapeHtml(child.path)}"`}>
+                    <td class="sticky-col sticky-col-1">
+                        <div class="tree-node-cell" style="padding-left:${indent}px;">
+                            ${chevron}${ident}
+                        </div>
+                    </td>
+                    <td class="sticky-col sticky-col-2" style="${isLeaf ? '' : 'color:var(--text-muted);'}">${escapeHtml(promotor)}</td>
+                    ${productCells(child)}
+                </tr>
+            `);
+
+            if (!isLeaf && isExpanded) walk(child);
         });
-    });
+    };
+    walk(root);
+    State.tableParentPaths = parentPaths;
+    elements.tableBody.innerHTML = rowsHtml.join('');
+
+    // 6. Ajustar los offsets 'left' de las columnas fijas segun su ancho real,
+    //    para que Zona/Oficina/Promotor queden pegadas sin huecos ni solapes.
+    syncStickyColumnOffsets();
 }
+
+// Recalcula los offsets horizontales de las columnas sticky a partir del ancho
+// real renderizado de las dos primeras columnas de la cabecera.
+function syncStickyColumnOffsets() {
+    const scroll = document.querySelector('.detalle-sitios-scroll');
+    if (!scroll || !elements.tableThead) return;
+    const headerCells = elements.tableThead.querySelectorAll('tr:first-child .sticky-col');
+    if (headerCells.length < 2) return;
+    const col1W = headerCells[0].getBoundingClientRect().width;
+    scroll.style.setProperty('--sticky-left-2', `${col1W}px`);
+
+    // Alto real de la primera fila de cabecera, para fijar la segunda fila
+    // (Venta/Meta/% Cump.) justo debajo y evitar que se solapen al hacer scroll.
+    const row1 = elements.tableThead.querySelector('tr:first-child');
+    if (row1) {
+        scroll.style.setProperty('--thead-row1-h', `${row1.getBoundingClientRect().height}px`);
+    }
+}
+
+// Reajusta las columnas fijas cuando cambia el tamano de la ventana.
+window.addEventListener('resize', () => {
+    if (document.querySelector('.detalle-sitios-scroll .sticky-col')) syncStickyColumnOffsets();
+});
 
 // --- DYNAMIC TABLE FILTERS POPULATOR ---
 
@@ -3059,7 +4655,7 @@ function logger(msg) {
 
 async function loadWhatsAppPromoters() {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-promoters`);
+        const res = await authFetch(`${API_BASE}/api/whatsapp-promoters`);
         if (!res.ok) throw new Error("Error al obtener promotores");
         State.whatsappPromoters = await res.json();
         renderPromotersList();
@@ -3084,7 +4680,7 @@ function updatePersonnelSidebarCount() {
 
 async function loadWhatsAppCoordinators() {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators`);
+        const res = await authFetch(`${API_BASE}/api/whatsapp-coordinators`);
         if (!res.ok) throw new Error("Error al obtener coordinadores");
         State.whatsappCoordinators = await res.json();
         renderCoordinatorsList();
@@ -3122,10 +4718,10 @@ function renderCoordinatorsList() {
     
     elements.coordinatorsListBody.innerHTML = filtered.map(c => `
         <tr data-id="${c.id}">
-            <td style="font-weight: 600; color: #ffffff;">${c.name}</td>
+            <td style="font-weight: 600; color: var(--text-primary);">${c.name}</td>
             <td>${c.cedula}</td>
             <td>${c.role}</td>
-            <td><span class="badge" style="background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 6px;">${c.zone}</span></td>
+            <td><span class="badge" style="background: rgba(15,37,64,0.08); padding: 4px 8px; border-radius: 6px;">${c.zone}</span></td>
             <td>${c.phone}</td>
             <td style="text-align: center;">
                 <label class="switch">
@@ -3203,7 +4799,7 @@ function resetCoordinatorForm() {
 
 async function saveCoordinatorStatus(cid, coordinatorData) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(coordinatorData)
@@ -3221,7 +4817,7 @@ async function saveCoordinatorStatus(cid, coordinatorData) {
 
 async function deleteCoordinatorRequest(cid) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-coordinators/${cid}`, {
             method: 'DELETE'
         });
         if (!res.ok) throw new Error("Error al eliminar");
@@ -3288,7 +4884,7 @@ function setupCoordinatorManagement() {
                 method = 'PUT';
             }
             
-            const res = await fetch(url, {
+            const res = await authFetch(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -3321,7 +4917,7 @@ function setupCoordinatorManagement() {
 
 async function loadWhatsAppAdministrators() {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-administrators`);
+        const res = await authFetch(`${API_BASE}/api/whatsapp-administrators`);
         if (!res.ok) throw new Error("Error al obtener administradores");
         State.whatsappAdministrators = await res.json();
         renderAdministratorsList();
@@ -3357,7 +4953,7 @@ function renderAdministratorsList() {
     
     elements.administratorsListBody.innerHTML = filtered.map(a => `
         <tr data-id="${a.id}">
-            <td style="font-weight: 600; color: #ffffff;">${a.name}</td>
+            <td style="font-weight: 600; color: var(--text-primary);">${a.name}</td>
             <td>${a.cedula}</td>
             <td>${a.phone}</td>
             <td style="text-align: center;">
@@ -3433,7 +5029,7 @@ function resetAdministratorForm() {
 
 async function saveAdministratorStatus(aid, administratorData) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(administratorData)
@@ -3451,7 +5047,7 @@ async function saveAdministratorStatus(aid, administratorData) {
 
 async function deleteAdministratorRequest(aid) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-administrators/${aid}`, {
             method: 'DELETE'
         });
         if (!res.ok) throw new Error("Error al eliminar");
@@ -3515,7 +5111,7 @@ function setupAdministratorManagement() {
                 method = 'PUT';
             }
             
-            const res = await fetch(url, {
+            const res = await authFetch(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -3570,9 +5166,9 @@ function renderPromotersList() {
     
     elements.promotersListBody.innerHTML = filtered.map(p => `
         <tr data-id="${p.id}">
-            <td style="font-weight: 600; color: #ffffff;">${p.name}</td>
+            <td style="font-weight: 600; color: var(--text-primary);">${p.name}</td>
             <td>${p.phone}</td>
-            <td><span class="badge" style="background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 6px;">${p.zone}</span></td>
+            <td><span class="badge" style="background: rgba(15,37,64,0.08); padding: 4px 8px; border-radius: 6px;">${p.zone}</span></td>
             <td style="text-align: center;">
                 <label class="switch">
                     <input type="checkbox" class="toggle-active" ${p.active === 1 ? 'checked' : ''}>
@@ -3647,7 +5243,7 @@ function resetPromoterForm() {
 
 async function savePromoterStatus(pid, promoterData) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-promoters/${pid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-promoters/${pid}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(promoterData)
@@ -3665,7 +5261,7 @@ async function savePromoterStatus(pid, promoterData) {
 
 async function deletePromoterRequest(pid) {
     try {
-        const res = await fetch(`${API_BASE}/api/whatsapp-promoters/${pid}`, {
+        const res = await authFetch(`${API_BASE}/api/whatsapp-promoters/${pid}`, {
             method: 'DELETE'
         });
         if (!res.ok) throw new Error("Error al eliminar");
@@ -3729,7 +5325,7 @@ function setupPromoterManagement() {
                 method = 'PUT';
             }
             
-            const res = await fetch(url, {
+            const res = await authFetch(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -3789,7 +5385,7 @@ async function openGoalsModal() {
 
 async function loadModalGoalsList() {
     try {
-        const res = await fetch(`${API_BASE}/api/metas/products?t=${new Date().getTime()}`);
+        const res = await authFetch(`${API_BASE}/api/metas/products?t=${new Date().getTime()}`);
         if (!res.ok) throw new Error("No se pudo cargar la lista de productos");
         const products = await res.json();
         
@@ -3858,7 +5454,7 @@ function renderModalGoalsList(products) {
             
             console.log("Toggle clicked for:", p.producto, "current status:", p.activo);
             try {
-                const res = await fetch(`${API_BASE}/api/metas/toggle`, {
+                const res = await authFetch(`${API_BASE}/api/metas/toggle`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ producto: p.producto, activo: !p.activo })
@@ -3918,7 +5514,7 @@ function renderModalGoalsList(products) {
                 btnDelete.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
                 
                 try {
-                    const res = await fetch(`${API_BASE}/api/metas/product/${encodeURIComponent(p.producto)}`, {
+                    const res = await authFetch(`${API_BASE}/api/metas/product/${encodeURIComponent(p.producto)}`, {
                         method: 'DELETE'
                     });
                     if (!res.ok) throw new Error("Error al eliminar");

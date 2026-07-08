@@ -3,11 +3,23 @@ import json
 import logging
 from datetime import datetime, date, timedelta
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request
+from dotenv import load_dotenv
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, Request, Depends, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from backend.auth import get_current_user, CurrentUser
+from backend.login import service as login_service
+
+load_dotenv()
+
+# ── Candado del Asistente IA ──────────────────────────────────────────────
+# Bloqueo opcional con pantalla de "Sitio en construcción". La contraseña se
+# valida SIEMPRE en el backend (nunca viaja al JS del navegador). Activable con
+# ASSISTANT_LOCK_ENABLED en el .env.
+ASSISTANT_LOCK_ENABLED = os.getenv("ASSISTANT_LOCK_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+ASSISTANT_LOCK_PASSWORD = os.getenv("ASSISTANT_LOCK_PASSWORD", "AcertemosLLM")
 
 from backend.db import db_manager
 from backend.queries import (
@@ -22,7 +34,8 @@ from backend.cache import (
     seed_coordinators, get_all_coordinators, add_coordinator, update_coordinator, delete_coordinator,
     find_active_coordinator_by_phone,
     get_all_administrators, add_administrator, update_administrator, delete_administrator,
-    find_active_administrator_by_phone
+    find_active_administrator_by_phone,
+    is_first_session_of_day
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +84,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Login local (solución temporal — sin JWT, cookies ni micro de autenticación).
+# Solo valida el usuario y contraseña quemados en backend/login/service.py.
+# ---------------------------------------------------------------------------
+@app.post("/api/login")
+def login(email: str = Form(...), password: str = Form(...)):
+    return login_service.login(email=email, password=password)
+
+@app.post("/api/logout")
+def logout():
+    # Sin token ni cookies: el cliente limpia su bandera de sesión localmente.
+    return {"message": "Sesión cerrada correctamente"}
 
 # Helper: Convert oracle rows to dict list
 def rows_to_dicts(cursor):
@@ -221,14 +247,34 @@ def get_status():
         "fortuna_connected": fortuna_ok,
         "goals_uploaded_products": [p for p, recs in goals_store.items() if recs and recs[0].get("activo", True)],
         "all_goals_products": list(goals_store.keys()),
-        "distribution_records_count": len(distribution_store)
+        "distribution_records_count": len(distribution_store),
+        "assistant_lock_enabled": ASSISTANT_LOCK_ENABLED,
     }
+
+
+class AssistantUnlockRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/assistant/unlock")
+def assistant_unlock(req: AssistantUnlockRequest, current_user: CurrentUser = Depends(get_current_user)):
+    """Valida la contraseña del candado del Asistente contra el .env.
+
+    La comparación ocurre solo en el servidor; el JS del navegador nunca conoce
+    la clave. Si el candado está desactivado, se considera desbloqueado.
+    """
+    if not ASSISTANT_LOCK_ENABLED:
+        return {"ok": True, "locked": False}
+    if req.password == ASSISTANT_LOCK_PASSWORD:
+        return {"ok": True, "locked": False}
+    raise HTTPException(status_code=401, detail="Contraseña incorrecta")
 
 @app.get("/api/ventas")
 def get_ventas(
     desde: str = Query(..., description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
     hasta: str = Query(..., description="Fecha fin YYYY-MM-DD HH:MM:SS"),
-    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar caché")
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar caché"),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     Executes the main hourly sales query on CAUCAMED and FORTUMED.
@@ -418,14 +464,14 @@ class PromoterSchema(BaseModel):
     active: int = 1
 
 @app.get("/api/whatsapp-promoters")
-def get_whatsapp_promoters_endpoint():
+def get_whatsapp_promoters_endpoint(current_user: CurrentUser = Depends(get_current_user)):
     """
     Returns list of all promoters in the whatsapp_promoters table.
     """
     return get_all_promoters()
 
 @app.post("/api/whatsapp-promoters")
-def create_whatsapp_promoter(p: PromoterSchema):
+def create_whatsapp_promoter(p: PromoterSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Adds a new promoter to the database.
     """
@@ -438,7 +484,7 @@ def create_whatsapp_promoter(p: PromoterSchema):
         raise HTTPException(status_code=500, detail="Error interno al agregar promotor.")
 
 @app.put("/api/whatsapp-promoters/{pid}")
-def update_whatsapp_promoter(pid: int, p: PromoterSchema):
+def update_whatsapp_promoter(pid: int, p: PromoterSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Updates an existing promoter in the database.
     """
@@ -453,7 +499,7 @@ def update_whatsapp_promoter(pid: int, p: PromoterSchema):
         raise HTTPException(status_code=500, detail="Error interno al actualizar promotor.")
 
 @app.delete("/api/whatsapp-promoters/{pid}")
-def delete_whatsapp_promoter(pid: int):
+def delete_whatsapp_promoter(pid: int, current_user: CurrentUser = Depends(get_current_user)):
     """
     Deletes a promoter from the database.
     """
@@ -479,14 +525,14 @@ class AdministratorSchema(BaseModel):
     active: int = 1
 
 @app.get("/api/whatsapp-administrators")
-def get_whatsapp_administrators_endpoint():
+def get_whatsapp_administrators_endpoint(current_user: CurrentUser = Depends(get_current_user)):
     """
     Returns list of all administrators in the whatsapp_administrators table.
     """
     return get_all_administrators()
 
 @app.post("/api/whatsapp-administrators")
-def create_whatsapp_administrator(a: AdministratorSchema):
+def create_whatsapp_administrator(a: AdministratorSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Adds a new administrator to the database.
     """
@@ -499,7 +545,7 @@ def create_whatsapp_administrator(a: AdministratorSchema):
         raise HTTPException(status_code=500, detail="Error interno al agregar administrador.")
 
 @app.put("/api/whatsapp-administrators/{aid}")
-def update_whatsapp_administrator(aid: int, a: AdministratorSchema):
+def update_whatsapp_administrator(aid: int, a: AdministratorSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Updates an existing administrator in the database.
     """
@@ -514,7 +560,7 @@ def update_whatsapp_administrator(aid: int, a: AdministratorSchema):
         raise HTTPException(status_code=500, detail="Error interno al actualizar administrador.")
 
 @app.delete("/api/whatsapp-administrators/{aid}")
-def delete_whatsapp_administrator(aid: int):
+def delete_whatsapp_administrator(aid: int, current_user: CurrentUser = Depends(get_current_user)):
     """
     Deletes an administrator from the database.
     """
@@ -524,14 +570,14 @@ def delete_whatsapp_administrator(aid: int):
     return {"status": "success", "message": "Administrador eliminado."}
 
 @app.get("/api/whatsapp-coordinators")
-def get_whatsapp_coordinators_endpoint():
+def get_whatsapp_coordinators_endpoint(current_user: CurrentUser = Depends(get_current_user)):
     """
     Returns list of all coordinators in the whatsapp_coordinators table.
     """
     return get_all_coordinators()
 
 @app.post("/api/whatsapp-coordinators")
-def create_whatsapp_coordinator(c: CoordinatorSchema):
+def create_whatsapp_coordinator(c: CoordinatorSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Adds a new coordinator to the database.
     """
@@ -544,7 +590,7 @@ def create_whatsapp_coordinator(c: CoordinatorSchema):
         raise HTTPException(status_code=500, detail="Error interno al agregar coordinador.")
 
 @app.put("/api/whatsapp-coordinators/{cid}")
-def update_whatsapp_coordinator(cid: int, c: CoordinatorSchema):
+def update_whatsapp_coordinator(cid: int, c: CoordinatorSchema, current_user: CurrentUser = Depends(get_current_user)):
     """
     Updates an existing coordinator in the database.
     """
@@ -559,7 +605,7 @@ def update_whatsapp_coordinator(cid: int, c: CoordinatorSchema):
         raise HTTPException(status_code=500, detail="Error interno al actualizar coordinador.")
 
 @app.delete("/api/whatsapp-coordinators/{cid}")
-def delete_whatsapp_coordinator(cid: int):
+def delete_whatsapp_coordinator(cid: int, current_user: CurrentUser = Depends(get_current_user)):
     """
     Deletes a coordinator from the database.
     """
@@ -698,7 +744,8 @@ def get_whatsapp_query(
     selected_product: Optional[str] = Query(None, description="Producto seleccionado para reporte producto/oficina"),
     override_promoter_name: Optional[str] = Query(None, description="Nombre de promotor para consulta por coordinador"),
     override_coordinator_name: Optional[str] = Query(None, description="Nombre de coordinador para consulta por administrador"),
-    date_filter: str = Query("today", description="Fecha de consulta: 'today' o 'yesterday'")
+    ref_date: Optional[str] = Query(None, description="Fecha de referencia YYYY-MM-DD; por defecto hoy. Usada para el reporte de 'ayer'."),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     # Resolve FastAPI Query defaults if called directly in Python
     if not isinstance(selected_product, str):
@@ -715,6 +762,14 @@ def get_whatsapp_query(
         date_filter = "today"
 
 
+
+    # Fecha de referencia del reporte: hoy por defecto, o la indicada (ej. ayer).
+    real_today = datetime.now().strftime("%Y-%m-%d")
+    if isinstance(ref_date, str) and ref_date.strip():
+        report_date = ref_date.strip()
+    else:
+        report_date = real_today
+    is_past_day = report_date != real_today
 
     # 1. Buscar promotor, coordinador o administrador por celular
     is_administrator = False
@@ -911,12 +966,7 @@ def get_whatsapp_query(
         site_to_office_local[333033] = 333
         site_to_office_local[334034] = 334
         
-        target_dt_coor_list = datetime.now()
-        if date_filter == "yesterday":
-            from datetime import timedelta
-            target_dt_coor_list = target_dt_coor_list - timedelta(days=1)
-        today_str = target_dt_coor_list.strftime("%Y-%m-%d")
-        
+        today_str = report_date
         sales_list_local = []
         try:
             sales_resp_local = get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=False)
@@ -1048,12 +1098,8 @@ def get_whatsapp_query(
                 cod = p.get("Cod_Producto")
                 if cod is not None:
                     products_by_code[str(cod)] = p
-                    
-        target_dt = datetime.now()
-        if date_filter == "yesterday":
-            from datetime import timedelta
-            target_dt = target_dt - timedelta(days=1)
-        today_str = target_dt.strftime("%Y-%m-%d")
+
+        today_str = report_date
         desde = f"{today_str} 00:00:00"
         hasta = f"{today_str} 23:59:59"
         
@@ -1118,12 +1164,7 @@ def get_whatsapp_query(
 
     # Early return for coordinators summary for administrator
     if is_administrator and report_type == "coordinators":
-        target_dt_coor = datetime.now()
-        if date_filter == "yesterday":
-            from datetime import timedelta
-            target_dt_coor = target_dt_coor - timedelta(days=1)
-        today_str = target_dt_coor.strftime("%Y-%m-%d")
-        
+        today_str = report_date
         db_update_time_str = "Desconocida"
         try:
             sales_resp = get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=False)
@@ -1339,12 +1380,8 @@ def get_whatsapp_query(
             if cod is not None:
                 products_by_code[str(cod)] = p
                 
-    # 4. Obtener ventas del día correspondiente
-    target_dt_main = datetime.now()
-    if date_filter == "yesterday":
-        from datetime import timedelta
-        target_dt_main = target_dt_main - timedelta(days=1)
-    today_str = target_dt_main.strftime("%Y-%m-%d")
+    # 4. Obtener ventas del día de referencia (hoy o ayer)
+    today_str = report_date
     desde = f"{today_str} 00:00:00"
     hasta = f"{today_str} 23:59:59"
     
@@ -1374,13 +1411,11 @@ def get_whatsapp_query(
     from datetime import timezone, timedelta
     colombia_tz = timezone(timedelta(hours=-5))
     now_colombia = datetime.now(colombia_tz)
-    
-    if date_filter == "yesterday":
+    ref_hour = now_colombia.hour
+    ref_hour = max(7, min(21, ref_hour))
+    # Si el reporte es de un día pasado (ej. ayer), el día está cerrado: usar hora tope.
+    if is_past_day:
         ref_hour = 21
-    else:
-        ref_hour = now_colombia.hour
-        ref_hour = max(7, min(21, ref_hour))
-        
     ref_hour_str = f"{ref_hour:02d}:00"
     next_hour = ref_hour + 1 if ref_hour < 21 else 21
     next_hour_str = f"{next_hour:02d}:00"
@@ -1482,53 +1517,126 @@ def get_whatsapp_query(
     else:
         compliance = 100.0 if total_sales > 0 else 0.0
     emoji_overall = "🟢" if compliance >= 95 else "🔴"
-    
+
+    def compute_monthly_by_product():
+        """Devuelve, por producto y para las oficinas asignadas:
+        - venta_mes: ventas del día 1 del mes hasta hoy
+        - meta_parcial: meta del día 1 hasta hoy (proporcional)
+        - meta_full: meta de todo el mes (1 al último día)
+        """
+        count_based = {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+        current_month = report_date[:7]
+        month_start = f"{current_month}-01 00:00:00"
+        venta_mes = {}
+        try:
+            sales_mes_resp = get_ventas(desde=month_start, hasta=hasta, force_refresh=False)
+            for sale in sales_mes_resp.get("data", []):
+                if sale.get("Tabla_Origen") in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+                    continue
+                s_code_m = sale.get("Cod_Sitio")
+                if s_code_m is None:
+                    continue
+                try:
+                    off_code_m = site_to_office.get(int(s_code_m))
+                except:
+                    continue
+                if off_code_m in assigned_offices:
+                    pname = resolve_product_name(sale, products_by_code)
+                    venta_mes[pname] = venta_mes.get(pname, 0.0) + float(sale.get("Venta_Neta") or 0.0)
+        except Exception as e:
+            logger.error(f"Error fetching monthly sales for WhatsApp report: {e}")
+
+        meta_parcial = {}
+        meta_full = {}
+        for prod_name_m, records_m in goals_store.items():
+            if records_m and not records_m[0].get("activo", True):
+                continue
+            for rec_m in records_m:
+                fecha_m = rec_m.get("fecha")
+                if fecha_m and str(fecha_m).startswith(current_month):
+                    off_code_g = rec_m.get("cod_oficina")
+                    if off_code_g is not None:
+                        try:
+                            if int(off_code_g) in assigned_offices:
+                                val = float(rec_m.get("meta") or 0.0)
+                                if prod_name_m in count_based:
+                                    val = float(round(val))
+                                meta_full[prod_name_m] = meta_full.get(prod_name_m, 0.0) + val
+                                if str(fecha_m) <= today_str:
+                                    meta_parcial[prod_name_m] = meta_parcial.get(prod_name_m, 0.0) + val
+                        except:
+                            pass
+        return venta_mes, meta_parcial, meta_full
+
+    def month_fragment(p_name, is_count_based, venta_mes, meta_parcial, meta_full):
+        """Devuelve (fragmento_porcentajes, lineas_mes) en formato compacto.
+        - Parcial: venta del mes / meta del mes a hoy
+        - Mensual: venta del mes / meta del mes total
+        """
+        v = venta_mes.get(p_name, 0.0)
+        mp = meta_parcial.get(p_name, 0.0)
+        mf = meta_full.get(p_name, 0.0)
+        parcial = (v / mp * 100.0) if mp > 0 else (100.0 if v > 0 else 0.0)
+        mensual = (v / mf * 100.0) if mf > 0 else (100.0 if v > 0 else 0.0)
+        e = lambda p: "🟢" if p >= 95 else "🔴"
+        pref = "" if is_count_based else "$"
+        pct = f" · 📆 Parcial {e(parcial)}{parcial:.1f}% · Mensual {e(mensual)}{mensual:.1f}%"
+        lines = f"  ↳ Mes → Venta {pref}{round(v):,}\n"
+        lines += f"  ↳ Mes → Meta a hoy {pref}{round(mp):,} · total {pref}{round(mf):,}\n\n"
+        return pct, lines
+
+    def parcial_line(p_name, venta_mes, meta_parcial):
+        """Línea de % parcial (venta del mes / meta del mes a hoy) para el reporte de hoy."""
+        v = venta_mes.get(p_name, 0.0)
+        mp = meta_parcial.get(p_name, 0.0)
+        p = (v / mp * 100.0) if mp > 0 else (100.0 if v > 0 else 0.0)
+        e = "🟢" if p >= 95 else "🔴"
+        return f"  ↳ Parcial (mes a hoy): {e} {p:.1f}%\n\n"
+
     if is_administrator and report_type in {"products", "offices"}:
         total_faltante_meta = max(0.0, total_goals - total_sales)
-        if date_filter == "yesterday":
-            msg = f"📊 *REPORTE ADMINISTRADOR (AYER)*\n"
-        else:
-            msg = f"📊 *REPORTE ADMINISTRADOR (GENERAL)*\n"
+        venta_mes_p, meta_parcial_p, meta_full_p = compute_monthly_by_product()
+        msg = f"📊 *REPORTE ADMINISTRADOR (GENERAL)*\n"
         msg += f"👤 *Administrador:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Ámbito:* Nacional\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"📊 *Cumplimiento General:* {emoji_overall} *{compliance:.1f}%*\n"
-        msg += f"📈 *Meta Total:* ${round(total_goals):,}\n"
-        msg += f"💰 *Venta Acumulada:* ${round(total_sales):,}\n"
-        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
-        msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n\n"
-        
+
         all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
         for p_name in all_products:
             p_sales = sales_by_product.get(p_name, 0.0)
             p_goal = goals_by_product.get(p_name, 0.0)
-            
+
             if p_goal > 0:
                 p_compliance = (p_sales / p_goal * 100.0)
             else:
                 p_compliance = 100.0 if p_sales > 0 else 0.0
-                
-            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+
+            e_dia = "🟢" if p_compliance >= 95 else "🔴"
             p_faltante = max(0.0, p_goal - p_sales)
-            
+
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
-            if is_count_based:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Venta Acumulada: {round(p_sales):,}\n"
-                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            pref = "" if is_count_based else "$"
+            if is_past_day:
+                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
+                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                msg += f"• 📦 *{p_name}*\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  ↳ Día → Venta {pref}{round(p_sales):,} · Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
+                msg += mes_lines
             else:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Venta Acumulada: ${round(p_sales):,}\n"
-                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
-                
+                # Hoy: formato original + % parcial del mes.
+                msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Venta Acumulada: {pref}{round(p_sales):,}\n"
+                msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
+                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
+
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
-        
+
         return {
             "text": msg,
             "report_type": "administrator_general",
@@ -1549,44 +1657,43 @@ def get_whatsapp_query(
         msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"📊 *Cumplimiento Zona:* {emoji_overall} *{compliance:.1f}%*\n"
-        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
-        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
-        msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n\n"
-        
+
+        venta_mes_p, meta_parcial_p, meta_full_p = compute_monthly_by_product()
         all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
         for p_name in all_products:
             p_sales = sales_by_product.get(p_name, 0.0)
             p_goal = goals_by_product.get(p_name, 0.0)
-            
+
             if p_goal > 0:
                 p_compliance = (p_sales / p_goal * 100.0)
             else:
                 p_compliance = 100.0 if p_sales > 0 else 0.0
-                
-            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+
+            e_dia = "🟢" if p_compliance >= 95 else "🔴"
             p_next_hour_goal = p_goal * next_hour_ratio
             p_faltante = max(0.0, p_goal - p_sales)
-            
-            # Format according to count-based products
+
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
-            if is_count_based:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
-                if date_filter != "yesterday":
-                    msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            pref = "" if is_count_based else "$"
+            if is_past_day:
+                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
+                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                msg += f"• 📦 *{p_name}*\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  ↳ Día → Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
+                msg += mes_lines
             else:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
-                if date_filter != "yesterday":
-                    msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
-                
+                # Hoy: formato original + % parcial del mes.
+                msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
+                msg += f"  ↳ Meta Hora Sig: {pref}{round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
+                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
+
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
-        
+
         return {
             "text": msg,
             "report_type": "coordinator_general",
@@ -1608,42 +1715,42 @@ def get_whatsapp_query(
         msg += f"📍 *Zona:* {user_zone}\n"
         msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
-        msg += f"📊 *Cumplimiento Final:* {emoji_overall} *{compliance:.1f}%*\n" if date_filter == "yesterday" else f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
-        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
-        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
-        msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n"
-        
+
+        venta_mes_p, meta_parcial_p, meta_full_p = compute_monthly_by_product()
         all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
         for p_name in all_products:
             p_goal = goals_by_product.get(p_name, 0.0)
             p_sales_total = sales_by_product.get(p_name, 0.0)
-            
+
             if p_goal > 0:
                 p_compliance = (p_sales_total / p_goal * 100.0)
             else:
                 p_compliance = 100.0 if p_sales_total > 0 else 0.0
-                
-            p_emoji = "🟢" if p_compliance >= 95 else "🔴"
+
+            e_dia = "🟢" if p_compliance >= 95 else "🔴"
             p_next_hour_goal = p_goal * next_hour_ratio
             p_faltante = max(0.0, p_goal - p_sales_total)
-            
+
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
-            if is_count_based:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
-                if date_filter != "yesterday":
-                    msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            pref = "" if is_count_based else "$"
+            if is_past_day:
+                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
+                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                msg += f"• 📦 *{p_name}*\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  ↳ Día → Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
+                msg += mes_lines
             else:
-                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
-                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
-                if date_filter != "yesterday":
-                    msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
-                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+                # Hoy: formato original + % parcial del mes.
+                msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
+                msg += f"  ↳ Meta Hora Sig: {pref}{round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
+                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
-        
+
     elif report_type == "product_office":
         is_count_based = selected_product in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
         total_faltante_meta = max(0.0, total_goals - total_sales)
@@ -1740,7 +1847,10 @@ def get_whatsapp_query(
     return ret
 
 @app.get("/api/sitios")
-def get_sitios(force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de sitios")):
+def get_sitios(
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de sitios"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     Returns the list of sales offices and sites.
     Caches the results in SQLite to allow instant loading of filters.
@@ -1806,7 +1916,10 @@ def get_sitios(force_refresh: bool = Query(False, description="Forzar consulta a
     }
 
 @app.get("/api/productos")
-def get_productos(force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de productos")):
+def get_productos(
+    force_refresh: bool = Query(False, description="Forzar consulta a Oracle y refrescar catálogo de productos"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     Returns catalogue of products.
     Caches the results in SQLite to allow instant loading of filters.
@@ -1857,11 +1970,15 @@ BETPLAY_CONFIG = {
         "query": PAGOS_BETPLAY_COMPLETO,
         "amount_key": "VALOR_PAGO",
         "date_key": "FEC_PAGO",
+        # Cédula del CLIENTE final (distinta del vendedor NUM_IDENTIFICACION).
+        "client_key": "IDENTIFICACION",
     },
     "recargas": {
         "query": RECARGAS_BETPLAY_COMPLETO,
         "amount_key": "VLR_RECARGA",
         "date_key": "FEC_VENTA",
+        # En recargas el identificador del cliente es el número de celular.
+        "client_key": "NUM_CELULAR",
     },
 }
 
@@ -1896,10 +2013,14 @@ def _day_of(date_str):
         return None
 
 
-def aggregate_betplay(rows, amount_key, date_key):
+def aggregate_betplay(rows, amount_key, date_key, client_key=None):
     """
     Builds pre-calculated aggregations over raw Betplay rows.
     Each group carries both 'monto' (sum of amount) and 'cantidad' (row count).
+
+    client_key: columna con la cédula/identificador del CLIENTE final
+    (IDENTIFICACION en pagos, NUM_CELULAR en recargas). Se usa para contar
+    clientes únicos (globales y por sitio), aparte de los usuarios/vendedores.
     """
     by_hour = {}        # hour(int) -> {monto, cantidad}
     by_day = {}         # 'YYYY-MM-DD' -> {monto, cantidad}
@@ -1907,13 +2028,15 @@ def aggregate_betplay(rows, amount_key, date_key):
     by_city = {}        # ciudad -> {monto, cantidad}
     by_type_sv = {}     # tipo SV -> {monto, cantidad}
     by_office = {}      # cod_oficina -> {oficina, monto, cantidad}
-    by_site = {}        # cod_sitio -> {sitio, oficina, zona, cx, cy, monto, cantidad}
+    by_site = {}        # cod_sitio -> {sitio, oficina, zona, ciudad, tipo_sv, cx, cy, monto, cantidad}
     by_user = {}        # identificacion -> {monto, cantidad}
     by_channel = {}     # canal -> {monto, cantidad}
+    site_clients = {}   # cod_sitio -> set(client ids)  (para contar clientes por sitio)
 
     total_monto = 0.0
     total_cantidad = 0
     usuarios = set()
+    clientes = set()
     sitios = set()
 
     def bump(d, key, monto, **labels):
@@ -1951,7 +2074,7 @@ def aggregate_betplay(rows, amount_key, date_key):
         cod_of = r.get("Cod. Oficina")
         bump(by_office, cod_of, monto, oficina=(r.get("Oficina") or "Sin Oficina"), cod_oficina=cod_of)
 
-        # Por sitio (incluye coordenadas para el mapa)
+        # Por sitio (incluye coordenadas para el mapa, municipio y tipo SV)
         cod_sitio = r.get("Cod. Sitio")
         bump(
             by_site, cod_sitio, monto,
@@ -1959,17 +2082,27 @@ def aggregate_betplay(rows, amount_key, date_key):
             sitio=(r.get("Sitio de venta") or "Sin Sitio"),
             oficina=(r.get("Oficina") or "Sin Oficina"),
             zona=zona,
+            ciudad=ciudad,
+            tipo_sv=tipo,
             cx=r.get("CX"),
             cy=r.get("CY"),
         )
         if cod_sitio is not None:
             sitios.add(cod_sitio)
 
-        # Por usuario (identificación)
+        # Por usuario/vendedor (número de identificación del usuario del sistema)
         ident = r.get("NUM_IDENTIFICACION")
         if ident is not None and str(ident).strip() != "":
             bump(by_user, ident, monto, identificacion=ident)
             usuarios.add(ident)
+
+        # Por CLIENTE final (IDENTIFICACION en pagos / NUM_CELULAR en recargas)
+        if client_key:
+            cli = r.get(client_key)
+            if cli is not None and str(cli).strip() != "":
+                clientes.add(cli)
+                if cod_sitio is not None:
+                    site_clients.setdefault(cod_sitio, set()).add(cli)
 
         # Por canal
         canal = r.get("IDE_CANAL")
@@ -1986,11 +2119,18 @@ def aggregate_betplay(rows, amount_key, date_key):
         items.sort(key=lambda x: x.get(sort_key, 0), reverse=reverse)
         return items
 
+    # Enriquecer cada sitio con clientes únicos y ticket promedio por transacción.
+    for cod_sitio, entry in by_site.items():
+        entry["clientes"] = len(site_clients.get(cod_sitio, ()))
+        cant = entry.get("cantidad", 0)
+        entry["ticket_promedio"] = round(entry.get("monto", 0) / cant, 2) if cant else 0
+
     return {
         "totales": {
             "monto": round(total_monto, 2),
             "cantidad": total_cantidad,
             "usuarios_unicos": len(usuarios),
+            "clientes_unicos": len(clientes),
             "sitios_unicos": len(sitios),
             "ticket_promedio": round(total_monto / total_cantidad, 2) if total_cantidad else 0,
         },
@@ -2011,31 +2151,10 @@ def aggregate_betplay(rows, amount_key, date_key):
     }
 
 
-def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
-    """
-    Núcleo reutilizable: devuelve (resultado_dict) con las agregaciones de Betplay
-    para el periodo. Usado por el endpoint /resumen y por el asistente IA.
-    """
-    tipo = (tipo or "").lower().strip()
-    if tipo not in BETPLAY_CONFIG:
-        raise HTTPException(status_code=400, detail="tipo debe ser 'pagos' o 'recargas'.")
-
-    cfg = BETPLAY_CONFIG[tipo]
-    cache_key = f"betplay_{tipo}_{desde}_{hasta}"
-
-    # 1. Serve from cache unless forcing refresh
-    cached_data, last_updated = get_cached_sales(cache_key)
-    if cached_data is not None and not force_refresh:
-        logger.info(f"Serving Betplay '{tipo}' summary from SQLite Cache (key {cache_key}).")
-        return {"source": "LOCAL_CACHE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
-
-    # 2. Query both Oracle databases
-    logger.info(f"Fetching Betplay '{tipo}' from Oracle: {desde} -> {hasta}")
-    rows = []
-    errors = []
-    db_failures = False
+def _fetch_betplay_rows(query, desde, hasta):
+    """Ejecuta una query Betplay en ambas BD y devuelve (rows, errors, db_failures)."""
+    rows, errors, db_failures = [], [], False
     params = {"desde": desde, "hasta": hasta}
-
     for db_name, get_conn, pool in (
         ("CAUCAMED", db_manager.get_cauca_connection, db_manager.pool_cauca),
         ("FORTUMED", db_manager.get_fortuna_connection, db_manager.pool_fortuna),
@@ -2047,7 +2166,7 @@ def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
         try:
             with get_conn() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute(cfg["query"], params)
+                    cursor.execute(query, params)
                     res = rows_to_dicts(cursor)
                     for r in res:
                         r["Fuente"] = "CAUCA" if db_name == "CAUCAMED" else "FORTUNA"
@@ -2058,15 +2177,66 @@ def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
             logger.error(msg)
             errors.append(msg)
             db_failures = True
+    return rows, errors, db_failures
+
+
+# Claves unificadas usadas cuando tipo == 'ambos' (pagos + recargas juntos).
+BETPLAY_UNIFIED = {"amount_key": "VALOR_UNIFICADO", "date_key": "FECHA_UNIFICADA", "client_key": "CLIENTE_UNIFICADO"}
+
+
+def compute_betplay_resumen(tipo, desde, hasta, force_refresh=False):
+    """
+    Núcleo reutilizable: devuelve (resultado_dict) con las agregaciones de Betplay
+    para el periodo. Usado por el endpoint /resumen y por el asistente IA.
+    tipo: 'pagos' | 'recargas' | 'ambos' (combina ambos).
+    """
+    tipo = (tipo or "").lower().strip()
+    if tipo not in BETPLAY_CONFIG and tipo != "ambos":
+        raise HTTPException(status_code=400, detail="tipo debe ser 'pagos', 'recargas' o 'ambos'.")
+
+    cache_key = f"betplay_{tipo}_{desde}_{hasta}"
+
+    # 1. Serve from cache unless forcing refresh
+    cached_data, last_updated = get_cached_sales(cache_key)
+    if cached_data is not None and not force_refresh:
+        logger.info(f"Serving Betplay '{tipo}' summary from SQLite Cache (key {cache_key}).")
+        return {"source": "LOCAL_CACHE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
+
+    logger.info(f"Fetching Betplay '{tipo}' from Oracle: {desde} -> {hasta}")
+
+    # 2. Fetch rows (una o ambas queries según el tipo)
+    errors = []
+    db_failures = False
+    if tipo == "ambos":
+        rows = []
+        for sub in ("pagos", "recargas"):
+            cfg = BETPLAY_CONFIG[sub]
+            sub_rows, sub_err, sub_fail = _fetch_betplay_rows(cfg["query"], desde, hasta)
+            errors.extend(sub_err)
+            db_failures = db_failures or sub_fail
+            # Normalizar a columnas unificadas para agregar todo junto.
+            for r in sub_rows:
+                r["TIPO_TX"] = "Pago" if sub == "pagos" else "Recarga"
+                r["VALOR_UNIFICADO"] = r.get(cfg["amount_key"])
+                r["FECHA_UNIFICADA"] = r.get(cfg["date_key"])
+                r["CLIENTE_UNIFICADO"] = r.get(cfg["client_key"])
+            rows.extend(sub_rows)
+        agg_cfg = BETPLAY_UNIFIED
+    else:
+        cfg = BETPLAY_CONFIG[tipo]
+        rows, errors, db_failures = _fetch_betplay_rows(cfg["query"], desde, hasta)
+        agg_cfg = cfg
 
     # 3. Fallback to stale cache if DB failed and we have something cached
     if db_failures and not rows and cached_data is not None:
         logger.warning(f"Betplay DB query failed. Serving stale cache. Errors: {errors}")
         return {"source": "LOCAL_CACHE_STALE", "last_updated": last_updated, "tipo": tipo, "data": cached_data}
 
-    # 4. Aggregate and cache (incluye filas crudas con tope para no inflar el payload)
-    DETALLE_LIMIT = 2000
-    resumen = aggregate_betplay(rows, cfg["amount_key"], cfg["date_key"])
+    # 4. Aggregate and cache (incluye filas crudas con tope para no inflar el payload).
+    # Tope amplio porque el filtrado del dashboard se hace en el navegador sobre
+    # estas filas; si se supera, los filtros operan sobre una muestra.
+    DETALLE_LIMIT = 20000
+    resumen = aggregate_betplay(rows, agg_cfg["amount_key"], agg_cfg["date_key"], client_key=agg_cfg.get("client_key"))
     resumen["detalle"] = rows[:DETALLE_LIMIT]
     resumen["detalle_total"] = len(rows)
     set_cached_sales(cache_key, resumen)
@@ -2096,8 +2266,25 @@ def get_betplay_resumen(
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://10.0.29.27:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemma-4-e4b-it-qat")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "lm-studio")
-LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "2"))
-LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "50"))
+LLM_MAX_SQL_ITERS = int(os.getenv("LLM_MAX_SQL_ITERS", "3"))
+LLM_SQL_ROW_LIMIT = int(os.getenv("LLM_SQL_ROW_LIMIT", "200"))
+
+# Herramienta web del asistente (búsqueda en internet). Presupuesto de
+# iteraciones SEPARADO del de SQL: las búsquedas no consumen los turnos de datos.
+# WEB_SEARCH_ENABLED gobierna el acceso a internet (toggle del usuario).
+WEB_SEARCH_ENABLED = os.getenv("WEB_SEARCH_ENABLED", "1") not in ("0", "false", "False", "")
+LLM_MAX_WEB_ITERS = int(os.getenv("LLM_MAX_WEB_ITERS", "3"))
+WEB_SEARCH_TIMEOUT = int(os.getenv("WEB_SEARCH_TIMEOUT", "8"))
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
+
+# Topes del CONTEXTO agregado que se inyecta al modelo en cada mensaje.
+# Ajustables por variable de entorno para reducir el tamaño del prompt sin
+# tocar el código. Valores por defecto = recorte "moderado".
+CTX_CIUDAD_TOP = int(os.getenv("CTX_CIUDAD_TOP", "10"))
+CTX_OFICINA_TOP = int(os.getenv("CTX_OFICINA_TOP", "5"))
+CTX_SITIOS_TOP = int(os.getenv("CTX_SITIOS_TOP", "5"))
+CTX_USUARIOS_TOP = int(os.getenv("CTX_USUARIOS_TOP", "5"))
+CTX_HISTORIAL_DIAS = int(os.getenv("CTX_HISTORIAL_DIAS", "14"))
 
 # Host base de LM Studio (sin /v1), para la REST API nativa de control de modelos
 # (POST /api/v1/models/load y /unload, GET /api/v0/models).
@@ -2111,6 +2298,14 @@ ASSISTANT_MODELS = [
     {"id": "gemma-4-12b-it-qat", "label": "Inteligencia Alta"},
 ]
 _ASSISTANT_MODEL_IDS = {m["id"] for m in ASSISTANT_MODELS}
+
+# Modelos con capacidad de visión (aceptan imágenes). Solo el 12B la tiene.
+# Las imágenes adjuntas solo se envían al modelo si es uno de estos.
+VISION_MODEL_IDS = {"gemma-4-12b-it-qat"}
+
+# Límites de adjuntos (para no desbordar el contexto ni la memoria).
+UPLOAD_MAX_BYTES = int(os.getenv("ASSISTANT_UPLOAD_MAX_MB", "10")) * 1024 * 1024
+PDF_TEXT_MAX_CHARS = int(os.getenv("ASSISTANT_PDF_TEXT_MAX_CHARS", "12000"))
 
 
 @app.get("/api/assistant/health")
@@ -2238,7 +2433,8 @@ def assistant_models():
         logger.warning(f"No se pudo consultar estado de modelos: {e}")
         loaded = set()
     models = [
-        {"id": m["id"], "label": m["label"], "loaded": m["id"] in loaded}
+        {"id": m["id"], "label": m["label"], "loaded": m["id"] in loaded,
+         "vision": m["id"] in VISION_MODEL_IDS}
         for m in ASSISTANT_MODELS
     ]
     return {"models": models, "default": LLM_MODEL}
@@ -2277,11 +2473,11 @@ def _compact_resumen_for_context(tipo, desde, hasta):
         "totales": data.get("totales", {}),
         "por_hora": data.get("por_hora", []),
         "por_zona": data.get("por_zona", []),
-        "por_ciudad": (data.get("por_ciudad", []) or [])[:20],
+        "por_ciudad": (data.get("por_ciudad", []) or [])[:CTX_CIUDAD_TOP],
         "por_tipo_sv": data.get("por_tipo_sv", []),
-        "por_oficina": (data.get("por_oficina", []) or [])[:10],
-        "top_sitios": (data.get("por_sitio", []) or [])[:10],
-        "top_usuarios": (data.get("por_usuario", []) or [])[:10],
+        "por_oficina": (data.get("por_oficina", []) or [])[:CTX_OFICINA_TOP],
+        "top_sitios": (data.get("por_sitio", []) or [])[:CTX_SITIOS_TOP],
+        "top_usuarios": (data.get("por_usuario", []) or [])[:CTX_USUARIOS_TOP],
         "por_canal": data.get("por_canal", []),
     }
 
@@ -2305,22 +2501,331 @@ def _betplay_historial_diario(dias=28):
     return {"desde": desde, "hasta": hasta, "dias": dias, "por_dia": series}
 
 
+# ==================================================================
+#  ASISTENTE IA — HERRAMIENTAS DE DATOS (SQL solo-lectura + RESUMEN)
+# ==================================================================
+import re as _re
+
+# Catálogo de esquema ACOTADO que se inyecta al modelo para que genere SQL
+# aterrizado. Solo tablas de Betplay + maestros (no todo el diccionario de la BD).
+ASSISTANT_SCHEMA_CATALOG = """ESQUEMA DISPONIBLE (Oracle). Solo puedes consultar estas tablas y columnas.
+El mismo SELECT se ejecuta automáticamente en las dos bases (CAUCA y FORTUNA) y
+sus filas se combinan agregando una columna "Fuente"; NO tienes que elegir base.
+
+-- Betplay: PAGOS (retiros) --
+GANA_SIGA.SIGT_PAGOS (alias P)
+  IDE_PRODUCTO   number   -- Betplay pago = 17288
+  IDE_SITIOVENTA number   -- FK a MAET_SITIOSVENTA.IDE_SITIOVENTA
+  IDE_USUARIO    number   -- FK a MAET_USUARIOS.IDE_USUARIO
+  FEC_PAGO       date     -- fecha/hora de la transacción
+  VALOR_PAGO     number   -- monto en COP
+  IDE_ESTADO     number   -- transacción válida = 264
+  Filtro Betplay: IDE_PRODUCTO = 17288 AND IDE_ESTADO = 264
+
+-- Betplay: RECARGAS --
+GANA_SIGA.SIGT_RECARGAS (alias R)
+  IDE_PRODUCTO   number   -- Betplay recarga = 17287
+  IDE_SITIOVENTA number
+  IDE_USUARIO    number
+  FEC_VENTA      date
+  VLR_RECARGA    number   -- monto en COP
+  IDE_ESTADO     number   -- transacción válida = 48
+  Filtro Betplay: IDE_PRODUCTO = 17287 AND IDE_ESTADO = 48
+
+-- Maestros --
+GANA_MAESTROS.MAET_USUARIOS (alias U)
+  IDE_USUARIO number, NUM_IDENTIFICACION varchar  -- identificación del cliente
+GANA_MAESTROS.MAET_SITIOSVENTA (alias SV)
+  IDE_SITIOVENTA number, NOM_SITIOVENTA varchar, IDE_CIUDAD number,
+  IDE_OFICINA number, IDE_TIPO_SITIO number, DIRECCION varchar,
+  ACTIVO varchar, CX number, CY number
+GANA_MAESTROS.MAET_CIUDADES (alias CIUDAD)
+  IDE_CIUDAD number, NOM_CIUDAD varchar
+GANA_MAESTROS.MAET_OFICINAS (alias OFICINA)
+  IDE_OFICINA number, NOM_OFICINA varchar, IDE_SUBZONA number
+GANA_MAESTROS.MAET_SUBZONAS (alias SUBZONA)
+  IDE_SUBZONA number, NOM_SUBZONA varchar, IDE_ZONA number
+GANA_MAESTROS.MAET_ZONAS (alias ZONA)
+  IDE_ZONA number, NOM_ZONA varchar
+GANA_MAESTROS.MAET_TIPOS_SITIOVENTA (alias TSV)
+  IDE_TIPO_SITIO number, DES_TIPO_SITIO varchar
+
+-- Joins geográficos habituales --
+P.IDE_SITIOVENTA = SV.IDE_SITIOVENTA
+SV.IDE_CIUDAD    = CIUDAD.IDE_CIUDAD
+SV.IDE_OFICINA   = OFICINA.IDE_OFICINA
+OFICINA.IDE_SUBZONA = SUBZONA.IDE_SUBZONA
+SUBZONA.IDE_ZONA = ZONA.IDE_ZONA
+SV.IDE_TIPO_SITIO = TSV.IDE_TIPO_SITIO
+P.IDE_USUARIO    = U.IDE_USUARIO   (igual para R.IDE_USUARIO)
+
+-- Consultas POR USUARIO / CLIENTE --
+Puedes responder preguntas sobre un cliente concreto usando IDE_USUARIO (id interno) o
+NUM_IDENTIFICACION (cédula/identificación del cliente). Une la transacción con MAET_USUARIOS:
+  P.IDE_USUARIO = U.IDE_USUARIO   (igual para R.IDE_USUARIO)
+Si el usuario da una identificación (cédula), filtra por U.NUM_IDENTIFICACION (es varchar, usa comillas).
+Si da un id de usuario numérico, filtra por IDE_USUARIO directamente. Ejemplo (recargas de un cliente):
+  SELECT U.NUM_IDENTIFICACION, COUNT(*) AS num, SUM(R.VLR_RECARGA) AS total
+  FROM GANA_SIGA.SIGT_RECARGAS R
+  JOIN GANA_MAESTROS.MAET_USUARIOS U ON R.IDE_USUARIO = U.IDE_USUARIO
+  WHERE R.IDE_PRODUCTO = 17287 AND R.IDE_ESTADO = 48
+    AND U.NUM_IDENTIFICACION = '1234567890'
+  GROUP BY U.NUM_IDENTIFICACION
+
+REGLAS SQL:
+- Oracle. Fechas con TO_DATE('YYYY-MM-DD HH24:MI:SS','YYYY-MM-DD HH24:MI:SS') o TRUNC(SYSDATE) para hoy.
+- Solo SELECT/WITH; una sola sentencia; sin punto y coma final.
+- Limita SIEMPRE el resultado (FETCH FIRST N ROWS ONLY); si no lo pones, se acota automáticamente.
+- Para consultas por cliente usa IDE_USUARIO o NUM_IDENTIFICACION (join con MAET_USUARIOS).
+- No consultes tablas fuera de este catálogo."""
+
+# Términos de escritura/DDL/DCL/PLSQL prohibidos (límites de palabra, case-insensitive)
+_SQL_FORBIDDEN = _re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|"
+    r"EXEC|EXECUTE|BEGIN|DECLARE|CALL|COMMIT|ROLLBACK|RENAME|INTO|SAVEPOINT|"
+    r"LOCK|FLASHBACK|PURGE)\b",
+    _re.IGNORECASE,
+)
+_ALLOWED_SQL_SCHEMAS = {"GANA_SIGA", "GANA_MAESTROS"}
+
+
+def _validate_readonly_sql(sql):
+    """
+    Valida que `sql` sea una única sentencia de solo lectura sobre los esquemas
+    permitidos. Devuelve (ok: bool, sql_saneado: str|None, error: str|None).
+    Si falta un límite de filas, lo agrega (FETCH FIRST N ROWS ONLY).
+    """
+    if not sql or not sql.strip():
+        return False, None, "SQL vacío."
+    s = sql.strip()
+    # Quitar un único ';' final si viene; múltiples sentencias => rechazo.
+    if s.endswith(";"):
+        s = s[:-1].rstrip()
+    if ";" in s:
+        return False, None, "Solo se permite una sentencia (sin ';' múltiples)."
+    # Debe empezar por SELECT o WITH (permitiendo paréntesis iniciales).
+    head = s.lstrip("( \t\r\n")
+    if not _re.match(r"(?is)^(select|with)\b", head):
+        return False, None, "La consulta debe empezar por SELECT o WITH."
+    # Bloqueo de operaciones no-lectura.
+    if _SQL_FORBIDDEN.search(s):
+        return False, None, "La consulta contiene una operación no permitida (solo lectura)."
+    # Whitelist de esquemas: toda tabla calificada tras FROM/JOIN debe estar en un
+    # esquema permitido. Solo miramos FROM/JOIN para no confundir un esquema con un
+    # alias de columna (p.ej. P.IDE_USUARIO en el SELECT).
+    for m in _re.finditer(r"(?is)\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_$]*)\s*\.\s*[A-Za-z_]", s):
+        schema = m.group(1).upper()
+        if schema not in _ALLOWED_SQL_SCHEMAS:
+            return False, None, f"Esquema no permitido: {schema}."
+    # Forzar límite de filas si el modelo no lo puso.
+    if not _re.search(r"(?is)\bfetch\s+first\b", s) and not _re.search(r"(?is)\brownum\b", s):
+        s = f"{s}\nFETCH FIRST {LLM_SQL_ROW_LIMIT} ROWS ONLY"
+    return True, s, None
+
+
+def _run_assistant_sql(sql):
+    """
+    Valida y ejecuta el SELECT en CAUCA y FORTUNA (solo lectura), combina las
+    filas etiquetando "Fuente" y recorta al tope de filas. Devuelve un dict
+    apto para reinyectar como observación al modelo.
+    """
+    ok, clean, err = _validate_readonly_sql(sql)
+    if not ok:
+        return {"error": err, "sql": sql}
+
+    rows_all = []
+    per_source = {}
+    errors = []
+    for source, get_conn in (
+        ("CAUCA", db_manager.get_cauca_connection),
+        ("FORTUNA", db_manager.get_fortuna_connection),
+    ):
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(clean)
+                    rows = rows_to_dicts(cur)
+                    for r in rows:
+                        r["Fuente"] = source
+                    rows_all.extend(rows)
+                    per_source[source] = len(rows)
+        except Exception as e:
+            logger.error(f"Assistant SQL failed on {source}: {e}")
+            errors.append(f"{source}: {e}")
+
+    total = len(rows_all)
+    capped = rows_all[: LLM_SQL_ROW_LIMIT]
+    return {
+        "sql": clean,
+        "columns": list(capped[0].keys()) if capped else [],
+        "rows": capped,
+        "row_count": total,
+        "truncated": total > LLM_SQL_ROW_LIMIT,
+        "per_source": per_source,
+        "errors": errors,
+    }
+
+
+def _run_assistant_resumen(desde=None, hasta=None, tipo="ambos"):
+    """
+    Resumen agregado bajo demanda (pagos y/o recargas). Reutiliza el cálculo
+    compacto existente. Se usa cuando la pregunta es genérica o al iniciar el
+    chat, para dar una visión rápida del periodo (por defecto, el día actual).
+    """
+    today = date.today()
+    desde = desde or f"{today.isoformat()} 00:00:00"
+    hasta = hasta or f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
+    tipos = ["pagos", "recargas"] if (tipo or "ambos").lower() in ("ambos", "both", "todo") else [tipo.lower()]
+    out = {"periodo": {"desde": desde, "hasta": hasta}}
+    for t in tipos:
+        if t in ("pagos", "recargas"):
+            out[t] = _compact_resumen_for_context(t, desde, hasta)
+    return out
+
+
+# --- Herramienta web del asistente (búsqueda en internet) ---
+
+
+def _run_web_search(query, max_results=None):
+    """
+    Búsqueda web general vía DuckDuckGo (librería `ddgs`, gratuita, sin API key).
+    Devuelve una lista compacta de resultados [{titulo, cuerpo, url}]. Best-effort:
+    ante error o timeout, devuelve {"error": ...} para reinyectar al modelo.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"error": "consulta vacía"}
+    n = max_results or WEB_SEARCH_MAX_RESULTS
+    try:
+        from ddgs import DDGS
+        resultados = []
+        with DDGS(timeout=WEB_SEARCH_TIMEOUT) as ddgs:
+            for r in ddgs.text(query, region="co-es", max_results=n):
+                resultados.append({
+                    "titulo": r.get("title"),
+                    "cuerpo": (r.get("body") or "")[:400],
+                    "url": r.get("href") or r.get("url"),
+                })
+        return {"query": query, "resultados": resultados, "total": len(resultados)}
+    except Exception as e:
+        logger.error(f"Web search failed: {e}")
+        return {"error": str(e), "query": query}
+
+
+@app.post("/api/assistant/upload")
+async def assistant_upload(file: UploadFile = File(...)):
+    """
+    Procesa un PDF adjunto y devuelve su texto extraído (para inyectarlo como
+    contexto en el chat). Solo PDFs: las imágenes se manejan en el cliente
+    (base64) y solo se envían al modelo con visión.
+    """
+    raw = await file.read()
+    if len(raw) > UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"El archivo supera el límite de {UPLOAD_MAX_BYTES // (1024*1024)} MB.")
+
+    name = (file.filename or "").lower()
+    if not name.endswith(".pdf"):
+        raise HTTPException(status_code=415, detail="Solo se aceptan archivos PDF en este endpoint.")
+
+    try:
+        from pypdf import PdfReader
+        import io
+        reader = PdfReader(io.BytesIO(raw))
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                continue
+        texto = "\n".join(parts).strip()
+    except Exception as e:
+        logger.error(f"No se pudo extraer texto del PDF: {e}")
+        raise HTTPException(status_code=422, detail="No se pudo leer el PDF.")
+
+    truncated = len(texto) > PDF_TEXT_MAX_CHARS
+    if truncated:
+        texto = texto[:PDF_TEXT_MAX_CHARS]
+
+    return {
+        "filename": file.filename,
+        "kind": "pdf",
+        "chars": len(texto),
+        "truncated": truncated,
+        "escaneado": len(texto) < 40,  # casi sin texto => probablemente escaneado
+        "texto": texto,
+    }
+
+
 ASSISTANT_SYSTEM_PROMPT = """Eres un asistente de análisis de datos para el producto Betplay de una empresa de apuestas y servicios.
 Respondes y piensas/razonas SIEMPRE en español, de forma clara y concisa, orientado a la toma de decisiones.
 Puedes usar Markdown (negritas con **texto**, listas con guiones, etc.).
 
-Se te entrega un CONTEXTO con datos AGREGADOS del día (pagos y recargas): totales, ventas por hora, por zona,
-por CIUDAD, por tipo de sitio de venta, por oficina, top sitios y top usuarios (por número de identificación), y por canal.
-Además, se incluye "historial_diario_4_semanas" con los totales por día (monto y cantidad) de pagos y recargas de los últimos 28 días.
-- "monto" está en pesos colombianos (COP). "cantidad" es número de transacciones.
-- Hay datos por ZONA y por CIUDAD; úsalos según lo que pregunten.
-- Usa SOLO los datos del contexto para responder. Si te piden algo que no está en el contexto, dilo con honestidad.
-- No inventes cifras. Cuando des números, sé preciso con los del contexto.
-- Aún NO ejecutas consultas SQL.
+NO tienes datos precargados. Para conocer cifras DEBES pedirlas usando una de estas dos HERRAMIENTAS.
+Cuando emitas un bloque de herramienta, DETENTE inmediatamente y espera: el sistema lo ejecuta y te
+devuelve el resultado en el siguiente turno; entonces continúas. Un solo bloque de herramienta por mensaje,
+y no escribas nada importante después del bloque (se ignora).
+
+HERRAMIENTA 1 — Consulta SQL (datos exactos / detalle). Emite un bloque ```sql con UN SOLO SELECT de solo lectura
+sobre el ESQUEMA DISPONIBLE (ver más abajo). Ejemplo:
+```sql
+SELECT SUM(VALOR_PAGO) AS total FROM GANA_SIGA.SIGT_PAGOS
+WHERE IDE_PRODUCTO = 17288 AND IDE_ESTADO = 264 AND TRUNC(FEC_PAGO) = TRUNC(SYSDATE)
+```
+El mismo SELECT se ejecuta en las dos bases (CAUCA y FORTUNA) y las filas se combinan con una columna "Fuente".
+
+HERRAMIENTA 2 — Resumen agregado (visión rápida). Úsala cuando la pregunta sea GENÉRICA ("¿cómo va el día?",
+"dame un resumen") o al INICIO de la conversación para un panorama. Emite un bloque ```resumen (vacío = día actual,
+pagos y recargas). Opcionalmente un JSON con {"tipo":"pagos|recargas|ambos","desde":"YYYY-MM-DD HH:MM:SS","hasta":"..."}:
+```resumen
+{"tipo":"ambos"}
+```
+Devuelve totales, por hora, por zona, por ciudad, por oficina, top sitios y top usuarios del periodo.
+
+HERRAMIENTA 3 — Búsqueda web (internet). Herramienta COMPLEMENTARIA y OPCIONAL. Es tu fuente para lo que
+no está en la base de datos: sobre todo, qué partido de fútbol hubo en una fecha concreta.
+Emite un bloque ```buscar con el texto de búsqueda (una línea):
+```buscar
+partidos de futbol 17 de junio de 2026 resultados
+```
+Devuelve una lista de resultados (título, extracto y URL). Cita la fuente cuando uses un dato web.
+
+CUÁNDO usar la búsqueda web (sé conservador, NO abuses):
+- Úsala cuando el USUARIO pida explícitamente la causa de un pico/valle o preguntes por eventos deportivos.
+- Úsala también, de forma puntual, si al analizar una anomalía aporta valor saber qué fútbol hubo ese día.
+- NO la uses para preguntas de puro dato interno (cuánto se vendió, top zona, etc.).
+- Haz como MÁXIMO una búsqueda por fecha relevante y NO repitas búsquedas equivalentes. Si ya buscaste algo,
+  no lo vuelvas a buscar con otras palabras: usa lo que ya obtuviste.
+
+CÓMO buscar (para que traiga partidos y no páginas genéricas):
+- UNA FECHA CONCRETA por consulta; NO combines varias fechas ni rangos.
+- Usa la fórmula: "partidos de futbol <DÍA de MES de AÑO> resultados".
+- NO uses "eventos deportivos", "festivos" ni "calendario": IGNORA los festivos.
+- Fíjate en fútbol importante: Selección Colombia, clubes colombianos (Nacional, Millonarios, América,
+  Junior), Champions League, Libertadores, Mundial, Copa América. Reporta el partido concreto (equipos y torneo).
+- Correlaciona sin afirmar causalidad absoluta ("coincide con", "posiblemente por"). Si no hay partido claro,
+  dilo con honestidad; no inventes eventos.
+
+REGLAS DE DATOS:
+- "monto" está en pesos colombianos (COP). Las cantidades son número de transacciones.
+- No inventes cifras: si no tienes el dato, pídelo con una herramienta. Si tras consultarlo no aparece, dilo con honestidad.
+- Máximo {MAX_ITERS} consultas por respuesta; sé eficiente (una consulta bien pensada mejor que muchas).
+- Si un SQL devuelve error, corrígelo y reinténtalo respetando el esquema.
+
+FORMA DE RESPONDER (importante):
+- No sobrepienses. Para preguntas simples, directas o de un solo dato (por ejemplo "¿cuánto se vendió hoy?",
+  "¿cuál fue la zona con más ventas?"), responde de forma directa y breve, sin razonamiento extenso.
+  Reserva el análisis más elaborado para preguntas analíticas, comparativas o de proyección.
+- Tienes LIBERTAD para enriquecer tus respuestas: cuando aporte valor, puedes agregar datos de apoyo,
+  observaciones y conclusiones que ayuden a la toma de decisiones. Etiqueta claramente lo que es interpretación
+  tuya (por ejemplo con "Observación:" o "Conclusión:") y no lo mezcles con las cifras exactas consultadas.
+- EXCEPCIÓN: si el usuario pide EXPLÍCITAMENTE solo un dato o solo cierta información
+  (por ejemplo "dame solo el total", "únicamente el número", "sin análisis"), entrega solo eso,
+  sin observaciones ni conclusiones añadidas.
 
 PROYECCIONES:
-Si te piden un estimado/proyección de ventas del día, PUEDES hacerlo usando "historial_diario_4_semanas"
-(por ejemplo, promediando los mismos días de la semana o la tendencia reciente). SIEMPRE que proyectes:
+Si te piden un estimado/proyección de ventas del día, primero consulta el historial reciente con SQL
+(por ejemplo, totales por día de los últimos días) y proyecta con base en eso (promedio de los mismos
+días de la semana o tendencia). SIEMPRE que proyectes:
 - Explica brevemente el método usado.
 - Añade una nota clara: "Esta es una proyección estimada y subjetiva, no un valor garantizado."
 - Ten en cuenta que el día actual puede estar incompleto (parcial hasta la hora actual).
@@ -2344,11 +2849,85 @@ Para una tabla, usa un bloque ```table con este formato exacto:
 Reglas:
 - Genera un gráfico o tabla SOLO si aporta valor; no abuses.
 - El JSON debe ser válido y completo (no lo cortes). Una sola visualización por bloque.
+- NO generes dos gráficos (ni dos tablas) que muestren los MISMOS datos o el mismo resultado. Si ya
+  visualizaste una serie, no la repitas con otro gráfico distinto: una sola visualización por idea.
 - Acompaña la visualización con una breve explicación en texto, pero NO repitas los mismos datos dos veces:
   si usas un bloque ```table o ```chart, NO vuelvas a escribir esos datos como tabla Markdown ni los enumeres todos en texto.
 - No generes em-dashes
 - No responder con emojis 
 """
+
+
+# --- Loop ReAct: detección de bloques de herramienta en el stream ---
+
+# Bloque de herramienta COMPLETO: ```sql ... ``` o ```resumen ... ```
+_TOOL_FENCE_RE = _re.compile(r"```(sql|resumen|buscar)[ \t]*\r?\n(.*?)```", _re.DOTALL | _re.IGNORECASE)
+
+# Nombres de herramienta (para retención segura del stream y validación).
+_TOOL_KINDS = ("sql", "resumen", "buscar")
+
+# Marcadores de chip que el frontend interpreta (estado de las herramientas).
+def _tool_chip(kind, estado, **meta):
+    payload = {"kind": kind, "estado": estado}
+    payload.update(meta)
+    return "[[TOOL]]" + json.dumps(payload, ensure_ascii=False, default=str) + "[[/TOOL]]"
+
+
+def _safe_flush_len(buf):
+    """
+    Índice hasta el que es seguro emitir `buf` como texto normal sin cortar por
+    la mitad la apertura de un bloque de herramienta (```sql / ```resumen). Los
+    bloques ```chart / ```table SÍ se dejan pasar (los renderiza el frontend).
+    """
+    idx = buf.rfind("```")
+    if idx == -1:
+        # Retener un run final de 1-2 backticks (posible inicio de ```).
+        t = len(buf)
+        while t > 0 and buf[t - 1] == "`" and (len(buf) - t) < 2:
+            t -= 1
+        return t
+    nl = buf.find("\n", idx)
+    if nl != -1:
+        tag = buf[idx + 3:nl].strip().lower()
+        # Herramienta abierta pero aún sin cerrar: retener hasta el cierre.
+        return idx if tag in _TOOL_KINDS else len(buf)
+    # Etiqueta aún llegando: retener si puede convertirse en una herramienta.
+    tag = buf[idx + 3:].strip().lower()
+    if tag == "" or any(k.startswith(tag) for k in _TOOL_KINDS):
+        return idx
+    return len(buf)
+
+
+def _observation_text_sql(sql, result):
+    """Texto de observación (resultado del SQL) que se reinyecta al modelo."""
+    if result.get("error"):
+        return f"ERROR al ejecutar el SQL (corrígelo y vuelve a intentar): {result['error']}"
+    payload = {
+        "columns": result.get("columns"),
+        "rows": result.get("rows"),
+        "per_source": result.get("per_source"),
+    }
+    header = f"RESULTADO SQL: {result.get('row_count', 0)} filas (mostrando {len(result.get('rows', []))})."
+    if result.get("truncated"):
+        header += f" Recortado a {LLM_SQL_ROW_LIMIT}."
+    if result.get("errors"):
+        header += " Advertencias: " + "; ".join(result["errors"])
+    return header + "\n" + json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _parse_resumen_params(body, def_desde, def_hasta):
+    params = {"desde": def_desde, "hasta": def_hasta, "tipo": "ambos"}
+    body = (body or "").strip()
+    if body:
+        try:
+            j = json.loads(body)
+            if isinstance(j, dict):
+                params["tipo"] = j.get("tipo", params["tipo"])
+                params["desde"] = j.get("desde", params["desde"])
+                params["hasta"] = j.get("hasta", params["hasta"])
+        except Exception:
+            pass
+    return params
 
 
 class AssistantChatRequest(BaseModel):
@@ -2357,30 +2936,49 @@ class AssistantChatRequest(BaseModel):
     desde: Optional[str] = None
     hasta: Optional[str] = None
     model: Optional[str] = None  # id del modelo elegido (catálogo amigable)
+    # Adjuntos de la pregunta actual:
+    #   pdf   -> {"kind":"pdf","filename":..., "texto":...}
+    #   image -> {"kind":"image","filename":..., "data_url":"data:image/...;base64,..."}
+    adjuntos: Optional[List[dict]] = None
+    web_enabled: Optional[bool] = True  # permite/bloquea las herramientas de red
 
 
 @app.post("/api/assistant/chat")
 def assistant_chat(req: AssistantChatRequest):
     """
-    Chat del asistente con streaming. Inyecta como contexto el resumen agregado
-    de pagos y recargas del periodo (por defecto, el día actual) y transmite la
-    respuesta del modelo token a token (text/plain).
+    Chat del asistente con streaming y loop ReAct: el modelo pide datos mediante
+    bloques ```sql (SELECT solo-lectura, ejecutado en CAUCA+FORTUNA) o ```resumen
+    (agregado del periodo). No se inyecta ningún resumen por defecto: el contexto
+    es solo el catálogo de esquema y el periodo. La respuesta se transmite token a
+    token (text/plain), pausando en cada herramienta para ejecutarla y continuar.
     """
     # Rango por defecto: día actual [hoy 00:00, mañana 00:00)
     today = date.today()
     desde = req.desde or f"{today.isoformat()} 00:00:00"
     hasta = req.hasta or f"{(today + timedelta(days=1)).isoformat()} 00:00:00"
 
-    contexto = {
-        "periodo": {"desde": desde, "hasta": hasta},
-        "pagos": _compact_resumen_for_context("pagos", desde, hasta),
-        "recargas": _compact_resumen_for_context("recargas", desde, hasta),
-        "historial_diario_4_semanas": _betplay_historial_diario(28),
-    }
+    # Resolución del modelo (se hace antes de armar el mensaje porque las
+    # imágenes solo se envían a modelos con visión):
+    # - Si el usuario eligió uno del catálogo, se usa y se asegura su carga.
+    # - Si NO hay selección explícita, se usa el modelo del catálogo que ya esté
+    #   cargado. Solo si no hay ninguno cargado se recurre al configurado.
+    if req.model in _ASSISTANT_MODEL_IDS:
+        model_id = req.model
+        ensure_model_loaded(model_id)
+    else:
+        loaded = _current_catalog_model()
+        model_id = loaded or LLM_MODEL
+        if loaded is None:
+            ensure_model_loaded(model_id)
 
+    tiene_vision = model_id in VISION_MODEL_IDS
+
+    contexto = {"periodo_por_defecto": {"desde": desde, "hasta": hasta}, "hoy": today.isoformat()}
+    system_prompt = ASSISTANT_SYSTEM_PROMPT.replace("{MAX_ITERS}", str(LLM_MAX_SQL_ITERS))
     messages = [
-        {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
-        {"role": "system", "content": "CONTEXTO (datos agregados del periodo):\n" + json.dumps(contexto, ensure_ascii=False)},
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": ASSISTANT_SCHEMA_CATALOG},
+        {"role": "system", "content": "CONTEXTO: " + json.dumps(contexto, ensure_ascii=False)},
     ]
     if req.historial:
         for m in req.historial[-8:]:  # limitar historial
@@ -2388,70 +2986,307 @@ def assistant_chat(req: AssistantChatRequest):
             content = m.get("content")
             if role in ("user", "assistant") and content:
                 messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": req.pregunta})
 
-    # Resolución del modelo:
-    # - Si el usuario eligió uno del catálogo, se usa y se asegura su carga
-    #   (haciendo eject del anterior si hace falta).
-    # - Si NO hay selección explícita, se usa el modelo del catálogo que ya esté
-    #   cargado (comodidad: no descargar/cargar al arrancar). Solo si no hay
-    #   ninguno cargado se recurre al configurado por defecto.
-    if req.model in _ASSISTANT_MODEL_IDS:
-        model_id = req.model
-        ensure_model_loaded(model_id)
+    # Mensaje del usuario, enriquecido con adjuntos (PDF como texto, imágenes
+    # como image_url solo si el modelo tiene visión).
+    texto_usuario = req.pregunta
+    imagenes = []
+    if req.adjuntos:
+        bloques_pdf = []
+        for a in req.adjuntos:
+            kind = (a or {}).get("kind")
+            if kind == "pdf" and a.get("texto"):
+                fn = a.get("filename") or "documento.pdf"
+                bloques_pdf.append(f"--- Documento adjunto: {fn} ---\n{a['texto']}")
+            elif kind == "image" and a.get("data_url"):
+                if tiene_vision:
+                    imagenes.append(a["data_url"])
+                # Si no hay visión, la imagen se ignora silenciosamente
+                # (el frontend ya avisa al usuario antes de enviar).
+        if bloques_pdf:
+            texto_usuario = (
+                "Documentos adjuntos por el usuario (úsalos como contexto para responder):\n\n"
+                + "\n\n".join(bloques_pdf)
+                + "\n\n--- Pregunta ---\n"
+                + req.pregunta
+            )
+
+    if imagenes:
+        content = [{"type": "text", "text": texto_usuario}]
+        for url in imagenes:
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        messages.append({"role": "user", "content": content})
     else:
-        loaded = _current_catalog_model()
-        model_id = loaded or LLM_MODEL
-        # Solo forzamos carga si no hay nada del catálogo cargado.
-        if loaded is None:
-            ensure_model_loaded(model_id)
+        messages.append({"role": "user", "content": texto_usuario})
 
     def token_stream():
-        # El razonamiento llega en un campo aparte (reasoning_content en LM Studio
-        # 0.4.x). Lo envolvemos token a token en las etiquetas que el frontend ya
-        # sabe parsear, para mostrarlo en vivo como bloque colapsable separado de
-        # la respuesta (se preserva el streaming completo, sin bufferizar).
-        in_reasoning = False
+        # Loop ReAct con streaming. En cada turno:
+        #  - El razonamiento (reasoning_content) se transmite en vivo, envuelto en
+        #    las etiquetas que el frontend ya sabe colapsar.
+        #  - El contenido se transmite en vivo salvo cuando aparece un bloque de
+        #    herramienta (```sql / ```resumen): al completarse se ejecuta, se emite
+        #    un chip de estado, se reinyecta el resultado y se hace otro turno.
+        #  Los bloques ```chart / ```table NO son herramientas: pasan tal cual.
+        convo = list(messages)
+        client = get_llm_client()
+        # Presupuestos separados: datos (sql/resumen) vs. web (buscar).
+        web_allowed = bool(WEB_SEARCH_ENABLED and req.web_enabled)
+        sql_used = 0
+        web_used = 0
+        max_turns = LLM_MAX_SQL_ITERS + LLM_MAX_WEB_ITERS + 1
         try:
-            client = get_llm_client()
-            stream = client.chat.completions.create(
-                model=model_id,
-                messages=messages,
-                temperature=0.4,
-                stream=True,
-            )
-            for chunk in stream:
+            for turn in range(max_turns):
+                allow_tools = (sql_used < LLM_MAX_SQL_ITERS) or (web_used < LLM_MAX_WEB_ITERS)
+                in_reasoning = False
+                content_buf = ""
+                sent = 0
+                tool = None  # (kind, body, end_index)
+
+                stream = client.chat.completions.create(
+                    model=model_id, messages=convo, temperature=0.4, stream=True,
+                )
+                for chunk in stream:
+                    try:
+                        delta = chunk.choices[0].delta
+                    except (AttributeError, IndexError):
+                        continue
+                    reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                    content = getattr(delta, "content", None)
+                    if reasoning:
+                        if not in_reasoning:
+                            in_reasoning = True
+                            yield "<|channel>thought"
+                        yield reasoning
+                    if content:
+                        if in_reasoning:
+                            in_reasoning = False
+                            yield "<channel|>"
+                        content_buf += content
+                        if allow_tools:
+                            m = _TOOL_FENCE_RE.search(content_buf)
+                            if m:
+                                # Emitir el texto previo al bloque y capturar la herramienta.
+                                if m.start() > sent:
+                                    yield content_buf[sent:m.start()]
+                                    sent = m.start()
+                                tool = (m.group(1).lower(), m.group(2), m.end())
+                                break
+                            flush = _safe_flush_len(content_buf)
+                            if flush > sent:
+                                yield content_buf[sent:flush]
+                                sent = flush
+                        else:
+                            # Sin más herramientas permitidas: transmitir todo en vivo.
+                            yield content
+                            sent = len(content_buf)
+                if in_reasoning:
+                    yield "<channel|>"
                 try:
-                    delta = chunk.choices[0].delta
-                except (AttributeError, IndexError):
-                    continue
-                # reasoning_content (0.4.x) o reasoning (0.3.x), por robustez.
-                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                content = getattr(delta, "content", None)
-                if reasoning:
-                    if not in_reasoning:
-                        in_reasoning = True
-                        yield "<|channel>thought"
-                    yield reasoning
-                if content:
-                    if in_reasoning:
-                        in_reasoning = False
-                        yield "<channel|>"
-                    yield content
-            if in_reasoning:
-                yield "<channel|>"
+                    stream.close()
+                except Exception:
+                    pass
+
+                if tool is None:
+                    # Respuesta final: volcar lo que quede en el buffer.
+                    if len(content_buf) > sent:
+                        yield content_buf[sent:]
+                    return
+
+                kind, body, end_idx = tool
+                # Registrar lo que produjo el modelo (incluido el bloque) en la conversación.
+                convo.append({"role": "assistant", "content": content_buf[:end_idx]})
+
+                if kind in ("sql", "resumen"):
+                    # Presupuesto de datos.
+                    if sql_used >= LLM_MAX_SQL_ITERS:
+                        obs = "Límite de consultas de datos alcanzado. Responde ahora con lo disponible."
+                    elif kind == "sql":
+                        sql_used += 1
+                        sql = body.strip()
+                        yield _tool_chip("sql", "run")
+                        result = _run_assistant_sql(sql)
+                        # Muestra acotada de resultados para que el usuario valide.
+                        sample_rows = result.get("rows", [])[:10]
+                        yield _tool_chip("sql", "done",
+                                         sql=result.get("sql", sql),
+                                         rows=result.get("row_count", 0),
+                                         error=result.get("error"),
+                                         columns=result.get("columns", []),
+                                         sample=sample_rows)
+                        obs = _observation_text_sql(sql, result)
+                    else:  # resumen
+                        sql_used += 1
+                        yield _tool_chip("resumen", "run")
+                        params = _parse_resumen_params(body, desde, hasta)
+                        try:
+                            result = _run_assistant_resumen(**params)
+                            obs = "RESULTADO RESUMEN (JSON):\n" + json.dumps(result, ensure_ascii=False, default=str)
+                        except Exception as e:
+                            logger.error(f"Assistant resumen failed: {e}")
+                            obs = f"ERROR al calcular el resumen: {e}"
+                        yield _tool_chip("resumen", "done")
+                else:  # buscar (web)
+                    if web_used >= LLM_MAX_WEB_ITERS:
+                        obs = "Límite de búsquedas web alcanzado. Responde ahora con lo disponible."
+                    else:
+                        web_used += 1
+                        query = body.strip()
+                        yield _tool_chip("buscar", "run")
+                        if not web_allowed:
+                            obs = ("Búsqueda web deshabilitada (el usuario apagó el acceso a "
+                                   "internet). Responde con los datos disponibles.")
+                            yield _tool_chip("buscar", "done", query=query, error=True)
+                        else:
+                            result = _run_web_search(query)
+                            err = result.get("error")
+                            obs = ("ERROR en búsqueda web: " + err) if err else (
+                                "RESULTADO BÚSQUEDA WEB (JSON):\n"
+                                + json.dumps(result, ensure_ascii=False, default=str))
+                            yield _tool_chip("buscar", "done",
+                                             query=query,
+                                             resultados=result.get("total", 0),
+                                             items=result.get("resultados", []),
+                                             error=err)
+
+                convo.append({"role": "user", "content": obs})
+                # Sin presupuesto restante en ninguna vía: empujar a responder ya.
+                if sql_used >= LLM_MAX_SQL_ITERS and web_used >= LLM_MAX_WEB_ITERS:
+                    convo.append({"role": "system",
+                                  "content": "Ya no puedes pedir más datos. Responde ahora con la información disponible."})
         except Exception as e:
             logger.error(f"Assistant chat streaming failed: {e}")
-            if in_reasoning:
-                yield "<channel|>"
             yield f"\n\n[Error al contactar el modelo: {e}]"
 
     return StreamingResponse(token_stream(), media_type="text/plain; charset=utf-8")
 
+
+def _resolve_assistant_model(model):
+    """Resuelve y asegura la carga del modelo (misma lógica que el chat)."""
+    if model in _ASSISTANT_MODEL_IDS:
+        ensure_model_loaded(model)
+        return model
+    loaded = _current_catalog_model()
+    model_id = loaded or LLM_MODEL
+    if loaded is None:
+        ensure_model_loaded(model_id)
+    return model_id
+
+
+def _stream_assistant_tokens(messages, model_id, temperature=0.4):
+    """Generador que streamea la respuesta del modelo, envolviendo el
+    razonamiento en las etiquetas que el frontend sabe parsear."""
+    in_reasoning = False
+    try:
+        client = get_llm_client()
+        stream = client.chat.completions.create(
+            model=model_id, messages=messages, temperature=temperature, stream=True,
+        )
+        for chunk in stream:
+            try:
+                delta = chunk.choices[0].delta
+            except (AttributeError, IndexError):
+                continue
+            reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            content = getattr(delta, "content", None)
+            if reasoning:
+                if not in_reasoning:
+                    in_reasoning = True
+                    yield "<|channel>thought"
+                yield reasoning
+            if content:
+                if in_reasoning:
+                    in_reasoning = False
+                    yield "<channel|>"
+                yield content
+        if in_reasoning:
+            yield "<channel|>"
+    except Exception as e:
+        logger.error(f"Assistant streaming failed: {e}")
+        if in_reasoning:
+            yield "<channel|>"
+        yield f"\n\n[Error al contactar el modelo: {e}]"
+
+
+REPORT_SYSTEM_PROMPT = """Eres un redactor de informes ejecutivos para el producto Betplay.
+A partir de FUENTES (fragmentos de una conversación de análisis: preguntas del usuario y respuestas del asistente)
+y un CATÁLOGO DE FIGURAS disponibles, redacta un informe profesional en español, claro y orientado a decisiones.
+
+Estructura el informe con:
+- Un título (encabezado con "# ").
+- Una introducción breve que contextualice el análisis.
+- Secciones de análisis (encabezados con "## ") que integren y redacten la información de las fuentes.
+- Una sección final de "## Conclusiones" con hallazgos y recomendaciones accionables.
+
+Sobre las FIGURAS:
+- El catálogo lista figuras numeradas (Figura 1, Figura 2, ...) con su título.
+- Cuando quieras que una figura aparezca en el informe, escribe en una LÍNEA APARTE exactamente el marcador: [[FIGURA:N]]
+  (por ejemplo, una línea que contenga solo "[[FIGURA:1]]"). El sistema insertará ahí el gráfico o tabla real.
+- Puedes referenciarla en el texto como "(ver Figura N)". Usa cada figura como máximo una vez.
+- No escribas bloques de código ```chart o ```table; solo usa los marcadores [[FIGURA:N]].
+
+Reglas:
+- Usa SOLO la información de las fuentes; no inventes cifras nuevas.
+- Redacta de forma fluida y profesional (no copies las preguntas ni el estilo de chat).
+- Usa Markdown (encabezados #/##, negritas **, listas con guiones).
+- No generes em-dashes. No uses emojis.
+"""
+
+
+class AssistantReportRequest(BaseModel):
+    fuentes: List[dict]          # [{rol:'user'|'assistant', texto:'...'}]
+    figuras: Optional[List[dict]] = None  # [{n, tipo:'chart'|'table', titulo}]
+    titulo: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/api/assistant/report")
+def assistant_report(req: AssistantReportRequest):
+    """
+    Segundo pase del modelo: toma mensajes seleccionados como fuentes y redacta
+    un informe ejecutivo (con marcadores [[FIGURA:N]] para intercalar figuras).
+    Devuelve el texto en streaming.
+    """
+    model_id = _resolve_assistant_model(req.model)
+
+    fuentes_txt = []
+    for i, f in enumerate(req.fuentes or [], 1):
+        rol = "Usuario" if (f or {}).get("rol") == "user" else "Asistente"
+        texto = (f or {}).get("texto", "")
+        fuentes_txt.append(f"[Fuente {i} - {rol}]\n{texto}")
+
+    figuras_txt = []
+    for fig in (req.figuras or []):
+        n = fig.get("n")
+        tipo = "gráfico" if fig.get("tipo") == "chart" else "tabla"
+        titulo = fig.get("titulo") or f"Figura {n}"
+        figuras_txt.append(f"- Figura {n} ({tipo}): {titulo}")
+
+    partes = ["FUENTES:\n" + "\n\n".join(fuentes_txt)]
+    if figuras_txt:
+        partes.append("CATÁLOGO DE FIGURAS:\n" + "\n".join(figuras_txt))
+    else:
+        partes.append("CATÁLOGO DE FIGURAS: (ninguna)")
+    if req.titulo:
+        partes.append(f"El usuario sugiere este título: {req.titulo}")
+    partes.append("Redacta el informe ahora.")
+
+    messages = [
+        {"role": "system", "content": REPORT_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(partes)},
+    ]
+
+    return StreamingResponse(
+        _stream_assistant_tokens(messages, model_id, temperature=0.5),
+        media_type="text/plain; charset=utf-8",
+    )
+
 # ============================ ASISTENTE IA ============================
 
 @app.post("/api/upload/metas")
-async def upload_metas(files: List[UploadFile] = File(...)):
+async def upload_metas(
+    files: List[UploadFile] = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     """
     Saves and parses multiple Excel files of daily goals.
     Uses filename or header content to distinguish between products.
@@ -2500,7 +3335,7 @@ async def upload_metas(files: List[UploadFile] = File(...)):
     }
 
 @app.post("/api/upload/distribucion")
-async def upload_distribucion(file: UploadFile = File(...)):
+async def upload_distribucion(file: UploadFile = File(...), current_user: CurrentUser = Depends(get_current_user)):
     """
     Saves and parses the promoter distribution Excel file.
     """
@@ -2529,7 +3364,10 @@ async def upload_distribucion(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Error parsing promoters file: {str(e)}")
 
 @app.get("/api/metas")
-def get_metas(fecha: Optional[str] = Query(None, description="Filtrar por fecha YYYY-MM-DD")):
+def get_metas(
+    fecha: Optional[str] = Query(None, description="Filtrar por fecha YYYY-MM-DD"),
+    current_user: CurrentUser = Depends(get_current_user),
+):
     flat_goals = []
     for prod, records in goals_store.items():
         if records and not records[0].get("activo", True):
@@ -2545,7 +3383,7 @@ class ToggleProductSchema(BaseModel):
     activo: bool
 
 @app.get("/api/metas/products")
-def get_metas_products():
+def get_metas_products(current_user: CurrentUser = Depends(get_current_user)):
     result = []
     for prod, records in goals_store.items():
         active = True
@@ -2559,7 +3397,7 @@ def get_metas_products():
     return result
 
 @app.post("/api/metas/toggle")
-def toggle_product_goals(data: ToggleProductSchema):
+def toggle_product_goals(data: ToggleProductSchema, current_user: CurrentUser = Depends(get_current_user)):
     if data.producto in goals_store:
         for rec in goals_store[data.producto]:
             rec["activo"] = data.activo
@@ -2573,7 +3411,7 @@ def toggle_product_goals(data: ToggleProductSchema):
     raise HTTPException(status_code=404, detail="Producto no encontrado")
 
 @app.delete("/api/metas/product/{product_name}")
-def delete_product_goals(product_name: str):
+def delete_product_goals(product_name: str, current_user: CurrentUser = Depends(get_current_user)):
     if product_name in goals_store:
         goals_store.pop(product_name)
         # Persist
@@ -2586,11 +3424,11 @@ def delete_product_goals(product_name: str):
     raise HTTPException(status_code=404, detail="Producto no encontrado")
 
 @app.get("/api/distribucion")
-def get_distribucion():
+def get_distribucion(current_user: CurrentUser = Depends(get_current_user)):
     return distribution_store
 
 @app.post("/api/clear")
-def clear_data():
+def clear_data(current_user: CurrentUser = Depends(get_current_user)):
     """Clears uploaded excels, saved JSONs, and local cache"""
     global goals_store, distribution_store
     goals_store = {}
@@ -2632,19 +3470,45 @@ def verify_whatsapp_webhook(
 
 
 @app.post("/api/whatsapp/webhook")
-async def receive_whatsapp_webhook(request: Request):
+async def receive_whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """
-    Receives incoming WhatsApp messages from Meta, queries the sales cache,
-    and replies back using Meta's Cloud API.
+    Receives incoming WhatsApp messages from Meta.
+
+    Responde 200 de inmediato y procesa/envia la respuesta en segundo plano.
+    Esto evita que Meta reintente la entrega del mismo mensaje (lo que causaba
+    respuestas duplicadas cuando el procesamiento tardaba en responder).
     """
     try:
         body = await request.json()
     except Exception as e:
         logger.error(f"Error parsing Webhook JSON body: {e}")
         return {"status": "error", "message": "Invalid JSON"}
-        
+
     logger.info(f"Received WhatsApp webhook notification: {json.dumps(body)}")
-    
+
+    # Modo simulacion: con ?dry_run=1 se ejecuta toda la logica real
+    # (deteccion de primer contacto, ruteo por rol, recopilatorio de ayer,
+    # botones) pero NO se envia nada por Meta; se devuelven los mensajes
+    # compuestos para inspeccionarlos localmente. Debe ser sincrono para
+    # poder devolver los mensajes compuestos en la respuesta.
+    dry_run = str(request.query_params.get("dry_run", "")).lower() in {"1", "true", "yes"}
+    if dry_run:
+        return _process_whatsapp_message(body, dry_run=True)
+
+    # Ruta real: responder 200 ya y enviar en segundo plano.
+    background_tasks.add_task(_process_whatsapp_message, body, False)
+    return {"status": "received"}
+
+
+def _process_whatsapp_message(body: dict, dry_run: bool = False):
+    """
+    Procesa un mensaje entrante de WhatsApp: consulta la cache de ventas,
+    compone la respuesta segun el rol y la envia via Meta's Cloud API.
+
+    En dry_run no envia nada; devuelve los mensajes compuestos.
+    """
+    dry_messages = []
+
     # 1. Parse incoming message structures
     entry = body.get("entry", [])
     if not entry:
@@ -2674,11 +3538,16 @@ async def receive_whatsapp_webhook(request: Request):
         
     session_key = f"session_{sender_phone}"
     session_data, _ = get_cached_sales(session_key)
-    
+
     report_type = "products"
     selected_product = None
     query_result = None
-    
+
+    # Primer contacto del día: además del reporte de hoy, se adjunta un
+    # mensaje independiente con el recopilatorio de ayer.
+    first_session = is_first_session_of_day(sender_phone)
+    yesterday_date = (date.today() - timedelta(days=1)).isoformat() if first_session else None
+
     # 2. Check user role
     administrator = find_active_administrator_by_phone(sender_phone)
     promoter = None
@@ -2705,12 +3574,8 @@ async def receive_whatsapp_webhook(request: Request):
             report_type = "products"
         elif button_id == "view_coordinators_summary" or "coordinador" in user_msg_lower:
             report_type = "coordinators"
-        elif user_msg_text.isdigit():
-            report_type = "administrator_coordinator_detail"
-            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=user_msg_text)
-            
-        if query_result is None:
-            query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+
+        query_result = get_whatsapp_query(sender_phone, report_type=report_type)
     elif coordinator:
         # Coordinator Session Routing
         report_type = "products" # Default to zone report
@@ -2727,12 +3592,8 @@ async def receive_whatsapp_webhook(request: Request):
             report_type = "products"
         elif button_id == "view_promoter_summary" or "promotor" in user_msg_lower:
             report_type = "prompt_promoter"
-        elif user_msg_text.isdigit():
-            report_type = "coordinator_promoter_detail"
-            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=user_msg_text)
-            
-        if query_result is None:
-            query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+
+        query_result = get_whatsapp_query(sender_phone, report_type=report_type)
     else:
         # Promoter Session Routing
         if (session_data and isinstance(session_data, dict) and 
@@ -2780,19 +3641,19 @@ async def receive_whatsapp_webhook(request: Request):
                     
             if query_result is None:
                 query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
-        
+
     reply_text = query_result.get("text", "❌ Error al procesar consulta.")
-    
+
     # 3. Reply to sender via Meta's Graph API
     whatsapp_token = os.getenv("WHATSAPP_TOKEN")
     # Retrieve the phone number ID of the bot receiving the message
     phone_number_id = value.get("metadata", {}).get("phone_number_id")
     
-    if not whatsapp_token:
+    if not whatsapp_token and not dry_run:
         logger.error("WHATSAPP_TOKEN not configured in .env!")
         return {"status": "error", "message": "WHATSAPP_TOKEN not configured"}
-        
-    if not phone_number_id:
+
+    if not phone_number_id and not dry_run:
         logger.error("phone_number_id not found in webhook metadata!")
         return {"status": "error", "message": "phone_number_id not found"}
         
@@ -2800,8 +3661,41 @@ async def receive_whatsapp_webhook(request: Request):
     import urllib.error
     
     url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
-    
+
+    # 0. Primer contacto del día: enviar primero el recopilatorio de AYER como
+    #    mensaje independiente (reporte general del día anterior).
+    if first_session and yesterday_date:
+        try:
+            yesterday_result = get_whatsapp_query(sender_phone, report_type="products", ref_date=yesterday_date)
+            yesterday_text = yesterday_result.get("text")
+            if yesterday_text and dry_run:
+                dry_messages.append({"kind": "text", "label": "recopilatorio_ayer", "text": yesterday_text})
+            elif yesterday_text:
+                y_payload = {
+                    "messaging_product": "whatsapp",
+                    "recipient_type": "individual",
+                    "to": sender_phone,
+                    "type": "text",
+                    "text": {"body": yesterday_text}
+                }
+                y_req = urllib.request.Request(
+                    url,
+                    data=json.dumps(y_payload).encode("utf-8"),
+                    headers={
+                        "Authorization": f"Bearer {whatsapp_token}",
+                        "Content-Type": "application/json"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(y_req) as y_resp:
+                    logger.info(f"WhatsApp yesterday recap sent to {sender_phone}: {y_resp.read().decode('utf-8')}")
+        except Exception as e:
+            logger.error(f"Error sending yesterday recap to {sender_phone}: {e}")
+
     # 1. Send the main report as a standard text message (limit 4096 characters, no error 400)
+    if dry_run:
+        dry_messages.append({"kind": "text", "label": "reporte_hoy", "text": reply_text})
+
     payload_text = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -2811,7 +3705,7 @@ async def receive_whatsapp_webhook(request: Request):
             "body": reply_text
         }
     }
-    
+
     req_data_text = json.dumps(payload_text).encode("utf-8")
     req_text = urllib.request.Request(
         url,
@@ -2823,17 +3717,18 @@ async def receive_whatsapp_webhook(request: Request):
         method="POST"
     )
     
-    try:
-        with urllib.request.urlopen(req_text) as response:
-            res_body = response.read().decode("utf-8")
-            logger.info(f"WhatsApp text report sent successfully to {sender_phone}: {res_body}")
-    except urllib.error.HTTPError as he:
-        err_msg = he.read().decode("utf-8")
-        logger.error(f"HTTPError sending text report to WhatsApp API: {he.code} - {err_msg}")
-        return {"status": "error", "code": he.code, "message": err_msg}
-    except Exception as e:
-        logger.error(f"Unexpected error sending text report to WhatsApp API: {e}")
-        return {"status": "error", "message": str(e)}
+    if not dry_run:
+        try:
+            with urllib.request.urlopen(req_text) as response:
+                res_body = response.read().decode("utf-8")
+                logger.info(f"WhatsApp text report sent successfully to {sender_phone}: {res_body}")
+        except urllib.error.HTTPError as he:
+            err_msg = he.read().decode("utf-8")
+            logger.error(f"HTTPError sending text report to WhatsApp API: {he.code} - {err_msg}")
+            return {"status": "error", "code": he.code, "message": err_msg}
+        except Exception as e:
+            logger.error(f"Unexpected error sending text report to WhatsApp API: {e}")
+            return {"status": "error", "message": str(e)}
 
     # 2. Send the interactive menu buttons as a separate short message (limit 1024 characters, completely safe)
     buttons = []
@@ -2934,7 +3829,14 @@ async def receive_whatsapp_webhook(request: Request):
             })
             button_prompt = "📦 Seleccione una opción:"
             
-    if buttons:
+    if buttons and dry_run:
+        dry_messages.append({
+            "kind": "interactive",
+            "label": "menu_botones",
+            "text": button_prompt,
+            "buttons": [b["reply"]["title"] for b in buttons],
+        })
+    elif buttons:
         payload_buttons = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -2950,7 +3852,7 @@ async def receive_whatsapp_webhook(request: Request):
                 }
             }
         }
-        
+
         req_data_buttons = json.dumps(payload_buttons).encode("utf-8")
         req_buttons = urllib.request.Request(
             url,
@@ -2971,6 +3873,9 @@ async def receive_whatsapp_webhook(request: Request):
             logger.error(f"HTTPError sending interactive buttons to WhatsApp API: {he.code} - {err_msg}")
         except Exception as e:
             logger.error(f"Unexpected error sending interactive buttons to WhatsApp API: {e}")
+
+    if dry_run:
+        return {"status": "dry_run", "count": len(dry_messages), "messages": dry_messages}
 
     return {"status": "success", "message": "Reply and menus processed"}
 
