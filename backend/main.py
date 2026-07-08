@@ -314,13 +314,14 @@ def get_ventas(
         
         # Auto-expire yesterday's cache if it was created BEFORE today (e.g., missing final closing data at 20:00)
         # This ensures the first request on the next day fetches the definitive Oracle data.
-        if is_yesterday:
-            try:
-                dt_updated = datetime.fromisoformat(last_updated)
-                if dt_updated.date() < date.today():
-                    cache_valid = False
-            except Exception:
-                pass
+        # UPDATE: User requested to ALWAYS use SQLite for yesterday to avoid long Oracle query times.
+        # if is_yesterday:
+        #     try:
+        #         dt_updated = datetime.fromisoformat(last_updated)
+        #         if dt_updated.date() < date.today():
+        #             cache_valid = False
+        #     except Exception:
+        #         pass
                 
         # Expiration check disabled temporarily by user request
         # if is_today:
