@@ -758,8 +758,6 @@ def get_whatsapp_query(
         phone = None
     if not isinstance(report_type, str):
         report_type = "products"
-    if not isinstance(date_filter, str):
-        date_filter = "today"
 
 
 
@@ -829,76 +827,6 @@ def get_whatsapp_query(
             user_label = "Coordinador"
             user_zone = coordinator["zone"]
 
-    # Track first message of the day and limit the "yesterday" session
-    if phone and date_filter == "today":
-        from datetime import datetime as dt_class
-        now = dt_class.now()
-        today_str_real = now.strftime("%Y-%m-%d")
-        
-        # Solo el primer mensaje del día debe devolver el reporte de ayer
-        session_limit = 1
-        
-        import sqlite3
-        try:
-            conn = sqlite3.connect("uploads/cache.db")
-            c = conn.cursor()
-            c.execute("CREATE TABLE IF NOT EXISTS whatsapp_user_requests (phone TEXT PRIMARY KEY, last_date TEXT)")
-            
-            # Migrations for new columns
-            try:
-                c.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN msg_count INTEGER DEFAULT 0")
-            except:
-                pass
-            try:
-                c.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN session_start_time TEXT")
-            except:
-                pass
-                
-            c.execute("SELECT last_date, msg_count, session_start_time FROM whatsapp_user_requests WHERE phone = ?", (phone,))
-            row = c.fetchone()
-            
-            is_yesterday_session = False
-            now_iso = now.isoformat()
-            
-            if not row or row[0] != today_str_real:
-                # Primer mensaje del día (inicia el ciclo de "ayer")
-                if today_str_real != "2026-06-24":
-                    is_yesterday_session = True
-                
-                # Insertamos o actualizamos con el inicio del ciclo (session_start_time)
-                # Si la tabla ya existe y usamos REPLACE, se deben proveer todos los campos.
-                # Mejor usar UPDATE para asegurar no perder otros campos si existieran, o REPLACE con cuidado.
-                # Como 'phone' es PK, INSERT OR REPLACE reemplazará toda la fila.
-                c.execute("INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date, msg_count, session_start_time) VALUES (?, ?, ?, ?)", 
-                          (phone, today_str_real, 1, now_iso))
-                conn.commit()
-            else:
-                # Ya interactuó hoy, verificamos si aún está dentro de la ventana de tiempo del ciclo inicial.
-                # Ventana de 60 minutos para permitirle consultar varias opciones con datos de "ayer".
-                session_start_str = row[2] if len(row) > 2 else None
-                
-                if session_start_str:
-                    try:
-                        from datetime import datetime as dt_class_parse
-                        session_start_dt = dt_class_parse.fromisoformat(session_start_str)
-                        # Si han pasado menos de 3 minutos, sigue siendo "ayer"
-                        if (now - session_start_dt).total_seconds() < 180:
-                            is_yesterday_session = True
-                    except Exception as parse_err:
-                        pass
-                
-                msg_count = row[1] if len(row) > 1 and row[1] is not None else 1
-                c.execute("UPDATE whatsapp_user_requests SET msg_count = ?, session_start_time = COALESCE(session_start_time, ?) WHERE phone = ?", 
-                          (msg_count + 1, now_iso, phone))
-                conn.commit()
-                        
-            if is_yesterday_session:
-                date_filter = "yesterday"
-                
-            conn.close()
-        except Exception as e:
-            logger.error(f"Error checking first message of day: {e}")
-    
     # 2. Encontrar oficinas asignadas en la distribución comercial
     assigned_offices = set()
     if is_administrator:
@@ -1179,7 +1107,7 @@ def get_whatsapp_query(
         except:
             pass
             
-        if date_filter == "yesterday":
+        if is_past_day:
             msg = f"👥 *CUMPLIMIENTO POR COORDINADOR (AYER)*\n"
         else:
             msg = f"👥 *CUMPLIMIENTO POR COORDINADOR*\n"
@@ -1219,7 +1147,7 @@ def get_whatsapp_query(
                     selected_product=None,
                     override_promoter_name=None,
                     override_coordinator_name=selected_coord_name,
-                    date_filter=date_filter
+                    ref_date=ref_date,
                 )
                 result["is_administrator"] = True
                 result["is_coordinator"] = False
@@ -1248,7 +1176,7 @@ def get_whatsapp_query(
             }
         is_yudy = "yud" in user_name.strip().lower() or "moral" in user_name.strip().lower() or "oriente y municipios centro" in user_zone.strip().lower()
         if is_yudy:
-            if date_filter == "yesterday":
+            if is_past_day:
                 msg = f"👥 *RESUMEN DE PROMOTORES (AYER) - ZONA: ORIENTE Y CENTRO*\n"
             else:
                 msg = f"👥 *RESUMEN DE PROMOTORES (v4) - ZONA: ORIENTE Y CENTRO*\n"
@@ -1277,7 +1205,7 @@ def get_whatsapp_query(
             msg += f"📲 Para ver el detalle por oficina, responde con el número del promotor (Ej: *1*)\n"
             msg += f"💪 ¡Vamos por la meta! 🚀"
         else:
-            if date_filter == "yesterday":
+            if is_past_day:
                 msg = f"👥 *RESUMEN DE PROMOTORES (AYER) - ZONA: {user_zone}*\n"
             else:
                 msg = f"👥 *RESUMEN DE PROMOTORES (Debug) - ZONA: {user_zone}*\n"
@@ -1317,7 +1245,7 @@ def get_whatsapp_query(
                     selected_product=None,
                     override_promoter_name=selected_promoter_name,
                     override_coordinator_name=None,
-                    date_filter=date_filter
+                    ref_date=ref_date,
                 )
                 result["is_coordinator"] = True
                 result["report_type"] = "coordinator_promoter_offices_view"
@@ -1399,7 +1327,7 @@ def get_whatsapp_query(
             except Exception:
                 db_update_time_str = str(last_updated)
                 
-        if date_filter == "yesterday":
+        if is_past_day:
             db_update_time_str = "Cierre del día"
     except Exception as e:
         logger.error(f"Error fetching sales for WhatsApp query: {e}")
@@ -1648,7 +1576,7 @@ def get_whatsapp_query(
 
     if is_coordinator and report_type in {"products", "offices"}:
         total_faltante_meta = max(0.0, total_goals - total_sales)
-        if date_filter == "yesterday":
+        if is_past_day:
             msg = f"📊 *REPORTE DE ZONA (AYER)*\n"
         else:
             msg = f"📊 *REPORTE DE ZONA (GENERAL)*\n"
@@ -1706,7 +1634,7 @@ def get_whatsapp_query(
     
     if report_type == "products":
         total_faltante_meta = max(0.0, total_goals - total_sales)
-        if date_filter == "yesterday":
+        if is_past_day:
             msg = f"📊 *TU RESUMEN DE AYER*\n"
         else:
             msg = f"📊 *CUMPLIMIENTO DIARIO POR PRODUCTO*\n"
@@ -1755,7 +1683,7 @@ def get_whatsapp_query(
         is_count_based = selected_product in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
         total_faltante_meta = max(0.0, total_goals - total_sales)
         
-        if date_filter == "yesterday":
+        if is_past_day:
             msg = f"📊 *REPORTE PRODUCTO / OFICINA (AYER)*\n"
         else:
             msg = f"📊 *REPORTE PRODUCTO / OFICINA*\n"
@@ -1802,7 +1730,7 @@ def get_whatsapp_query(
         msg += f"💪 ¡Vamos por la meta! 🚀"
         
     else: # report_type == "offices"
-        if date_filter == "yesterday":
+        if is_past_day:
             msg = f"📊 *REPORTE OFICINA GENERAL (AYER)*\n"
         else:
             msg = f"📊 *REPORTE OFICINA GENERAL*\n"
@@ -3543,10 +3471,10 @@ def _process_whatsapp_message(body: dict, dry_run: bool = False):
     selected_product = None
     query_result = None
 
-    # Primer contacto del día: además del reporte de hoy, se adjunta un
-    # mensaje independiente con el recopilatorio de ayer.
+    # Primer contacto del día: usamos la ventana de tiempo para ofrecer el reporte
+    # del día anterior automáticamente a cualquier consulta en esos primeros minutos.
     first_session = is_first_session_of_day(sender_phone)
-    yesterday_date = (date.today() - timedelta(days=1)).isoformat() if first_session else None
+    ref_date_param = (date.today() - timedelta(days=1)).isoformat() if first_session else None
 
     # 2. Check user role
     administrator = find_active_administrator_by_phone(sender_phone)
@@ -3574,8 +3502,12 @@ def _process_whatsapp_message(body: dict, dry_run: bool = False):
             report_type = "products"
         elif button_id == "view_coordinators_summary" or "coordinador" in user_msg_lower:
             report_type = "coordinators"
+        elif user_msg_text.isdigit():
+            report_type = "administrator_coordinator_detail"
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=user_msg_text, ref_date=ref_date_param)
 
-        query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+        if query_result is None:
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, ref_date=ref_date_param)
     elif coordinator:
         # Coordinator Session Routing
         report_type = "products" # Default to zone report
@@ -3592,8 +3524,12 @@ def _process_whatsapp_message(body: dict, dry_run: bool = False):
             report_type = "products"
         elif button_id == "view_promoter_summary" or "promotor" in user_msg_lower:
             report_type = "prompt_promoter"
+        elif user_msg_text.isdigit():
+            report_type = "coordinator_promoter_detail"
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=user_msg_text, ref_date=ref_date_param)
 
-        query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+        if query_result is None:
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, ref_date=ref_date_param)
     else:
         # Promoter Session Routing
         if (session_data and isinstance(session_data, dict) and 
@@ -3608,7 +3544,7 @@ def _process_whatsapp_message(body: dict, dry_run: bool = False):
                     selected_product = active_products[num - 1]
                     set_cached_sales(session_key, {"state": "idle"})
                     report_type = "product_office"
-                    query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
+                    query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product, ref_date=ref_date_param)
                 else:
                     reply_text = f"❌ Número inválido. Por favor escribe un número entre 1 y {len(active_products)}."
                     query_result = {"text": reply_text}
@@ -3640,7 +3576,7 @@ def _process_whatsapp_message(body: dict, dry_run: bool = False):
                     report_type = "products"
                     
             if query_result is None:
-                query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product)
+                query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=selected_product, ref_date=ref_date_param)
 
     reply_text = query_result.get("text", "❌ Error al procesar consulta.")
 
@@ -3661,36 +3597,6 @@ def _process_whatsapp_message(body: dict, dry_run: bool = False):
     import urllib.error
     
     url = f"https://graph.facebook.com/v17.0/{phone_number_id}/messages"
-
-    # 0. Primer contacto del día: enviar primero el recopilatorio de AYER como
-    #    mensaje independiente (reporte general del día anterior).
-    if first_session and yesterday_date:
-        try:
-            yesterday_result = get_whatsapp_query(sender_phone, report_type="products", ref_date=yesterday_date)
-            yesterday_text = yesterday_result.get("text")
-            if yesterday_text and dry_run:
-                dry_messages.append({"kind": "text", "label": "recopilatorio_ayer", "text": yesterday_text})
-            elif yesterday_text:
-                y_payload = {
-                    "messaging_product": "whatsapp",
-                    "recipient_type": "individual",
-                    "to": sender_phone,
-                    "type": "text",
-                    "text": {"body": yesterday_text}
-                }
-                y_req = urllib.request.Request(
-                    url,
-                    data=json.dumps(y_payload).encode("utf-8"),
-                    headers={
-                        "Authorization": f"Bearer {whatsapp_token}",
-                        "Content-Type": "application/json"
-                    },
-                    method="POST"
-                )
-                with urllib.request.urlopen(y_req) as y_resp:
-                    logger.info(f"WhatsApp yesterday recap sent to {sender_phone}: {y_resp.read().decode('utf-8')}")
-        except Exception as e:
-            logger.error(f"Error sending yesterday recap to {sender_phone}: {e}")
 
     # 1. Send the main report as a standard text message (limit 4096 characters, no error 400)
     if dry_run:
