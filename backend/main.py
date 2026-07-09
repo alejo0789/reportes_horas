@@ -451,8 +451,21 @@ def force_refresh_ventas(
     """
     if not desde or not hasta:
         today_str = datetime.now().strftime("%Y-%m-%d")
-        desde = desde or f"{today_str} 00:00:00"
-        hasta = hasta or f"{today_str} 23:59:59"
+        yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        month_start = f"{today_str[:7]}-01 00:00:00"
+        
+        # 1. Update Yesterday's Cache
+        logger.info(f"Auto-refreshing Yesterday's Cache")
+        get_ventas(desde=f"{yesterday_str} 00:00:00", hasta=f"{yesterday_str} 23:59:59", force_refresh=True)
+        
+        # 2. Update Monthly Cache (used by WhatsApp 'Mensual' metric)
+        logger.info(f"Auto-refreshing Monthly Cache")
+        get_ventas(desde=month_start, hasta=f"{today_str} 23:59:59", force_refresh=True)
+        
+        # 3. Update Today's Cache (and return this to caller)
+        desde = f"{today_str} 00:00:00"
+        hasta = f"{today_str} 23:59:59"
+        
     logger.info(f"Forced refresh request received via API for range: {desde} to {hasta}")
     return get_ventas(desde=desde, hasta=hasta, force_refresh=True)
 
