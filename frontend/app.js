@@ -606,8 +606,8 @@ async function selectAssistantModel(modelId) {
 
 // --- ASISTENTE IA: KPIs PAGOS + RECARGAS (DÍA ACTUAL) ---
 async function loadAssistantKpis() {
-    const todayStr = new Date().toISOString().split('T')[0];
-    const addDay = (s) => { const d = new Date(`${s}T00:00:00`); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; };
+    const todayStr = new Date().toLocaleDateString('en-CA');
+    const addDay = (s) => { const d = new Date(`${s}T00:00:00`); d.setDate(d.getDate() + 1); return d.toLocaleDateString('en-CA'); };
     const desde = `${todayStr} 00:00:00`;
     const hasta = `${addDay(todayStr)} 00:00:00`;
 
@@ -735,10 +735,10 @@ function setupAssistantChat() {
 
 // Construye el rango "día actual" para el contexto del asistente.
 function assistantTodayRange() {
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toLocaleDateString('en-CA');
     const d = new Date(`${todayStr}T00:00:00`);
     d.setDate(d.getDate() + 1);
-    const tomorrow = d.toISOString().split('T')[0];
+    const tomorrow = d.toLocaleDateString('en-CA');
     return { desde: `${todayStr} 00:00:00`, hasta: `${tomorrow} 00:00:00` };
 }
 
@@ -1697,7 +1697,7 @@ async function generateReportPDF() {
             y += 3;
         }
 
-        const stamp = new Date().toISOString().slice(0, 10);
+        const stamp = new Date().toLocaleDateString('en-CA');
         doc.save(`Informe_Asistente_Betplay_${stamp}.pdf`);
         status.textContent = 'PDF descargado.';
     } catch (err) {
@@ -1750,7 +1750,7 @@ function setupBetplayControls() {
     const applyBtn = document.getElementById('btn-betplay-apply');
 
     // Default all date inputs to today
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = new Date().toLocaleDateString('en-CA');
     [singleInput, fromInput, toInput].forEach(i => { if (i && !i.value) i.value = todayStr; });
 
     // Show/hide date fields according to selected mode
@@ -1954,12 +1954,12 @@ function getBetplayDateRange() {
     const addDay = (dateStr) => {
         const d = new Date(`${dateStr}T00:00:00`);
         d.setDate(d.getDate() + 1);
-        return d.toISOString().split('T')[0];
+        return d.toLocaleDateString('en-CA');
     };
 
     let startDay, endDayExclusive;
     if (mode === 'today') {
-        startDay = new Date().toISOString().split('T')[0];
+        startDay = new Date().toLocaleDateString('en-CA');
         endDayExclusive = addDay(startDay);
     } else if (mode === 'single') {
         startDay = document.getElementById('betplay-date-single').value;
@@ -2052,7 +2052,7 @@ function aggregateBetplayClient(rows, type) {
         const dt = new Date(r[k.date]);
         if (!isNaN(dt.getTime())) {
             bump(byHour, dt.getHours(), monto);
-            bump(byDay, dt.toISOString().slice(0, 10), monto);
+            bump(byDay, dt.toLocaleDateString('en-CA'), monto);
         }
         const zona = r['Zona'] || 'Sin Zona'; bump(byZone, zona, monto, { zona });
         const ciudad = r['Ciudad'] || 'Sin Ciudad'; bump(byCity, ciudad, monto, { ciudad });
@@ -2231,7 +2231,7 @@ function exportBetplayTable() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Detalle por Sitio');
     const tipo = State.betplay.type || 'betplay';
-    const fecha = new Date().toISOString().slice(0, 10);
+    const fecha = new Date().toLocaleDateString('en-CA');
     XLSX.writeFile(wb, `betplay_${tipo}_detalle_sitios_${fecha}.xlsx`);
 }
 
@@ -2463,7 +2463,7 @@ async function generateBetplayPDF() {
         if (pending) await addCompactRow(pending, null);
 
         const tipo = State.betplay.type || 'betplay';
-        const fecha = new Date().toISOString().slice(0, 10);
+        const fecha = new Date().toLocaleDateString('en-CA');
         setProg('Guardando…');
         doc.save(`betplay_${tipo}_${fecha}.pdf`);
         const modal = document.getElementById('bp-pdf-modal'); if (modal) modal.style.display = 'none';
