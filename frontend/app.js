@@ -3148,7 +3148,7 @@ async function fetchAndRenderData(forceRefresh = false) {
         
         logger(`Cargando ventas de ${desde} a ${hasta} (forceRefresh=${forceRefresh})...`);
         
-        const url = `${API_BASE}/api/ventas?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}${forceRefresh ? '&force_refresh=true' : ''}`;
+        const url = `${API_BASE}/api/ventas?desde=${encodeURIComponent(desde)}&hasta=${encodeURIComponent(hasta)}${forceRefresh ? '&force_refresh=true' : ''}&t=${new Date().getTime()}`;
         const [resSales, resMetas] = await Promise.all([
             authFetch(url),
             authFetch(`${API_BASE}/api/metas?fecha=${State.selectedDate}&t=${new Date().getTime()}`)
