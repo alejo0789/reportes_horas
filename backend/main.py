@@ -35,7 +35,7 @@ from backend.cache import (
     find_active_coordinator_by_phone,
     get_all_administrators, add_administrator, update_administrator, delete_administrator,
     find_active_administrator_by_phone,
-    is_first_session_of_day
+    get_daily_session_context
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -3502,10 +3502,15 @@ def _process_whatsapp_message(body: dict, dry_run: bool = False):
         
     # Check if the incoming message is an interactive button click or text query
     user_msg_text = ""
+    button_id = None
     message_type = message.get("type")
     if message_type == "text":
         text_obj = message.get("text", {})
         user_msg_text = text_obj.get("body", "").strip()
+    elif message_type == "interactive":
+        interactive = message.get("interactive", {})
+        button_reply = interactive.get("button_reply", {})
+        button_id = button_reply.get("id")
         
     session_key = f"session_{sender_phone}"
     session_data, _ = get_cached_sales(session_key)
@@ -3514,10 +3519,9 @@ def _process_whatsapp_message(body: dict, dry_run: bool = False):
     selected_product = None
     query_result = None
 
-    # Primer contacto del día: usamos la ventana de tiempo para ofrecer el reporte
-    # del día anterior automáticamente a cualquier consulta en esos primeros minutos.
-    first_session = is_first_session_of_day(sender_phone)
-    ref_date_param = (date.today() - timedelta(days=1)).isoformat() if first_session else None
+    # Máquina de estados para el contacto del día
+    date_context = get_daily_session_context(sender_phone, user_msg_text, button_id)
+    ref_date_param = (date.today() - timedelta(days=1)).isoformat() if date_context == "yesterday" else None
 
     # 2. Check user role
     administrator = find_active_administrator_by_phone(sender_phone)

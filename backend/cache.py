@@ -228,16 +228,13 @@ def clear_cache():
     finally:
         conn.close()
 
-def is_first_session_of_day(phone: str, window_seconds: int = 180) -> bool:
-    """Indica si es el primer contacto del día para el número.
-
-    Devuelve True para el primer mensaje del día y para los mensajes
-    posteriores que lleguen dentro de `window_seconds` desde ese primero
-    (así el usuario puede navegar el "cierre de ayer" unos minutos).
-    Registra el estado en la tabla whatsapp_user_requests.
+def get_daily_session_context(phone: str, user_msg_text: str, button_id: str) -> str:
+    """Gestiona la máquina de estados diaria del usuario.
+    Retorna 'yesterday' si el usuario está consultando el reporte de ayer (primer contacto del día y flujo subsiguiente),
+    o 'today' si está en el flujo normal.
     """
     if not phone:
-        return False
+        return "today"
     conn = sqlite3.connect(DB_PATH)
     try:
         cursor = conn.cursor()
@@ -245,39 +242,54 @@ def is_first_session_of_day(phone: str, window_seconds: int = 180) -> bool:
             CREATE TABLE IF NOT EXISTS whatsapp_user_requests (
                 phone TEXT PRIMARY KEY,
                 last_date TEXT,
-                session_start_time TEXT
+                session_start_time TEXT,
+                date_context TEXT DEFAULT 'today'
             )
         """)
-        # Migración: asegurar la columna en tablas antiguas.
+        # Migración: asegurar las columnas en tablas antiguas.
         try:
             cursor.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN session_start_time TEXT")
         except sqlite3.OperationalError:
-            pass  # la columna ya existe
+            pass
+        try:
+            cursor.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN date_context TEXT DEFAULT 'today'")
+        except sqlite3.OperationalError:
+            pass
+
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
-        cursor.execute("SELECT last_date, session_start_time FROM whatsapp_user_requests WHERE phone = ?", (phone,))
+        cursor.execute("SELECT last_date, date_context FROM whatsapp_user_requests WHERE phone = ?", (phone,))
         row = cursor.fetchone()
 
+        user_lower = (user_msg_text or "").strip().lower()
+
         if not row or row[0] != today:
-            # Primer mensaje del día: inicia la ventana.
+            # Primer mensaje del día: Inicia el estado en 'yesterday'
             cursor.execute(
-                "INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date, session_start_time) VALUES (?, ?, ?)",
-                (phone, today, now.isoformat())
+                "INSERT OR REPLACE INTO whatsapp_user_requests (phone, last_date, session_start_time, date_context) VALUES (?, ?, ?, ?)",
+                (phone, today, now.isoformat(), "yesterday")
             )
             conn.commit()
-            return True
+            return "yesterday"
 
-        # Ya interactuó hoy: ¿sigue dentro de la ventana inicial?
-        try:
-            start = datetime.fromisoformat(row[1]) if row[1] else None
-        except Exception:
-            start = None
-        if start and (now - start).total_seconds() < window_seconds:
-            return True
-        return False
+        current_context = row[1] if row[1] else "today"
+
+        # Lógica de transición para salir del ciclo de ayer
+        if current_context == "yesterday":
+            reset_keywords = ["hola", "menu", "menú", "hoy", "general", "zona", "producto"]
+            if any(k == user_lower for k in reset_keywords):
+                current_context = "today"
+            elif button_id == "view_today_report":
+                current_context = "today"
+
+            if current_context == "today":
+                cursor.execute("UPDATE whatsapp_user_requests SET date_context = 'today' WHERE phone = ?", (phone,))
+                conn.commit()
+
+        return current_context
     except Exception as e:
-        logger.error(f"Error in is_first_session_of_day: {e}")
-        return False
+        logger.error(f"Error in get_daily_session_context: {e}")
+        return "today"
     finally:
         conn.close()
 
