@@ -340,8 +340,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    // Load initial data
-    await checkStatus();
+    // Load initial data sin bloquear por el ping a Oracle
+    checkStatus().catch(console.error);
     await loadInitialCatalogues();
     await loadUploadedState();
 });
@@ -3191,10 +3191,10 @@ async function fetchAndRenderData(forceRefresh = false) {
         }
         elements.updateTimestamp.textContent = timestampText;
         
-        // Re-check database pool status to update visual network indicator
-        await checkStatus();
+        // Re-check database pool status asynchronously to avoid blocking UI render
+        checkStatus().catch(e => console.error("Background status check error:", e));
         
-        // Redraw dashboard view
+        // Redraw dashboard view immediately
         renderDashboard();
         
     } catch (e) {
