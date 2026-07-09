@@ -443,31 +443,60 @@ def get_ventas(
 
 @app.api_route("/api/ventas/refresh", methods=["GET", "POST"])
 def force_refresh_ventas(
+    background_tasks: BackgroundTasks,
     desde: Optional[str] = Query(None, description="Fecha inicio YYYY-MM-DD HH:MM:SS"),
     hasta: Optional[str] = Query(None, description="Fecha fin YYYY-MM-DD HH:MM:SS")
 ):
     """
     Endpoint for external schedulers (like n8n) to force update the SQLite cache.
+    Runs in background to prevent timeout issues (takes 5+ mins for all queries).
     """
-    if not desde or not hasta:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        month_start = f"{today_str[:7]}-01 00:00:00"
-        
-        # 1. Update Yesterday's Cache
-        logger.info(f"Auto-refreshing Yesterday's Cache")
-        get_ventas(desde=f"{yesterday_str} 00:00:00", hasta=f"{yesterday_str} 23:59:59", force_refresh=True)
-        
-        # 2. Update Monthly Cache (used by WhatsApp 'Mensual' metric)
-        logger.info(f"Auto-refreshing Monthly Cache")
-        get_ventas(desde=month_start, hasta=f"{today_str} 23:59:59", force_refresh=True)
-        
-        # 3. Update Today's Cache (and return this to caller)
-        desde = f"{today_str} 00:00:00"
-        hasta = f"{today_str} 23:59:59"
-        
-    logger.info(f"Forced refresh request received via API for range: {desde} to {hasta}")
-    return get_ventas(desde=desde, hasta=hasta, force_refresh=True)
+    def _run_refreshes(_desde, _hasta):
+        logger.info("Starting background refresh tasks...")
+        try:
+            if _desde and _hasta and _desde != "AUTO":
+                # Specific range requested
+                get_ventas(desde=_desde, hasta=_hasta, force_refresh=True)
+                return
+
+            # Auto mode (no params) -> Refresh Everything
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            tomorrow_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            yesterday_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            month_start = f"{today_str[:7]}-01 00:00:00"
+            
+            # 1. Update Yesterday's Cache
+            logger.info(f"Background: Auto-refreshing Yesterday's Cache")
+            get_ventas(desde=f"{yesterday_str} 00:00:00", hasta=f"{yesterday_str} 23:59:59", force_refresh=True)
+            
+            # 2. Update Monthly Cache (used by WhatsApp 'Mensual' metric)
+            logger.info(f"Background: Auto-refreshing Monthly Cache")
+            get_ventas(desde=month_start, hasta=f"{today_str} 23:59:59", force_refresh=True)
+            
+            # 3. Update Today's Cache
+            logger.info(f"Background: Auto-refreshing Today's Cache")
+            get_ventas(desde=f"{today_str} 00:00:00", hasta=f"{today_str} 23:59:59", force_refresh=True)
+            
+            # 4. Update Betplay Pagos & Recargas
+            logger.info(f"Background: Auto-refreshing Betplay")
+            compute_betplay_resumen("pagos", desde=f"{today_str} 00:00:00", hasta=f"{tomorrow_str} 00:00:00", force_refresh=True)
+            compute_betplay_resumen("recargas", desde=f"{today_str} 00:00:00", hasta=f"{tomorrow_str} 00:00:00", force_refresh=True)
+            
+            logger.info("Background refresh tasks completed successfully.")
+        except Exception as e:
+            logger.error(f"Background refresh failed: {e}")
+
+    # Launch in background
+    _d = desde or "AUTO"
+    _h = hasta or "AUTO"
+    background_tasks.add_task(_run_refreshes, _d, _h)
+    
+    return {
+        "status": "refreshing_in_background",
+        "message": "Las actualizaciones de caché (Ayer, Mes, Hoy y Betplay) se han iniciado en segundo plano.",
+        "desde": _d,
+        "hasta": _h
+    }
 
 
 # Pydantic models for WhatsApp Promoters
