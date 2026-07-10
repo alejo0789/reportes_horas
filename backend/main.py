@@ -1665,7 +1665,7 @@ def get_whatsapp_query(
                 msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
                 msg += f"  ↳ Meta Hora Sig: {pref}{round(p_next_hour_goal):,}\n"
                 msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
-                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
+                msg += "\n"
 
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
@@ -1724,7 +1724,7 @@ def get_whatsapp_query(
                 msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
                 msg += f"  ↳ Meta Hora Sig: {pref}{round(p_next_hour_goal):,}\n"
                 msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
-                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
+                msg += "\n"
         msg += f"──────────────────\n"
         msg += f"💪 ¡Vamos por la meta! 🚀"
 
