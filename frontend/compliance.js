@@ -27,7 +27,7 @@ async function loadData() {
         } else {
             const urlParams = new URLSearchParams(window.location.search);
             const dateParam = urlParams.get('date');
-            const endpoint = dateParam ? `/api/compliance/data?date=${dateParam}` : `/api/compliance/data`;
+            const endpoint = dateParam ? `api/compliance/data?date=${dateParam}` : `api/compliance/data`;
 
             const response = await fetch(endpoint);
             data = await response.json();
