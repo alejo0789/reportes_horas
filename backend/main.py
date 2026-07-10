@@ -469,9 +469,10 @@ def force_refresh_ventas(
             logger.info(f"Background: Auto-refreshing Yesterday's Cache")
             get_ventas(desde=f"{yesterday_str} 00:00:00", hasta=f"{yesterday_str} 23:59:59", force_refresh=True)
             
-            # 2. Update Monthly Cache (used by WhatsApp 'Mensual' metric)
-            logger.info(f"Background: Auto-refreshing Monthly Cache")
+            # 2. Update Monthly Cache (used by WhatsApp 'Mensual' metric) for Today and Yesterday
+            logger.info(f"Background: Auto-refreshing Monthly Cache (Today & Yesterday)")
             get_ventas(desde=month_start, hasta=f"{today_str} 23:59:59", force_refresh=True)
+            get_ventas(desde=month_start, hasta=f"{yesterday_str} 23:59:59", force_refresh=True)
             
             # 3. Update Today's Cache
             logger.info(f"Background: Auto-refreshing Today's Cache")
