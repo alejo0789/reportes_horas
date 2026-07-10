@@ -19,13 +19,19 @@ const getDiffHtml = (num) => {
 };
 
 async function loadData() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const dateParam = urlParams.get('date');
-    const endpoint = dateParam ? `/api/compliance/data?date=${dateParam}` : `/api/compliance/data`;
-
     try {
-        const response = await fetch(endpoint);
-        const data = await response.json();
+        let data;
+        
+        if (window.PRELOADED_DATA) {
+            data = window.PRELOADED_DATA;
+        } else {
+            const urlParams = new URLSearchParams(window.location.search);
+            const dateParam = urlParams.get('date');
+            const endpoint = dateParam ? `/api/compliance/data?date=${dateParam}` : `/api/compliance/data`;
+
+            const response = await fetch(endpoint);
+            data = await response.json();
+        }
         
         document.getElementById('report-date').textContent = data.date.split('-').reverse().join('/');
         
@@ -94,4 +100,10 @@ async function loadData() {
 }
 
 // Load data when page loads
-document.addEventListener('DOMContentLoaded', loadData);
+if (window.PRELOADED_DATA) {
+    // SSR mode: Execute immediately
+    loadData();
+} else {
+    // Normal browser mode: wait for DOM to be ready
+    document.addEventListener('DOMContentLoaded', loadData);
+}

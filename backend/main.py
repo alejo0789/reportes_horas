@@ -3426,203 +3426,7 @@ def clear_data(current_user: CurrentUser = Depends(get_current_user)):
     return {"status": "success", "message": "All uploaded data and local cache cleared. "}
 
 
-# ==========================================
-# ENDPOINT PARA TABLA DE CUMPLIMIENTO (IMAGEN)
-# ==========================================
-@app.get("/api/compliance/data")
-def get_compliance_data(date: Optional[str] = Query(None, description="Fecha YYYY-MM-DD")):
-    """
-    Retorna la data agrupada para la tabla de cumplimiento de Generales.
-    """
-    from datetime import datetime, timedelta
-    import calendar
-    
-    report_date = date or datetime.now().strftime("%Y-%m-%d")
-    is_past_day = (report_date < datetime.now().strftime("%Y-%m-%d"))
-    
-    month_start = f"{report_date[:7]}-01 00:00:00"
-    hasta = f"{report_date} 23:59:59"
-    desde_dia = f"{report_date} 00:00:00"
-    
-    # Horas
-    from datetime import timezone, timedelta as td
-    colombia_tz = timezone(td(hours=-5))
-    now_colombia = datetime.now(colombia_tz)
-    ref_hour = now_colombia.hour
-    ref_hour = max(7, min(21, ref_hour))
-    if is_past_day:
-        ref_hour = 21
 
-    # Ventas día
-    sales_dia = {}
-    sales_resp = get_ventas(desde=desde_dia, hasta=hasta, force_refresh=False)
-    for sale in sales_resp.get("data", []):
-        if sale.get("Tabla_Origen") in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
-            continue
-        try:
-            hour_str = sale.get("Hora", "0")
-            sale_hour = int(hour_str.split(":")[0])
-        except:
-            sale_hour = 0
-            
-        pname = resolve_product_name(sale, products_by_code)
-        if sale_hour <= ref_hour:
-            sales_dia[pname] = sales_dia.get(pname, 0.0) + float(sale.get("Venta_Neta") or 0.0)
-
-    # Ventas Mes
-    venta_mes = {}
-    sales_mes_resp = get_ventas(desde=month_start, hasta=hasta, force_refresh=False)
-    for sale in sales_mes_resp.get("data", []):
-        if sale.get("Tabla_Origen") in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
-            continue
-        try:
-            hour_str = sale.get("Hora", "0")
-            sale_hour = int(hour_str.split(":")[0])
-        except:
-            sale_hour = 0
-            
-        pname = resolve_product_name(sale, products_by_code)
-        if sale_hour <= ref_hour:
-            venta_mes[pname] = venta_mes.get(pname, 0.0) + float(sale.get("Venta_Neta") or 0.0)
-            
-    # Metas
-    meta_dia = {}
-    meta_parcial = {}
-    meta_full = {}
-    count_based = {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
-    
-    for prod_name_m, records_m in goals_store.items():
-        if records_m and not records_m[0].get("activo", True):
-            continue
-        for rec_m in records_m:
-            fecha_m = rec_m.get("fecha")
-            if fecha_m and str(fecha_m).startswith(report_date[:7]):
-                val = float(rec_m.get("meta") or 0.0)
-                if prod_name_m in count_based:
-                    val = float(round(val))
-                meta_full[prod_name_m] = meta_full.get(prod_name_m, 0.0) + val
-                if str(fecha_m) <= report_date:
-                    meta_parcial[prod_name_m] = meta_parcial.get(prod_name_m, 0.0) + val
-                if str(fecha_m) == report_date:
-                    meta_dia[prod_name_m] = meta_dia.get(prod_name_m, 0.0) + val
-
-    # Agrupaciones solicitadas
-    PRODUCT_GROUPS = {
-        "1. JSA": [
-            {"id": "1. CHANCE", "items": ["CHANCE", "PATA MILLONARIA"]},
-            {"id": "2. BET PLAY", "items": ["BET PLAY"]},
-            {"id": "3. RASPITA", "items": ["RASPITA"]},
-            {"id": "4. DOBLE CHANCE", "items": ["DOBLE CHANCE"]},
-            {"id": "5. CHANCE MILLONARIO", "items": ["CHANCE MILLONARIO"]},
-            {"id": "6. BILLONARIO NACIONAL", "items": ["BILLONARIO NACIONAL"]},
-            {"id": "7. LOTERIA", "items": ["LOTERIA EN LINEA"]},
-        ],
-        "2. Productos y Servicios": [
-            {"id": "1. RECARGA EN LINEA", "items": ["RECARGA EN LINEA"]},
-            {"id": "2. GIROS", "items": ["GIROS"]},
-            {"id": "3. RECAUDOS EMPRESARIALES", "items": ["RECAUDOS EMPRESARIALES"]},
-            {"id": "4. TRANSACCIONES CNB", "items": ["TRANSACCIONES CNB"]},
-        ],
-        "8.0 BALOTO": [{"id": "8.0 BALOTO", "items": ["BALOTO"]}],
-        "8.1 COLOR LOTO": [{"id": "8.1 COLOR LOTO", "items": ["COLOR LOTO"]}],
-        "8.2 MILOTO": [{"id": "8.2 MILOTO", "items": ["MILOTO"]}],
-        "9. SUPER ASTRO": [{"id": "9. SUPER ASTRO", "items": ["SUPER ASTRO"]}]
-    }
-
-    # Calcular dias faltantes para 'Presupuesto dia actual'
-    try:
-        y, m, d = map(int, report_date.split("-"))
-        _, days_in_month = calendar.monthrange(y, m)
-        dias_restantes = days_in_month - d + 1
-        if dias_restantes <= 0: dias_restantes = 1
-    except:
-        dias_restantes = 1
-
-    result_groups = []
-    
-    for g3_name, g3_products in PRODUCT_GROUPS.items():
-        g3_data = {
-            "name": g3_name,
-            "presupuesto_dia": 0,
-            "ejecutado_dia": 0,
-            "dif_cump_dia": 0,
-            "dif_acum": 0,
-            "presupuesto_dia_actual": 0,
-            "venta_mes_acum": 0,
-            "meta_mes_acum": 0,
-            "products": []
-        }
-        for prod in g3_products:
-            p_data = {
-                "name": prod["id"],
-                "presupuesto_dia": 0,
-                "ejecutado_dia": 0,
-                "dif_cump_dia": 0,
-                "dif_acum": 0,
-                "presupuesto_dia_actual": 0,
-                "venta_mes_acum": 0,
-                "meta_mes_acum": 0,
-                "items": []
-            }
-            for item in prod["items"]:
-                p_dia = meta_dia.get(item, 0.0)
-                e_dia = sales_dia.get(item, 0.0)
-                v_mes = venta_mes.get(item, 0.0)
-                m_parcial = meta_parcial.get(item, 0.0)
-                m_full = meta_full.get(item, 0.0)
-                
-                dif_dia = e_dia - p_dia
-                dif_acum = v_mes - m_parcial
-                
-                meta_restante = m_full - v_mes
-                if meta_restante < 0: meta_restante = 0
-                pto_actual = meta_restante / dias_restantes if dias_restantes > 0 else 0
-                
-                item_data = {
-                    "name": item,
-                    "presupuesto_dia": p_dia,
-                    "ejecutado_dia": e_dia,
-                    "cump_dia": (e_dia / p_dia * 100) if p_dia > 0 else (100 if e_dia > 0 else 0),
-                    "dif_cump_dia": dif_dia,
-                    "dif_acum": dif_acum,
-                    "cump_acum": (v_mes / m_parcial * 100) if m_parcial > 0 else (100 if v_mes > 0 else 0),
-                    "presupuesto_dia_actual": pto_actual
-                }
-                p_data["items"].append(item_data)
-                
-                # Sum for Product
-                p_data["presupuesto_dia"] += p_dia
-                p_data["ejecutado_dia"] += e_dia
-                p_data["dif_cump_dia"] += dif_dia
-                p_data["dif_acum"] += dif_acum
-                p_data["presupuesto_dia_actual"] += pto_actual
-                p_data["venta_mes_acum"] += v_mes
-                p_data["meta_mes_acum"] += m_parcial
-                
-            # Calc percents for Product
-            p_data["cump_dia"] = (p_data["ejecutado_dia"] / p_data["presupuesto_dia"] * 100) if p_data["presupuesto_dia"] > 0 else (100 if p_data["ejecutado_dia"] > 0 else 0)
-            p_data["cump_acum"] = (p_data["venta_mes_acum"] / p_data["meta_mes_acum"] * 100) if p_data["meta_mes_acum"] > 0 else (100 if p_data["venta_mes_acum"] > 0 else 0)
-            
-            g3_data["products"].append(p_data)
-            
-            # Sum for Group 3
-            g3_data["presupuesto_dia"] += p_data["presupuesto_dia"]
-            g3_data["ejecutado_dia"] += p_data["ejecutado_dia"]
-            g3_data["dif_cump_dia"] += p_data["dif_cump_dia"]
-            g3_data["dif_acum"] += p_data["dif_acum"]
-            g3_data["presupuesto_dia_actual"] += p_data["presupuesto_dia_actual"]
-            g3_data["venta_mes_acum"] += p_data["venta_mes_acum"]
-            g3_data["meta_mes_acum"] += p_data["meta_mes_acum"]
-            
-        g3_data["cump_dia"] = (g3_data["ejecutado_dia"] / g3_data["presupuesto_dia"] * 100) if g3_data["presupuesto_dia"] > 0 else (100 if g3_data["ejecutado_dia"] > 0 else 0)
-        g3_data["cump_acum"] = (g3_data["venta_mes_acum"] / g3_data["meta_mes_acum"] * 100) if g3_data["meta_mes_acum"] > 0 else (100 if g3_data["venta_mes_acum"] > 0 else 0)
-        
-        result_groups.append(g3_data)
-
-    return {
-        "date": report_date,
-        "groups": result_groups
-    }
 
 # ==========================================
 # WHATSAPP CLOUD API WEBHOOKS
@@ -4064,6 +3868,15 @@ def get_compliance_data(date: Optional[str] = Query(None, description="Fecha YYY
     ref_hour = max(7, min(21, ref_hour))
     if is_past_day:
         ref_hour = 21
+
+    # Load product catalog
+    products_data, _ = get_cached_sales("catalog_productos")
+    products_by_code = {}
+    if products_data:
+        for p in products_data:
+            cod = p.get("Cod_Producto")
+            if cod is not None:
+                products_by_code[str(cod)] = p
 
     # Ventas día
     sales_dia = {}
