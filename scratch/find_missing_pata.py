@@ -12,22 +12,19 @@ def find_missing_products():
     cat, _ = get_cached_sales('catalog_productos')
     cat_dict = {str(c['Cod_Producto']): c for c in cat} if cat else {}
     
-    unknown_chance_codes = {}
+    product_sums = {}
     
     for s in sales_resp.get('data', []):
         if s.get('Tabla_Origen', s.get('SRC_TABLE', s.get('src_table'))) == 'SIGT_CHANCES':
             c = str(s.get('IDE_PRODUCTO', s.get('Cod_Producto', s.get('ide_producto'))))
             v = float(s.get('VENTA_NETA', s.get('Venta_Neta', s.get('venta_neta', 0))))
             
-            if c not in cat_dict:
-                unknown_chance_codes[c] = unknown_chance_codes.get(c, 0) + v
-                
-    print("\n--- CODIGOS DE PRODUCTO EN SIGT_CHANCES QUE NO ESTAN EN EL CATALOGO ---")
-    if not unknown_chance_codes:
-        print("No se encontraron codigos huerfanos. El problema podria ser otro.")
-    else:
-        for code, total in unknown_chance_codes.items():
-            print(f"Cod_Producto: {code} -> Total Venta_Neta: {total}")
+            name = cat_dict.get(c, {}).get('Producto', 'DESCONOCIDO (HUERFANO)')
+            product_sums[f"{c} - {name}"] = product_sums.get(f"{c} - {name}", 0) + v
+            
+    print("\n--- VENTAS EN LA TABLA SIGT_CHANCES POR PRODUCTO ---")
+    for name, total in sorted(product_sums.items(), key=lambda x: x[1], reverse=True):
+        print(f"{name}: {total}")
             
     print("\n--- VERIFICANDO CODIGOS CATALOGADOS QUE CONTIENEN 'PATA' ---")
     for c_str, info in cat_dict.items():
