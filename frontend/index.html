@@ -52,6 +52,9 @@
                 <button type="button" class="tab-btn" data-view="view-betplay">
                     <img src="assets/logos/betplay.jpg" alt="Betplay" class="tab-logo">
                 </button>
+                <button type="button" class="tab-btn" data-view="view-compliance">
+                    <i class="fa-solid fa-table-list"></i> <span>Reporte Generales</span>
+                </button>
                 <button type="button" class="tab-btn" data-view="view-asistente">
                     <i class="fa-solid fa-robot"></i> <span>Asistente IA</span>
                 </button>
@@ -720,6 +723,38 @@
             </div>
 
         </div><!-- /#view-betplay -->
+
+        <!-- ===================== VISTA: REPORTE GENERALES ===================== -->
+        <div class="tab-view" id="view-compliance" hidden>
+            <div class="glass-panel" style="padding: 15px; margin-bottom: 20px; display: flex; align-items: center; gap: 15px;">
+                <label for="compliance-date" style="font-weight: bold;">Fecha del Reporte:</label>
+                <input type="date" id="compliance-date" class="filter-select" style="max-width: 200px;">
+                <button class="action-btn-primary" id="btn-load-compliance" style="padding: 8px 15px;">
+                    <i class="fa-solid fa-sync"></i> Cargar Reporte
+                </button>
+            </div>
+            
+            <div class="glass-panel" style="padding: 0; overflow: hidden; height: 80vh;">
+                <iframe id="iframe-compliance" src="/compliance.html" style="width: 100%; height: 100%; border: none; background: white; border-radius: 12px;"></iframe>
+            </div>
+            
+            <script>
+                document.getElementById('btn-load-compliance').addEventListener('click', () => {
+                    const date = document.getElementById('compliance-date').value;
+                    const iframe = document.getElementById('iframe-compliance');
+                    if (date) {
+                        iframe.src = `/compliance.html?date=${date}`;
+                    } else {
+                        iframe.src = `/compliance.html`;
+                    }
+                });
+                // Set today by default
+                document.addEventListener('DOMContentLoaded', () => {
+                    const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD format
+                    document.getElementById('compliance-date').value = today;
+                });
+            </script>
+        </div>
 
         <!-- ===================== VISTA: ASISTENTE IA ===================== -->
         <div class="tab-view" id="view-asistente" hidden>
