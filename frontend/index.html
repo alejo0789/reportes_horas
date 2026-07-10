@@ -735,7 +735,7 @@
             </div>
             
             <div class="glass-panel" style="padding: 0; overflow: hidden; height: 80vh;">
-                <iframe id="iframe-compliance" src="/compliance.html" style="width: 100%; height: 100%; border: none; background: white; border-radius: 12px;"></iframe>
+                <iframe id="iframe-compliance" src="compliance.html" style="width: 100%; height: 100%; border: none; background: white; border-radius: 12px;"></iframe>
             </div>
             
             <script>
@@ -743,9 +743,9 @@
                     const date = document.getElementById('compliance-date').value;
                     const iframe = document.getElementById('iframe-compliance');
                     if (date) {
-                        iframe.src = `/compliance.html?date=${date}`;
+                        iframe.src = `compliance.html?date=${date}`;
                     } else {
-                        iframe.src = `/compliance.html`;
+                        iframe.src = `compliance.html`;
                     }
                 });
                 // Set today by default
