@@ -1155,7 +1155,8 @@ def get_whatsapp_query(
         else:
             msg = f"👥 *CUMPLIMIENTO POR COORDINADOR*\n"
         msg += f"📅 *Fecha:* {today_str}\n"
-        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+        if not is_past_day:
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         for i, (c_name, c_zone, c_sales, c_meta, c_comp) in enumerate(coor_compliance_list, 1):
             c_emoji = "🟢" if c_comp >= 95 else "🔴"
@@ -1224,7 +1225,8 @@ def get_whatsapp_query(
             else:
                 msg = f"👥 *RESUMEN DE PROMOTORES (v4) - ZONA: ORIENTE Y CENTRO*\n"
             msg += f"📅 *Fecha:* {today_str}\n"
-            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+            if not is_past_day:
+                msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
             
             msg += f"\n---- promotores zona oriente ----\n"
             for (p_name, p_sales, p_meta, p_comp, p_zone) in promoter_compliance_list:
@@ -1254,7 +1256,8 @@ def get_whatsapp_query(
                 msg = f"👥 *RESUMEN DE PROMOTORES (Debug) - ZONA: {user_zone}*\n"
             msg += f"👤 *Coordinador:* {user_name}\n"
             msg += f"📅 *Fecha:* {today_str}\n"
-            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+            if not is_past_day:
+                msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
             msg += f"──────────────────\n"
             for idx, item in enumerate(promoter_compliance_list, 1):
                 p_name, p_sales, p_meta, p_comp = item[:4]
@@ -1571,7 +1574,8 @@ def get_whatsapp_query(
         msg += f"👤 *Administrador:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Ámbito:* Nacional\n"
-        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+        if not is_past_day:
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n\n"
 
@@ -1626,7 +1630,8 @@ def get_whatsapp_query(
         msg += f"👤 *Coordinador:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {user_zone}\n"
-        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+        if not is_past_day:
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n\n"
 
@@ -1684,7 +1689,8 @@ def get_whatsapp_query(
         msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📍 *Zona:* {user_zone}\n"
-        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+        if not is_past_day:
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         msg += f"📦 *Detalle por Producto:*\n"
 
@@ -1733,7 +1739,8 @@ def get_whatsapp_query(
         msg += f"👤 *{user_label}:* {user_name}\n"
         msg += f"📅 *Fecha:* {today_str}\n"
         msg += f"📦 *Producto:* *{selected_product}*\n"
-        msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
+        if not is_past_day:
+            msg += f"🔄 *Actualizado DB:* {db_update_time_str}\n"
         msg += f"──────────────────\n"
         if is_count_based:
             msg += f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
