@@ -249,10 +249,12 @@ def get_daily_session_context(phone: str, user_msg_text: str, button_id: str) ->
         # Migración: asegurar las columnas en tablas antiguas.
         try:
             cursor.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN session_start_time TEXT")
+            conn.commit()
         except sqlite3.OperationalError:
             pass
         try:
             cursor.execute("ALTER TABLE whatsapp_user_requests ADD COLUMN date_context TEXT DEFAULT 'today'")
+            conn.commit()
         except sqlite3.OperationalError:
             pass
 
