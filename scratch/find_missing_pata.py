@@ -15,15 +15,16 @@ def find_missing_products():
     product_sums = {}
     
     for s in sales_resp.get('data', []):
-        if s.get('Tabla_Origen', s.get('SRC_TABLE', s.get('src_table'))) == 'SIGT_CHANCES':
-            c = str(s.get('IDE_PRODUCTO', s.get('Cod_Producto', s.get('ide_producto'))))
-            v = float(s.get('VENTA_NETA', s.get('Venta_Neta', s.get('venta_neta', 0))))
+        t = str(s.get('Tabla_Origen', s.get('SRC_TABLE', s.get('src_table', 'UNKNOWN_TABLE'))))
+        c = str(s.get('IDE_PRODUCTO', s.get('Cod_Producto', s.get('ide_producto'))))
+        v = float(s.get('VENTA_NETA', s.get('Venta_Neta', s.get('venta_neta', 0))))
+        
+        name = cat_dict.get(c, {}).get('Producto', 'DESCONOCIDO (HUERFANO)')
+        key = f"{t} | {c} - {name}"
+        product_sums[key] = product_sums.get(key, 0) + v
             
-            name = cat_dict.get(c, {}).get('Producto', 'DESCONOCIDO (HUERFANO)')
-            product_sums[f"{c} - {name}"] = product_sums.get(f"{c} - {name}", 0) + v
-            
-    print("\n--- VENTAS EN LA TABLA SIGT_CHANCES POR PRODUCTO ---")
-    for name, total in sorted(product_sums.items(), key=lambda x: x[1], reverse=True):
+    print("\n--- VENTAS TOTALES POR TABLA Y PRODUCTO ---")
+    for name, total in sorted(product_sums.items(), key=lambda x: x[0]):
         print(f"{name}: {total}")
             
     print("\n--- VERIFICANDO CODIGOS CATALOGADOS QUE CONTIENEN 'PATA' ---")
