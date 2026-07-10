@@ -743,7 +743,7 @@ def normalize_product(raw_name):
     return "OTROS"
 
 def resolve_product_name(sale, products_by_code=None):
-    cod_prod = sale.get("Cod_Producto")
+    cod_prod = sale.get("Cod_Producto") or sale.get("IDE_PRODUCTO") or sale.get("ide_producto")
     if cod_prod is not None:
         cod_prod_str = str(cod_prod)
         if products_by_code and cod_prod_str in products_by_code:
@@ -775,7 +775,7 @@ def resolve_product_name(sale, products_by_code=None):
         except:
             pass
             
-    src_table = sale.get("Tabla_Origen")
+    src_table = sale.get("Tabla_Origen") or sale.get("SRC_TABLE") or sale.get("src_table")
     if src_table and src_table in TABLA_TO_PRODUCT_NAME:
         return TABLA_TO_PRODUCT_NAME[src_table]
             
@@ -3882,33 +3882,41 @@ def get_compliance_data(date: Optional[str] = Query(None, description="Fecha YYY
     sales_dia = {}
     sales_resp = get_ventas(desde=desde_dia, hasta=hasta, force_refresh=False)
     for sale in sales_resp.get("data", []):
-        if sale.get("Tabla_Origen") in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+        src_table = sale.get("Tabla_Origen") or sale.get("SRC_TABLE") or sale.get("src_table")
+        if src_table in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
             continue
         try:
-            hour_str = sale.get("Hora", "0")
+            hour_str = sale.get("Hora") or sale.get("HORA") or sale.get("hora") or "0"
+            if "T" in hour_str:
+                hour_str = hour_str.split("T")[1]
             sale_hour = int(hour_str.split(":")[0])
         except:
             sale_hour = 0
             
         pname = resolve_product_name(sale, products_by_code)
         if sale_hour <= ref_hour:
-            sales_dia[pname] = sales_dia.get(pname, 0.0) + float(sale.get("Venta_Neta") or 0.0)
+            v_neta = float(sale.get("Venta_Neta") or sale.get("VENTA_NETA") or sale.get("venta_neta") or 0.0)
+            sales_dia[pname] = sales_dia.get(pname, 0.0) + v_neta
 
     # Ventas Mes
     venta_mes = {}
     sales_mes_resp = get_ventas(desde=month_start, hasta=hasta, force_refresh=False)
     for sale in sales_mes_resp.get("data", []):
-        if sale.get("Tabla_Origen") in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
+        src_table = sale.get("Tabla_Origen") or sale.get("SRC_TABLE") or sale.get("src_table")
+        if src_table in {'SIGT_PAGOS', 'SIGT_PAGOGEN_MAESTRO'}:
             continue
         try:
-            hour_str = sale.get("Hora", "0")
+            hour_str = sale.get("Hora") or sale.get("HORA") or sale.get("hora") or "0"
+            if "T" in hour_str:
+                hour_str = hour_str.split("T")[1]
             sale_hour = int(hour_str.split(":")[0])
         except:
             sale_hour = 0
             
         pname = resolve_product_name(sale, products_by_code)
         if sale_hour <= ref_hour:
-            venta_mes[pname] = venta_mes.get(pname, 0.0) + float(sale.get("Venta_Neta") or 0.0)
+            v_neta = float(sale.get("Venta_Neta") or sale.get("VENTA_NETA") or sale.get("venta_neta") or 0.0)
+            venta_mes[pname] = venta_mes.get(pname, 0.0) + v_neta
             
     # Metas
     meta_dia = {}
