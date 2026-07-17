@@ -1,0 +1,1 @@
+import sqlite3; import json; conn=sqlite3.connect('uploads/cache.db'); c=conn.cursor(); c.execute('SELECT cache_key, last_updated, data_json FROM sales_cache WHERE cache_key LIKE ''%betplay%'' ORDER BY last_updated DESC'); [print(r[0], r[1], len(json.loads(r[2]))) for r in c.fetchall()]

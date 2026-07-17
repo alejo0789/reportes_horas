@@ -7,7 +7,7 @@ import json
 
 def find_missing_products():
     print("Obteniendo ventas de ayer (2026-07-09)...")
-    sales_resp = get_ventas(desde='2026-07-09 00:00:00', hasta='2026-07-09 23:59:59', force_refresh=False)
+    sales_resp = get_ventas(desde='2026-07-09 00:00:00', hasta='2026-07-09 23:59:59', force_refresh=True)
     
     cat, _ = get_cached_sales('catalog_productos')
     cat_dict = {str(c['Cod_Producto']): c for c in cat} if cat else {}

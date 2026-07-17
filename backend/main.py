@@ -1596,12 +1596,19 @@ def get_whatsapp_query(
             is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
             pref = "" if is_count_based else "$"
             if is_past_day:
-                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
-                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                # Recopilatorio de ayer: compacto sin mensual (solo Día y Cumpl. Acumulado), sin Hora sig.
+                _v_adm = venta_mes_p.get(p_name, 0.0)
+                _mp_adm = meta_parcial_p.get(p_name, 0.0)
+                _mf_adm = meta_full_p.get(p_name, 0.0)
+                _faltante_mes_adm = max(0.0, _mf_adm - _v_adm)
+                _parcial_adm = (_v_adm / _mp_adm * 100.0) if _mp_adm > 0 else (100.0 if _v_adm > 0 else 0.0)
+                _e_adm = lambda p: "🟢" if p >= 95 else "🔴"
+                pct_adm = f" · 📆 Cumplimiento Acumulado {_e_adm(_parcial_adm)}{_parcial_adm:.1f}%"
                 msg += f"• 📦 *{p_name}*\n"
-                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct_adm}\n"
                 msg += f"  ↳ Día → Venta {pref}{round(p_sales):,} · Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
-                msg += mes_lines
+                msg += f"  ↳ Mes → Venta {pref}{round(_v_adm):,}\n"
+                msg += f"  ↳ Mes → Meta a hoy {pref}{round(_mp_adm):,} · Faltante mes {pref}{round(_faltante_mes_adm):,}\n\n"
             else:
                 # Hoy: formato original + % parcial del mes.
                 msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"

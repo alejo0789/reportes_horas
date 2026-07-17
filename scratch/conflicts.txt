@@ -1,0 +1,204 @@
+--- Conflict 1 ---
+HEAD (main):
+date_filter: str = Query("today", description="Fecha de consulta: 'today' o 'yesterday'")
+
+OTHER (gitlab/desarrollo):
+ref_date: Optional[str] = Query(None, description="Fecha de referencia YYYY-MM-DD; por defecto hoy. Usada para el reporte de 'ayer'."),
+    current_user: CurrentUser = Depends(get_current_user),
+========================================
+
+--- Conflict 2 ---
+HEAD (main):
+target_dt_coor_list = datetime.now()
+        if date_filter == "yesterday":
+            from datetime import timedelta
+            target_dt_coor_list = target_dt_coor_list - timedelta(days=1)
+        today_str = target_dt_coor_list.strftime("%Y-%m-%d")
+
+OTHER (gitlab/desarrollo):
+today_str = report_date
+========================================
+
+--- Conflict 3 ---
+HEAD (main):
+target_dt = datetime.now()
+        if date_filter == "yesterday":
+            from datetime import timedelta
+            target_dt = target_dt - timedelta(days=1)
+        today_str = target_dt.strftime("%Y-%m-%d")
+
+OTHER (gitlab/desarrollo):
+today_str = report_date
+========================================
+
+--- Conflict 4 ---
+HEAD (main):
+target_dt_coor = datetime.now()
+        if date_filter == "yesterday":
+            from datetime import timedelta
+            target_dt_coor = target_dt_coor - timedelta(days=1)
+        today_str = target_dt_coor.strftime("%Y-%m-%d")
+
+OTHER (gitlab/desarrollo):
+today_str = report_date
+========================================
+
+--- Conflict 5 ---
+HEAD (main):
+# 4. Obtener ventas del día correspondiente
+    target_dt_main = datetime.now()
+    if date_filter == "yesterday":
+        from datetime import timedelta
+        target_dt_main = target_dt_main - timedelta(days=1)
+    today_str = target_dt_main.strftime("%Y-%m-%d")
+
+OTHER (gitlab/desarrollo):
+# 4. Obtener ventas del día de referencia (hoy o ayer)
+    today_str = report_date
+========================================
+
+--- Conflict 6 ---
+HEAD (main):
+if date_filter == "yesterday":
+        ref_hour = 21
+    else:
+        ref_hour = now_colombia.hour
+        ref_hour = max(7, min(21, ref_hour))
+
+OTHER (gitlab/desarrollo):
+ref_hour = now_colombia.hour
+    ref_hour = max(7, min(21, ref_hour))
+    # Si el reporte es de un día pasado (ej. ayer), el día está cerrado: usar hora tope.
+    if is_past_day:
+        ref_hour = 21
+========================================
+
+--- Conflict 7 ---
+HEAD (main):
+if date_filter == "yesterday":
+            msg = f"📊 *REPORTE ADMINISTRADOR (AYER)*\n"
+        else:
+            msg = f"📊 *REPORTE ADMINISTRADOR (GENERAL)*\n"
+
+OTHER (gitlab/desarrollo):
+venta_mes_p, meta_parcial_p, meta_full_p = compute_monthly_by_product()
+        msg = f"📊 *REPORTE ADMINISTRADOR (GENERAL)*\n"
+========================================
+
+--- Conflict 8 ---
+HEAD (main):
+if is_count_based:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
+                if date_filter != "yesterday":
+                    msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            else:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
+                if date_filter != "yesterday":
+                    msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+
+OTHER (gitlab/desarrollo):
+pref = "" if is_count_based else "$"
+            if is_past_day:
+                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
+                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                msg += f"• 📦 *{p_name}*\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  ↳ Día → Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
+                msg += mes_lines
+            else:
+                # Hoy: formato original + % parcial del mes.
+                msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
+                msg += f"  ↳ Meta Hora Sig: {pref}{round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
+                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
+========================================
+
+--- Conflict 9 ---
+HEAD (main):
+msg += f"📊 *Cumplimiento Final:* {emoji_overall} *{compliance:.1f}%*\n" if date_filter == "yesterday" else f"📊 *Cumplimiento:* {emoji_overall} *{compliance:.1f}%*\n"
+        msg += f"📈 *Meta del Día:* ${round(total_goals):,}\n"
+        msg += f"🎯 *Faltante Meta:* ${round(total_faltante_meta):,}\n"
+        msg += f"──────────────────\n"
+
+OTHER (gitlab/desarrollo):
+>>>>>>> gitlab/desarrollo
+        msg += f"📦 *Detalle por Producto:*\n"
+
+        venta_mes_p, meta_parcial_p, meta_full_p = compute_monthly_by_product()
+        all_products = sorted(list(set(list(sales_by_product.keys()) + list(goals_by_product.keys()))))
+        for p_name in all_products:
+            p_goal = goals_by_product.get(p_name, 0.0)
+            p_sales_total = sales_by_product.get(p_name, 0.0)
+
+            if p_goal > 0:
+                p_compliance = (p_sales_total / p_goal * 100.0)
+            else:
+                p_compliance = 100.0 if p_sales_total > 0 else 0.0
+
+            e_dia = "🟢" if p_compliance >= 95 else "🔴"
+            p_next_hour_goal = p_goal * next_hour_ratio
+            p_faltante = max(0.0, p_goal - p_sales_total)
+
+            is_count_based = p_name in {"RECAUDOS EMPRESARIALES", "GIROS", "TRANSACCIONES CNB"}
+<<<<<<< HEAD
+            if is_count_based:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: {round(p_goal):,}\n"
+                if date_filter != "yesterday":
+                    msg += f"  ↳ Meta Hora Sig: {round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {round(p_faltante):,}\n\n"
+            else:
+                msg += f"• 📦 *{p_name}* ({p_emoji} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: ${round(p_goal):,}\n"
+                if date_filter != "yesterday":
+                    msg += f"  ↳ Meta Hora Sig: ${round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: ${round(p_faltante):,}\n\n"
+=======
+            pref = "" if is_count_based else "$"
+            if is_past_day:
+                # Recopilatorio de ayer: compacto con mensual, sin Hora sig.
+                pct, mes_lines = month_fragment(p_name, is_count_based, venta_mes_p, meta_parcial_p, meta_full_p)
+                msg += f"• 📦 *{p_name}*\n"
+                msg += f"  🗓️ Día {e_dia}{p_compliance:.1f}%{pct}\n"
+                msg += f"  ↳ Día → Meta {pref}{round(p_goal):,} · Falta {pref}{round(p_faltante):,}\n"
+                msg += mes_lines
+            else:
+                # Hoy: formato original + % parcial del mes.
+                msg += f"• 📦 *{p_name}* ({e_dia} *{p_compliance:.1f}%*)\n"
+                msg += f"  ↳ Meta del Día: {pref}{round(p_goal):,}\n"
+                msg += f"  ↳ Meta Hora Sig: {pref}{round(p_next_hour_goal):,}\n"
+                msg += f"  ↳ Faltante Meta: {pref}{round(p_faltante):,}\n"
+                msg += parcial_line(p_name, venta_mes_p, meta_parcial_p)
+========================================
+
+--- Conflict 10 ---
+HEAD (main):
+elif user_msg_text.isdigit():
+            report_type = "administrator_coordinator_detail"
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=user_msg_text)
+            
+        if query_result is None:
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+
+OTHER (gitlab/desarrollo):
+query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+========================================
+
+--- Conflict 11 ---
+HEAD (main):
+elif user_msg_text.isdigit():
+            report_type = "coordinator_promoter_detail"
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type, selected_product=user_msg_text)
+            
+        if query_result is None:
+            query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+
+OTHER (gitlab/desarrollo):
+query_result = get_whatsapp_query(sender_phone, report_type=report_type)
+========================================
+

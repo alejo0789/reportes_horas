@@ -1,0 +1,19 @@
+{
+  "status": "dry_run",
+  "count": 2,
+  "messages": [
+    {
+      "kind": "text",
+      "label": "reporte_hoy",
+      "text": "📊 *REPORTE ADMINISTRADOR (GENERAL)*\n👤 *Administrador:* Alejandro carvajal\n📅 *Fecha:* 2026-07-07\n📍 *Ámbito:* Nacional\n🔄 *Actualizado DB:* Cierre del día\n──────────────────\n📦 *Detalle por Producto:*\n\n• 📦 *BET PLAY*\n  🗓️ Día 🟢100.0% · 📆 Parcial 🟢100.0% · Mensual 🟢100.0%\n  ↳ Día → Venta $39,166,229 · Meta $0 · Falta $0\n  ↳ Mes → Venta $256,751,143\n  ↳ Mes → Meta a hoy $0 · total $0\n\n• 📦 *GIROS*\n  🗓️ Día 🟢100.0% · 📆 Parcial 🟢100.0% · Mensual 🟢100.0%\n  ↳ Día → Venta 39,865,255 · Meta 0 · Falta 0\n  ↳ Mes → Venta 262,649,328\n  ↳ Mes → Meta a hoy 0 · total 0\n\n• 📦 *RASPITA*\n  🗓️ Día 🟢100.0% · 📆 Parcial 🟢100.0% · Mensual 🟢100.0%\n  ↳ Día → Venta $36,542,115 · Meta $0 · Falta $0\n  ↳ Mes → Venta $260,973,587\n  ↳ Mes → Meta a hoy $0 · total $0\n\n• 📦 *SUPER ASTRO*\n  🗓️ Día 🟢100.0% · 📆 Parcial 🟢100.0% · Mensual 🟢100.0%\n  ↳ Día → Venta $35,831,445 · Meta $0 · Falta $0\n  ↳ Mes → Venta $260,127,589\n  ↳ Mes → Meta a hoy $0 · total $0\n\n• 📦 *TRANSACCIONES CNB*\n  🗓️ Día 🟢100.0% · 📆 Parcial 🟢100.0% · Mensual 🟢100.0%\n  ↳ Día → Venta 37,158,450 · Meta 0 · Falta 0\n  ↳ Mes → Venta 255,828,351\n  ↳ Mes → Meta a hoy 0 · total 0\n\n──────────────────\n💪 ¡Vamos por la meta! 🚀"
+    },
+    {
+      "kind": "interactive",
+      "label": "menu_botones",
+      "text": "🔍 ¿Deseas ver el cumplimiento de los coordinadores?",
+      "buttons": [
+        "Ver Coordinadores"
+      ]
+    }
+  ]
+}
